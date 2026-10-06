@@ -13,6 +13,9 @@
  *      summary, new journal entries;
  *   5. a 'tick' message for the page's sounds and effects.
  *
+ * Each stage of the tick catches its own errors and reports them, so a fault in one module
+ * (say the ecology) never stops the ground streaming, the 'tick' message, or undo recording.
+ *
  * Loading (a new sea, a reset or a saved sea) builds the new world in fresh objects and
  * swaps it in only when it is complete, then re-sends everything in row bands with
  * progress messages, then says 'ready'.
@@ -26,7 +29,7 @@ import '../checks/all';
 import { ChangeFlag, Columns, type ChangeListener } from './columns';
 import { buildDemoChain } from './fixtures';
 import { Geo } from './geo/geo';
-import type { EngineSettings, JournalEntry, PageSaveHeader, PerfStats, StormState, TickEvents, ToEngine } from './protocol';
+import type { EngineSettings, JournalEntry, PageSaveHeader, PerfStats, TickEvents, ToEngine } from './protocol';
 import { SAVE_FORMAT, SaveError, applyFields, decodeSave, encodeSave, patchesHash, type DecodedSave, type SaveHeader } from './save';
 import { BAND_ROWS, ColsStream, EcoStream, RateLimit, now, type Post } from './streams';
 import { UndoStack } from './undo';
@@ -78,6 +81,11 @@ const BUDGETS: Record<'worker' | 'workerPhone' | 'page' | 'pagePhone', Budgets> 
   page: { geo: 2.5, eco: 1, pack: 0.5 },
   pagePhone: { geo: 3.5, eco: 1.5, pack: 0.75 },
 };
+
+/** Total of a mode's budgets: the time one tick's work may take (ms). */
+function totalOf(b: Budgets): number {
+  return b.geo + b.eco + b.pack;
+}
 
 /** A phone or tablet (from the browser's own description; good enough to pick time budgets). */
 function isPhone(): boolean {
@@ -148,6 +156,16 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+export interface EngineOptions {
+  /**
+   * Called instead of reporting an error when the very first sea can't be built (a new sea,
+   * or the fallback after a damaged save at start-up). A background thread uses it to crash
+   * on purpose, so the page notices and runs the engine itself (host.ts). Without it the
+   * error is reported like any other.
+   */
+  onFatal?: (err: unknown) => void;
+}
+
 export class Engine {
   private world: World | null = null;
   private undo: UndoStack | null = null;
@@ -155,9 +173,17 @@ export class Engine {
   private readonly ecoStream: EcoStream;
   private readonly lifeRate = new RateLimit();
   private ready = false;
+  /** A sea has been ready at least once (after that, a failed rebuild keeps the current sea). */
+  private everReady = false;
   private loader: Loader | null = null;
-  /** Bumped whenever the world is replaced, so a slow save decode that finishes late is dropped. */
-  private generation = 0;
+  /**
+   * Every request that replaces the world (new sea, reset, load) is numbered in the order it
+   * arrives, and the installed world remembers its number. A saved sea that finishes
+   * decoding after a newer request has installed its world is out of date and dropped; a
+   * request that fails installs nothing, so it never cancels an earlier one still decoding.
+   */
+  private requestSeq = 0;
+  private installedSeq = 0;
   private pageMode = false;
   private readonly phone = isPhone();
   private readonly budget: Budgets = { geo: 0, eco: 0, pack: 0 };
@@ -190,9 +216,15 @@ export class Engine {
   private lastError = '';
   private lastErrorAt = Number.NEGATIVE_INFINITY;
 
-  constructor(private readonly post: Post) {
+  private readonly onFatal: ((err: unknown) => void) | null;
+
+  constructor(
+    private readonly post: Post,
+    options: EngineOptions = {},
+  ) {
     this.colsStream = new ColsStream(post);
     this.ecoStream = new EcoStream(post);
+    this.onFatal = options.onFatal ?? null;
   }
 
   /** On the page (no background thread) the engine uses smaller time budgets. */
@@ -212,6 +244,16 @@ export class Engine {
   /** The live life grid (for checks and debug tools). */
   get patches(): PatchGrid | null {
     return this.world?.grid ?? null;
+  }
+
+  /** The live ecology (for checks and debug tools). */
+  get ecology(): Ecology | null {
+    return this.world?.eco ?? null;
+  }
+
+  /** The time one tick's work may take in this mode (geology + ecology + packing, ms). */
+  get tickBudgetMs(): number {
+    return totalOf(this.modeBudgets());
   }
 
   /** How long the worker should wait before the next tick (seconds). */
@@ -247,10 +289,10 @@ export class Engine {
         this.settings = { ...msg.settings };
         this.clockDirty = true;
         if (msg.save) this.openSave(msg.save, msg.seed, null);
-        else this.install(newSea(msg.seed), false, undefined);
+        else this.startNewSea(msg.seed, ++this.requestSeq);
         return;
       case 'reset':
-        this.install(newSea(msg.seed), false, undefined);
+        this.startNewSea(msg.seed, ++this.requestSeq);
         return;
       case 'load':
         this.openSave(msg.data, null, msg.id);
@@ -287,7 +329,8 @@ export class Engine {
         this.world?.eco.renameIsland(msg.island, msg.name);
         return;
       case 'save':
-        this.save(msg.id, msg.header);
+        // A page that sends no header of its own still gets a save it can open.
+        this.save(msg.id, msg.header ?? null);
         return;
       case 'checks':
         runChecks({ quick: msg.quick }).then(
@@ -303,12 +346,45 @@ export class Engine {
 
   // ---------- building and loading ----------
 
-  /** Swap in a complete world and start re-sending it to the page. */
-  private install(w: World, resumed: boolean, header: PageSaveHeader | undefined): void {
-    this.generation++;
+  /**
+   * Build a brand-new sea for request `seq` and swap it in. If it can't be built, the
+   * current sea (if any) carries on.
+   */
+  private startNewSea(seed: number, seq: number): void {
+    let w: World;
+    try {
+      w = newSea(seed);
+      this.prepare(w);
+    } catch (err) {
+      this.buildFailed(err);
+      return;
+    }
+    this.install(w, false, undefined, seq);
+  }
+
+  /** Building a sea failed. Before any sea was ever ready that is fatal (see EngineOptions.onFatal). */
+  private buildFailed(err: unknown): void {
+    if (!this.everReady && this.onFatal) this.onFatal(err);
+    else this.reportError(err);
+  }
+
+  /**
+   * Bring a new world's clock up to date and drop its pending changes (everything is about
+   * to be sent in full). Runs before the swap, so if the new world fails here the current
+   * one is untouched.
+   */
+  private prepare(w: World): void {
+    this.pushClock(w.eco);
+    w.eco.takeDirty();
+  }
+
+  /** Swap in a complete, prepared world (from request `seq`) and start re-sending it to the page. */
+  private install(w: World, resumed: boolean, header: PageSaveHeader | undefined, seq: number): void {
+    this.installedSeq = seq;
     this.world = w;
-    this.undo = new UndoStack(w.cols, w.grid);
-    w.cols.addListener(this.listenerFor(w));
+    const undo = new UndoStack(w.cols, w.grid);
+    this.undo = undo;
+    w.cols.addListener(this.listenerFor(w, undo));
     this.stroke = null;
     this.physAcc = 0;
     this.settleWait = 0;
@@ -320,21 +396,27 @@ export class Engine {
     this.colsStream.attach(w.cols);
     this.ecoStream.attach(w.eco);
     this.lifeRate.reset();
-    this.pushClock(w.eco);
-    // Everything is about to be sent in full, so pending changes are already covered.
-    w.eco.takeDirty();
     this.ready = false;
     this.loader = { next: 0, total: COLS_BANDS + ECO_BANDS, resumed, header };
     this.post({ t: 'clear' });
     this.post({ t: 'progress', done: 0, total: this.loader.total });
   }
 
-  /** Columns listener: remember what to re-send, count burned ground, and tell the ecology. */
-  private listenerFor(w: World): ChangeListener {
+  /**
+   * Columns listener: remember what to re-send, count burned ground, copy the life under the
+   * change for undo, then tell the ecology (an ecology error is reported, never passed back
+   * into the geology that made the change).
+   */
+  private listenerFor(w: World, undo: UndoStack): ChangeListener {
     return (i0, k0, i1, k1, flags) => {
       this.colsStream.mark(i0, k0, i1, k1);
       if (flags & ChangeFlag.Burn) this.burned += (((i1 / PATCH) | 0) - ((i0 / PATCH) | 0) + 1) * (((k1 / PATCH) | 0) - ((k0 / PATCH) | 0) + 1);
-      w.eco.onTerrainChanged(i0, k0, i1, k1, flags);
+      undo.capturePatchRect(i0, k0, i1, k1);
+      try {
+        w.eco.onTerrainChanged(i0, k0, i1, k1, flags);
+      } catch (err) {
+        this.reportError(err);
+      }
     };
   }
 
@@ -345,10 +427,10 @@ export class Engine {
    * - 'init' with a save (newSeaSeed set): on failure the page is told and a new sea starts.
    */
   private openSave(data: ArrayBuffer, newSeaSeed: number | null, loadId: number | null): void {
-    const gen = ++this.generation;
-    /** Something newer replaced the world while this was decoding: drop it (a load request still gets its answer). */
+    const seq = ++this.requestSeq;
+    /** A newer request already installed its world: drop this one (a load request still gets its answer). */
     const overtaken = (): boolean => {
-      if (gen === this.generation) return false;
+      if (seq > this.installedSeq) return false;
       if (loadId !== null) this.post({ t: 'loaded', id: loadId, ok: false, error: 'Another sea was opened before this one finished loading.' });
       return true;
     };
@@ -360,7 +442,7 @@ export class Engine {
         return;
       }
       this.post({ t: 'error', message: `${why} Starting a new sea instead.` });
-      this.install(newSea(newSeaSeed ?? 1), false, undefined);
+      this.startNewSea(newSeaSeed ?? 1, seq);
     };
     decodeSave(data)
       .then((decoded) => {
@@ -368,13 +450,14 @@ export class Engine {
         let world: World;
         try {
           world = worldFromSave(decoded);
+          this.prepare(world);
         } catch (err) {
           fail(err);
           return;
         }
         const header = decoded.header.page ?? undefined;
         if (loadId !== null) this.post({ t: 'loaded', id: loadId, ok: true, header });
-        this.install(world, true, header);
+        this.install(world, true, header, seq);
       }, fail)
       .catch((err) => this.reportError(err));
   }
@@ -391,13 +474,24 @@ export class Engine {
     if (L.next < L.total) return;
     const w = this.world!;
     this.loader = null;
-    const life = w.eco.takeLife();
-    if (life) this.post({ t: 'life', life });
-    this.post({ t: 'journal', entries: w.eco.journalAll(), reset: true });
-    // Entries waiting to be streamed are already in the full journal just sent.
-    w.eco.takeJournal(this.journalOut);
+    // The sea is ready even if the ecology fails here (reported): the life summary is sent
+    // again when it next changes, and the game must never stay stuck on the loading screen.
+    try {
+      const life = w.eco.takeLife();
+      if (life) this.post({ t: 'life', life });
+    } catch (err) {
+      this.reportError(err);
+    }
+    try {
+      this.post({ t: 'journal', entries: w.eco.journalAll(), reset: true });
+      // Entries waiting to be streamed are already in the full journal just sent.
+      w.eco.takeJournal(this.journalOut);
+    } catch (err) {
+      this.reportError(err);
+    }
     this.journalOut.length = 0;
     this.ready = true;
+    this.everReady = true;
     this.post({ t: 'ready', resumed: L.resumed, year: w.eco.year, firstLand: w.eco.firstLand, glow: { x: w.glow.x, z: w.glow.z }, header: L.header });
   }
 
@@ -437,7 +531,11 @@ export class Engine {
         return;
       case 'cancel':
         this.stroke = null;
-        if (s && undo.latestId === s.record) this.undoLatest();
+        if (!s) return;
+        // A stroke that changed nothing leaves no record (closing drops it), and then
+        // there is nothing to take back: the stroke before it must stay.
+        undo.close();
+        if (undo.latestId === s.record) this.undoLatest();
         return;
     }
   }
@@ -471,7 +569,7 @@ export class Engine {
     };
   }
 
-  private save(id: number, page: PageSaveHeader): void {
+  private save(id: number, page: PageSaveHeader | null): void {
     const w = this.world;
     if (!w || !this.ready) {
       this.post({ t: 'saved', id, data: null, error: "The sea is still loading, so it can't be saved yet." });
@@ -501,23 +599,11 @@ export class Engine {
 
     // 1-2. The held stroke and the physics (paused while the page is hidden).
     if (!this.hidden) {
-      this.physAcc += dt;
-      const geoEnd = t0 + b.geo;
-      let steps = 0;
-      while (this.physAcc >= PHYS_STEP && steps < MAX_STEPS) {
-        if (steps > 0 && now() >= geoEnd) break;
-        this.physAcc -= PHYS_STEP;
-        steps++;
-        const s = this.stroke;
-        if (s) w.geo.applyTool(s.tool, s.x, s.z, s.radius, PHYS_STEP, s.strength);
-        const st = w.geo.step(PHYS_STEP, Math.max(MIN_STEP_MS, geoEnd - now()));
-        this.slid += st.slid;
-        this.lavaCols = st.lavaCols;
-        this.sandCols = st.sandCols;
+      try {
+        this.physics(w, dt, t0 + b.geo);
+      } catch (err) {
+        this.reportError(err);
       }
-      // Under load the physics runs slower rather than skipping ahead.
-      if (this.physAcc > PHYS_STEP) this.physAcc = PHYS_STEP;
-      this.physicsActive = !w.geo.isSettled();
       if (undo.isOpen && !this.stroke) {
         this.settleWait += dt;
         if (!this.physicsActive || this.settleWait >= RECORD_MAX_WAIT) undo.close();
@@ -525,30 +611,41 @@ export class Engine {
     }
     const t1 = now();
 
-    // 3. The ecology. Its own writes (soil, coast, reef, storms) never go into an undo record.
-    if (this.clockDirty) this.pushClock(w.eco);
+    // 3. The ecology. Its own writes (soil, coast, reef, storms) never go into an undo
+    // record; recording resumes even if it fails, so the held stroke stays undoable.
     undo.pauseRecording();
-    w.eco.advance(dt);
-    if (!this.hidden) w.eco.work(b.eco);
-    undo.resumeRecording();
+    try {
+      if (this.clockDirty) this.pushClock(w.eco);
+      w.eco.advance(dt);
+      if (!this.hidden) w.eco.work(b.eco);
+    } catch (err) {
+      this.reportError(err);
+    } finally {
+      undo.resumeRecording();
+    }
     const t2 = now();
 
-    // 4. Streams.
+    // 4. Streams, each on its own so one failing never holds up the others.
     const packEnd = t2 + b.pack;
-    this.colsStream.flush(dt, this.stroke !== null || this.physicsActive, packEnd);
-    this.ecoStream.flush(dt, packEnd);
-    this.lifeRate.advance(dt);
-    if (this.lifeRate.ready(LIFE_INTERVAL)) {
-      const life = w.eco.takeLife();
-      if (life) {
-        this.post({ t: 'life', life });
-        this.lifeRate.sent();
-      }
+    try {
+      this.colsStream.flush(dt, this.stroke !== null || this.physicsActive, packEnd);
+    } catch (err) {
+      this.reportError(err);
     }
-    w.eco.takeJournal(this.journalOut);
-    if (this.journalOut.length) {
-      this.post({ t: 'journal', entries: this.journalOut.slice() });
-      this.journalOut.length = 0;
+    try {
+      this.ecoStream.flush(dt, packEnd);
+    } catch (err) {
+      this.reportError(err);
+    }
+    try {
+      this.sendLife(w, dt);
+    } catch (err) {
+      this.reportError(err);
+    }
+    try {
+      this.sendJournal(w);
+    } catch (err) {
+      this.reportError(err);
     }
     const t3 = now();
 
@@ -557,10 +654,56 @@ export class Engine {
     this.sendTick(w, undo);
   }
 
+  /** Steps 1-2: apply the held stroke and step the physics (at most MAX_STEPS steps, until `geoEnd`). */
+  private physics(w: World, dt: number, geoEnd: number): void {
+    this.physAcc += dt;
+    let steps = 0;
+    while (this.physAcc >= PHYS_STEP && steps < MAX_STEPS) {
+      if (steps > 0 && now() >= geoEnd) break;
+      this.physAcc -= PHYS_STEP;
+      steps++;
+      const s = this.stroke;
+      if (s) w.geo.applyTool(s.tool, s.x, s.z, s.radius, PHYS_STEP, s.strength);
+      const st = w.geo.step(PHYS_STEP, Math.max(MIN_STEP_MS, geoEnd - now()));
+      this.slid += st.slid;
+      this.lavaCols = st.lavaCols;
+      this.sandCols = st.sandCols;
+    }
+    // Under load the physics runs slower rather than skipping ahead.
+    if (this.physAcc > PHYS_STEP) this.physAcc = PHYS_STEP;
+    this.physicsActive = !w.geo.isSettled();
+  }
+
+  /** The life summary, when it changed, at most once a second. */
+  private sendLife(w: World, dt: number): void {
+    this.lifeRate.advance(dt);
+    if (!this.lifeRate.ready(LIFE_INTERVAL)) return;
+    const life = w.eco.takeLife();
+    if (life) {
+      this.post({ t: 'life', life });
+      this.lifeRate.sent();
+    }
+  }
+
+  /** New journal entries, as soon as they are written. */
+  private sendJournal(w: World): void {
+    w.eco.takeJournal(this.journalOut);
+    if (this.journalOut.length) {
+      this.post({ t: 'journal', entries: this.journalOut.slice() });
+      this.journalOut.length = 0;
+    }
+  }
+
+  /** The budgets for this mode (worker or page, desktop or phone). */
+  private modeBudgets(): Budgets {
+    if (this.pageMode) return this.phone ? BUDGETS.pagePhone : BUDGETS.page;
+    return this.phone ? BUDGETS.workerPhone : BUDGETS.worker;
+  }
+
   /** This tick's budgets: the mode's own, scaled down if the caller allows less time. */
   private budgets(budgetMs: number): Budgets {
-    const base = this.pageMode ? (this.phone ? BUDGETS.pagePhone : BUDGETS.page) : this.phone ? BUDGETS.workerPhone : BUDGETS.worker;
-    const s = Math.min(1, budgetMs / (base.geo + base.eco + base.pack));
+    const base = this.modeBudgets();
+    const s = Math.min(1, budgetMs / totalOf(base));
     this.budget.geo = base.geo * s;
     this.budget.eco = base.eco * s;
     this.budget.pack = base.pack * s;
@@ -595,8 +738,6 @@ export class Engine {
     // tick. On the page the receiver gets our objects themselves, so it gets new ones.
     const fresh = this.pageMode;
     const ev = fresh ? emptyEvents() : this.events;
-    ev.steam.length = 0;
-    w.geo.takeSteam(ev.steam);
     const s = this.stroke;
     if (s) {
       const pour = fresh ? { tool: s.tool, x: 0, y: 0, z: 0, r: 0 } : this.pourOut;
@@ -609,19 +750,37 @@ export class Engine {
     } else {
       ev.pour = null;
     }
-    const lava = w.geo.lavaStats();
-    ev.lavaArea = lava.area;
-    for (let i = 0; i < 4; i++) ev.lavaGlow[i] = lava.glow[i];
     ev.sliding = this.slid;
     this.slid = 0;
-    ev.rockPlaced = w.geo.takeRockPlaced();
     ev.burned = this.burned;
     this.burned = 0;
+    // What geology and ecology have to tell is gathered separately: if one fails, its
+    // events are left empty for this tick and the message still goes.
+    ev.steam.length = 0;
+    try {
+      w.geo.takeSteam(ev.steam);
+      const lava = w.geo.lavaStats();
+      ev.lavaArea = lava.area;
+      for (let i = 0; i < 4; i++) ev.lavaGlow[i] = lava.glow[i];
+      ev.rockPlaced = w.geo.takeRockPlaced();
+    } catch (err) {
+      ev.steam.length = 0;
+      ev.lavaArea = 0;
+      ev.lavaGlow.fill(0);
+      ev.rockPlaced = 0;
+      this.reportError(err);
+    }
     ev.arrivals.length = 0;
-    w.eco.takeArrivals(ev.arrivals);
     ev.places.length = 0;
-    w.eco.takePlaces(ev.places);
-    const storm: StormState = w.eco.storm;
+    try {
+      w.eco.takeArrivals(ev.arrivals);
+      w.eco.takePlaces(ev.places);
+    } catch (err) {
+      ev.arrivals.length = 0;
+      ev.places.length = 0;
+      this.reportError(err);
+    }
+    const storm = w.eco.storm;
     this.post({
       t: 'tick',
       year: w.eco.year,
@@ -636,39 +795,45 @@ export class Engine {
 
   // ---------- debug and test operations ----------
 
+  /** A debug op. Every op answers with 'debugResult', also when it fails ({ ok: false, error }). */
   private debug(m: Extract<ToEngine, { t: 'debug' }>): void {
-    const answer = (data: unknown): void => this.post({ t: 'debugResult', id: m.id, data });
     const w = this.world;
     const undo = this.undo;
-    if (!w || !undo || !this.ready) {
-      answer({ ok: false, error: 'The sea is still loading.' });
-      return;
+    let data: unknown;
+    if (!w || !undo || !this.ready) data = { ok: false, error: 'The sea is still loading.' };
+    else {
+      try {
+        data = this.debugOp(m, w, undo);
+      } catch (err) {
+        data = { ok: false, error: messageOf(err) };
+      }
     }
+    this.post({ t: 'debugResult', id: m.id, data });
+  }
+
+  private debugOp(m: Extract<ToEngine, { t: 'debug' }>, w: World, undo: UndoStack): unknown {
     switch (m.op) {
       case 'advanceYears':
         undo.pauseRecording();
-        w.eco.debugAdvance(m.arg ?? 100);
-        undo.resumeRecording();
-        answer({ ok: true, year: w.eco.year });
-        return;
+        try {
+          w.eco.debugAdvance(m.arg ?? 100);
+        } finally {
+          undo.resumeRecording();
+        }
+        return { ok: true, year: w.eco.year };
       case 'stormNow':
         w.eco.debugStormNow();
-        answer({ ok: true, storm: { ...w.eco.storm } });
-        return;
+        return { ok: true, storm: { ...w.eco.storm } };
       case 'stats':
-        answer(this.stats(w, undo));
-        return;
+        return this.stats(w, undo);
       case 'hash':
-        answer(this.hashes(w));
-        return;
+        return this.hashes(w);
       case 'pour':
-        answer(this.scriptedPour(w, undo, m.tool ?? 'lava', m.x ?? w.glow.x, m.z ?? w.glow.z, m.radius ?? 10, m.seconds ?? 5));
-        return;
+        return this.scriptedPour(w, undo, m.tool ?? 'lava', m.x ?? w.glow.x, m.z ?? w.glow.z, m.radius ?? 10, m.seconds ?? 5);
       case 'settle': {
         const r = this.runUntilSettled(w);
         if (r.settled && !this.stroke) undo.close();
-        answer({ ok: true, ...r });
-        return;
+        return { ok: true, ...r };
       }
       case 'demoChain':
         // The whole ground is replaced: old undo records would mix two worlds.
@@ -676,8 +841,7 @@ export class Engine {
         undo.clear();
         buildDemoChain(w.cols);
         w.cols.markChanged(0, 0, NX - 1, NZ - 1, ChangeFlag.Geom | ChangeFlag.Look | ChangeFlag.Tool);
-        answer({ ok: true });
-        return;
+        return { ok: true };
     }
   }
 

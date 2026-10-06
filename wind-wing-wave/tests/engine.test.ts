@@ -3,21 +3,29 @@
  * order the page relies on, pausing, and the worker-with-page-fallback host.
  * (The bigger end-to-end checks live in src/checks/engineChecks.ts and run via checks.test.ts.)
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NP, NX, NZ, PACE_YPS } from '../src/config';
 import { PatchGrid } from '../src/eco/patches';
-import { ChangeFlag } from '../src/engine/columns';
-import { TICK_ACTIVE, TICK_IDLE } from '../src/engine/engine';
+import { ChangeFlag, Columns } from '../src/engine/columns';
+import { Engine, TICK_ACTIVE, TICK_IDLE } from '../src/engine/engine';
+import { Geo } from '../src/engine/geo/geo';
 import { startEngine } from '../src/engine/host';
 import type { FromEngine, ToEngine } from '../src/engine/protocol';
-import { SAVE_ERRORS, SaveError, applyFields, decodeRaw, decodeSave, encodeRaw } from '../src/engine/save';
+import { SAVE_ERRORS, SaveError, applyFields, crc32, decodeRaw, decodeSave, encodeRaw } from '../src/engine/save';
 import { DirtyTiles, RateLimit } from '../src/engine/streams';
+import { UndoStack } from '../src/engine/undo';
 import { Mirror, Rig, scriptLava, scriptedGrid, scriptedSaveSource } from '../src/checks/engineChecks';
 
 const SLOPE = { x: 110, z: 10 };
 
 async function deflate(raw: Uint8Array): Promise<ArrayBuffer> {
   return new Response(new Blob([raw as BlobPart]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer();
+}
+
+/** Re-stamp the checksum after editing a raw save on purpose (the SUM section is the last 12 bytes). */
+function reseal(raw: Uint8Array): Uint8Array {
+  new DataView(raw.buffer, raw.byteOffset, raw.byteLength).setUint32(raw.length - 4, crc32(raw.subarray(0, raw.length - 12)), true);
+  return raw;
 }
 
 async function saveError(p: Promise<unknown>): Promise<string> {
@@ -129,17 +137,42 @@ describe('save format', () => {
     const headerLen = dv.getUint32(6, true);
     const other = raw.slice();
     new DataView(other.buffer).setUint32(10 + headerLen + 8, 256, true);
-    expect(() => decodeRaw(other)).toThrow(SAVE_ERRORS.otherSize);
+    expect(() => decodeRaw(other)).toThrow(SAVE_ERRORS.damaged);
+    expect(() => decodeRaw(reseal(other))).toThrow(SAVE_ERRORS.otherSize);
+  });
+
+  it('refuses a file whose bytes changed anywhere, even when everything else still fits', () => {
+    const raw = encodeRaw(scriptedSaveSource());
+    // One bit in the middle of the ground, in the life fields, and in the checksum itself.
+    for (const at of [raw.length >> 1, raw.length - 40, raw.length - 2]) {
+      const bad = raw.slice();
+      bad[at] ^= 8;
+      expect(() => decodeRaw(bad)).toThrow(SAVE_ERRORS.damaged);
+    }
+    // The checksum section missing altogether (a file from before it, or cut exactly there).
+    expect(() => decodeRaw(raw.subarray(0, raw.length - 12))).toThrow(SAVE_ERRORS.damaged);
   });
 
   it('skips sections it does not know (added by later versions)', () => {
     const raw = encodeRaw(scriptedSaveSource());
+    // An extra section goes before the checksum, which is always last.
+    const body = raw.length - 12;
     const extra = new Uint8Array(raw.length + 8 + 5);
-    extra.set(raw);
+    extra.set(raw.subarray(0, body));
     const dv = new DataView(extra.buffer);
-    dv.setUint32(raw.length, 0x57454e21, true);
-    dv.setUint32(raw.length + 4, 5, true);
-    const d = decodeRaw(extra);
+    dv.setUint32(body, 0x57454e21, true);
+    dv.setUint32(body + 4, 5, true);
+    extra.set(raw.subarray(body), body + 8 + 5);
+    const d = decodeRaw(reseal(extra));
+    expect(d.header.seed).toBe(42);
+  });
+
+  it('a save without page state opens, with no page state', () => {
+    const src = scriptedSaveSource();
+    const header = { ...src.header } as Partial<typeof src.header>;
+    delete header.page; // as JSON.stringify writes a header whose page is undefined
+    const d = decodeRaw(encodeRaw({ ...src, header: header as typeof src.header }));
+    expect(d.header.page).toBeNull();
     expect(d.header.seed).toBe(42);
   });
 
@@ -349,6 +382,165 @@ describe('engine messages', () => {
   });
 });
 
+describe('undo records', () => {
+  it('a stroke that changed no ground leaves no record, and never pushes out a real one', () => {
+    const cols = new Columns();
+    const undo = new UndoStack(cols, scriptedGrid(), 3);
+    const c = cols.index(40, 40);
+    undo.begin();
+    cols.touch(c);
+    cols.rock[c] = 2;
+    for (let s = 0; s < 5; s++) {
+      undo.begin();
+      expect(undo.count).toBe(1); // the open, still-empty record isn't counted
+    }
+    undo.close();
+    expect(undo.count).toBe(1);
+    expect(undo.bytes).toBeGreaterThan(0);
+    // One press undoes the real stroke, even straight after an empty one.
+    undo.begin();
+    expect(undo.undo((_n, snap) => snap)).toEqual([2 + 2 * 32]);
+    expect(cols.rock[c]).toBe(0);
+    expect(undo.count).toBe(0);
+    expect(undo.bytes).toBe(0);
+  });
+
+  it('copies the life under a reported change wider than the ground written', () => {
+    const rig = Rig.start({ demo: true });
+    rig.send({ t: 'pause', on: true, hidden: false });
+    const life = rig.grid.add('test-cover', (n) => new Float32Array(n));
+    // Stand-in for an ecology that burns life over the whole reported rectangle.
+    rig.cols.addListener((i0, k0, i1, k1, flags) => {
+      if (!(flags & ChangeFlag.Burn)) return;
+      for (let k = k0; k <= k1; k++) for (let i = i0; i <= i1; i++) life[PatchGrid.ofColumn(i, k)] = 0;
+    });
+    const c = rig.cols.colAt(SLOPE.x, SLOPE.z);
+    const [ci, ck] = [c % NX, (c / NX) | 0];
+    const far = PatchGrid.ofColumn(ci + 40, ck + 40); // two blocks away: the stroke never writes there
+    life[far] = 0.6;
+    rig.stroke('start', 'lava', SLOPE.x, SLOPE.z);
+    rig.cols.touch(c);
+    rig.cols.lava[c] += 1;
+    rig.cols.markChanged(ci, ck, ci + 40, ck + 40, ChangeFlag.Geom | ChangeFlag.Burn | ChangeFlag.Tool);
+    expect(life[far]).toBe(0);
+    rig.stroke('end', 'lava', SLOPE.x, SLOPE.z);
+    rig.debug('settle');
+    rig.send({ t: 'undo' });
+    expect(life[far]).toBeCloseTo(0.6, 6);
+  });
+
+  it('through messages: empty strokes are not counted, and cancelling one keeps the stroke before it', () => {
+    const rig = Rig.start({ demo: true });
+    rig.send({ t: 'pause', on: true, hidden: false });
+    const before = rig.cols.hash();
+    rig.stroke('start', 'sand', SLOPE.x, SLOPE.z);
+    scriptLava(rig.cols, SLOPE.x, SLOPE.z, 8, 1);
+    rig.stroke('end', 'sand', SLOPE.x, SLOPE.z);
+    rig.run(0.2);
+    const poured = rig.cols.hash();
+    for (let s = 0; s < 3; s++) {
+      rig.stroke('start', 'hands', SLOPE.x, SLOPE.z);
+      rig.run(0.2);
+      rig.stroke('end', 'hands', SLOPE.x, SLOPE.z);
+      rig.run(0.2);
+    }
+    expect(rig.undoCount).toBe(1);
+    rig.stroke('start', 'scoop', SLOPE.x, SLOPE.z);
+    rig.run(0.1);
+    rig.stroke('cancel', 'scoop', SLOPE.x, SLOPE.z);
+    expect(rig.cols.hash()).toBe(poured);
+    rig.send({ t: 'undo' });
+    expect(rig.cols.hash()).toBe(before);
+  });
+});
+
+describe('loading order and failures', () => {
+  const settings = { pace: 'normal', gentleStorms: false } as const;
+
+  it('a bad load while the starting save decodes never leaves the game without a sea', async () => {
+    const src = Rig.start({ demo: true });
+    src.send({ t: 'save', id: 1, header: { camera: [], dayPhase: 0 } });
+    await vi.waitFor(() => expect(src.of('saved')[0]?.data).toBeTruthy());
+    const good = src.of('saved')[0].data!;
+    const rig = new Rig();
+    rig.send({ t: 'init', save: good, seed: 2, settings });
+    rig.send({ t: 'load', id: 5, data: new Uint8Array([9, 9, 9, 9, 9, 9, 9]).buffer });
+    await rig.loadAsync();
+    expect(rig.of('loaded').find((m) => m.id === 5)?.ok).toBe(false);
+    expect(rig.of('ready').at(-1)?.resumed).toBe(true);
+    expect(rig.cols.hash()).toBe((await decodeSave(good)).cols.hash());
+  });
+
+  it('a later good load wins over a starting save that finishes after it', async () => {
+    const a = Rig.start({ demo: true });
+    a.send({ t: 'save', id: 1, header: { camera: [1], dayPhase: 0 } });
+    const b = Rig.start({ seed: 7 });
+    b.send({ t: 'save', id: 1, header: { camera: [2], dayPhase: 0 } });
+    await vi.waitFor(() => expect(a.of('saved')[0]?.data && b.of('saved')[0]?.data).toBeTruthy());
+    const rig = new Rig();
+    rig.send({ t: 'init', save: a.of('saved')[0].data!, seed: 2, settings });
+    rig.send({ t: 'load', id: 6, data: b.of('saved')[0].data! });
+    await vi.waitFor(() => expect(rig.of('loaded').length).toBe(1));
+    await rig.loadAsync();
+    await new Promise((r) => setTimeout(r, 50));
+    rig.load();
+    expect(rig.of('loaded')[0].ok).toBe(true);
+    expect(rig.of('ready').at(-1)?.header?.camera).toEqual([2]);
+    expect(rig.cols.hash()).toBe((await decodeSave(b.of('saved')[0].data!)).cols.hash());
+  });
+
+  it('a save made with no page header can be opened again', async () => {
+    const rig = Rig.start({ demo: true });
+    rig.send({ t: 'save', id: 1, header: undefined as unknown as { camera: number[]; dayPhase: number } });
+    await vi.waitFor(() => expect(rig.of('saved')[0]).toBeTruthy());
+    const data = rig.of('saved')[0].data;
+    expect(data).toBeTruthy();
+    const d = await decodeSave(data!);
+    expect(d.header.page).toBeNull();
+  });
+
+  it('a first sea that cannot be built is fatal when asked (a worker hands over to the page), otherwise reported', () => {
+    const spy = vi.spyOn(Geo.prototype, 'generateSeabed').mockImplementation(() => {
+      throw new Error('no memory for the seabed');
+    });
+    try {
+      const fatal: unknown[] = [];
+      const msgs: FromEngine[] = [];
+      const e = new Engine((m) => msgs.push(m), { onFatal: (err) => fatal.push(err) });
+      e.handle({ t: 'init', save: null, seed: 1, settings });
+      expect(fatal.length).toBe(1);
+      expect(msgs.some((m) => m.t === 'clear' || m.t === 'ready')).toBe(false);
+      const page: FromEngine[] = [];
+      new Engine((m) => page.push(m)).handle({ t: 'init', save: null, seed: 1, settings });
+      expect(page.map((m) => m.t)).toEqual(['error']);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('after the first sea, a reset that cannot be built keeps the current sea (and is not fatal)', () => {
+    const fatal: unknown[] = [];
+    const msgs: FromEngine[] = [];
+    const e = new Engine((m) => msgs.push(m), { onFatal: (err) => fatal.push(err) });
+    e.handle({ t: 'init', save: null, seed: 1, settings });
+    for (let i = 0; i < 50 && !e.isReady; i++) e.tick(TICK_ACTIVE, 40);
+    e.handle({ t: 'debug', id: 1, op: 'demoChain' });
+    const hash = e.columns!.hash();
+    const spy = vi.spyOn(Geo.prototype, 'generateSeabed').mockImplementation(() => {
+      throw new Error('no memory for the seabed');
+    });
+    try {
+      e.handle({ t: 'reset', seed: 4 });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fatal.length).toBe(0);
+    expect(e.isReady).toBe(true);
+    expect(e.columns!.hash()).toBe(hash);
+    expect(msgs.filter((m) => m.t === 'error').length).toBe(1);
+  });
+});
+
 describe('host', () => {
   const g = globalThis as unknown as { Worker?: unknown; __WORKER_SOURCE__?: string };
   afterEach(() => {
@@ -363,6 +555,23 @@ describe('host', () => {
     host.send({ t: 'init', save: null, seed: 1, settings: { pace: 'normal', gentleStorms: false } });
     for (let i = 0; i < 100 && !got.some((m) => m.t === 'ready'); i++) host.tick(1 / 60);
     expect(got.some((m) => m.t === 'ready')).toBe(true);
+  });
+
+  it('on the page, the engine keeps its own pace once the sea is ready (not every frame)', async () => {
+    const got: FromEngine[] = [];
+    const host = await startEngine((m) => got.push(m));
+    host.send({ t: 'init', save: null, seed: 1, settings: { pace: 'normal', gentleStorms: false } });
+    for (let i = 0; i < 100 && !got.some((m) => m.t === 'ready'); i++) host.tick(1 / 60);
+    const ticks = (): number => got.filter((m) => m.t === 'tick').length;
+    const idle0 = ticks();
+    for (let f = 0; f < 120; f++) host.tick(1 / 60); // two quiet seconds
+    expect(ticks() - idle0).toBeGreaterThanOrEqual(18);
+    expect(ticks() - idle0).toBeLessThanOrEqual(21);
+    host.send({ t: 'stroke', phase: 'start', tool: 'lava', x: 0, z: 0, radius: 8, strength: 1 });
+    const busy0 = ticks();
+    for (let f = 0; f < 60; f++) host.tick(1 / 60); // one second holding a stroke
+    expect(ticks() - busy0).toBeGreaterThanOrEqual(28);
+    expect(ticks() - busy0).toBeLessThanOrEqual(31);
   });
 
   it('falls back to the page if the background thread fails before the sea is ready', async () => {

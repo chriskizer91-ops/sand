@@ -19,16 +19,35 @@ export interface EngineHost {
 /** How long the background thread gets to say hello before we give up on it (ms). */
 const HELLO_TIMEOUT_MS = 4000;
 
-/** An engine running on the page itself. */
+/** Slack when comparing summed frame times with the engine's tick interval (s): frames are never exactly on time. */
+const PACE_SLACK = 0.002;
+
+/**
+ * An engine running on the page itself. While the sea loads it ticks every frame (with most
+ * of the frame), so the world arrives quickly. After that it keeps the pace it would keep on
+ * a background thread (30 ticks a second while something moves, 10 when quiet): frame
+ * times are added up and the engine ticks once they reach its interval, so a quiet island
+ * costs the page as little as it would cost a background thread.
+ */
 function pageEngine(onMessage: (msg: FromEngine) => void): { send(msg: ToEngine): void; tick(dt: number): void } {
   const engine = new Engine((msg) => onMessage(msg));
   engine.setPageMode(true);
+  /** Frame time since the engine last ticked (s). */
+  let owed = 0;
   return {
     send: (msg) => engine.handle(msg),
     tick: (dt) => {
       try {
-        // While the world is loading use most of the frame; then keep it light.
-        engine.tick(dt, engine.isReady ? PAGE_TICK_BUDGET_MS : LOADING_TICK_BUDGET_MS);
+        if (!engine.isReady) {
+          owed = 0;
+          engine.tick(dt, LOADING_TICK_BUDGET_MS);
+          return;
+        }
+        owed += dt;
+        if (owed + PACE_SLACK < engine.tickInterval()) return;
+        const elapsed = owed;
+        owed = 0;
+        engine.tick(elapsed, PAGE_TICK_BUDGET_MS);
       } catch (err) {
         engine.reportError(err);
       }

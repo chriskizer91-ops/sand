@@ -8,11 +8,17 @@
  * - A record closes when its stroke has ended and everything has settled (the engine
  *   decides, ARCHITECTURE §5.4). After that, nothing more is added to it: natural changes
  *   made later are never undone.
+ * - A record that changed no ground (Hands on ground that is already smooth, Scoop at the
+ *   lowest it may dig, a stroke faded to nothing at the edge of the sea) is dropped when it
+ *   closes and isn't counted while open. So pressing Undo always takes back something you
+ *   can see, and empty records never push real ones out of the 20 kept.
  * - Only the stroke is recorded. While the ecology works (soil, coast, reef, storms), the
  *   engine pauses recording, so those writes never enter a record.
  * - The life grid is never recorded on its own (its own `recordId` stays -1): the ecology
  *   writes to it all the time, and recording that would copy the whole grid every stroke.
- *   Instead the life blocks are copied exactly when the ground under them is first touched.
+ *   Instead the life blocks are copied when the ground under them is first touched, and
+ *   also under any changed rectangle the engine reports (capturePatchRect), before the
+ *   ecology reacts: whatever the stroke burns or buries is copied first.
  * - Limits: 20 records or 32 MB; the oldest are dropped first. The open record is never
  *   dropped (one record can't exceed the size of the whole world, about 10 MB).
  */
@@ -58,9 +64,10 @@ export class UndoStack {
     grid.beforeModify = null;
   }
 
-  /** Records that can be undone (including the open one). */
+  /** Records that can be undone (including the open one once it has changed some ground). */
   get count(): number {
-    return this.records.length;
+    const n = this.records.length;
+    return this.open && this.open.cols.length === 0 ? n - 1 : n;
   }
 
   /** Memory held by all records (bytes). */
@@ -89,14 +96,21 @@ export class UndoStack {
     this.records.push(rec);
     this.open = rec;
     this.cols.recordId = rec.id;
-    this.trim();
     return rec.id;
   }
 
-  /** Close the open record: later changes belong to no record. */
+  /**
+   * Close the open record: later changes belong to no record. A record that changed no
+   * ground is dropped here, so only the open record can ever be empty.
+   */
   close(): void {
+    const rec = this.open;
     this.open = null;
     this.cols.recordId = -1;
+    if (rec && rec.cols.length === 0) {
+      this.records.pop();
+      this.totalBytes -= rec.bytes;
+    }
   }
 
   /** Stop recording for a moment (the ecology is about to write). */
@@ -110,7 +124,8 @@ export class UndoStack {
   }
 
   /**
-   * Undo the newest record (closing it first if it is still open). Returns the column
+   * Undo the newest record (closing it first if it is still open; an open record that
+   * changed nothing is dropped, so this undoes the stroke before it). Returns the column
    * blocks that were restored, or null if there is nothing to undo. The caller reports the
    * restored blocks as changed (so the page and the ecology catch up).
    */
@@ -131,20 +146,46 @@ export class UndoStack {
     this.totalBytes = 0;
   }
 
+  /**
+   * Copy the life under a changed column rectangle (inclusive) that isn't copied yet, if a
+   * record is recording. The engine calls this for every reported change before the
+   * ecology reacts to it, so life is safe even where a change is reported over a wider
+   * rectangle than the column blocks actually written.
+   */
+  capturePatchRect(i0: number, k0: number, i1: number, k1: number): void {
+    const rec = this.recording();
+    if (!rec) return;
+    if (this.copyLife(rec, i0, k0, i1, k1)) this.trim();
+  }
+
+  /** The open record, if writes are being recorded into it right now. */
+  private recording(): UndoRecord | null {
+    const rec = this.open;
+    return rec && this.cols.recordId === rec.id ? rec : null;
+  }
+
   /** Columns.beforeModify: copy a column block, and the life blocks over it, before the first write. */
   private capture(block: number): void {
-    const rec = this.open;
-    if (!rec || this.cols.recordId !== rec.id) return;
+    const rec = this.recording();
     // A block can come back here after recording was paused and resumed; the first copy wins.
-    if (rec.colSeen.has(block)) return;
+    if (!rec || rec.colSeen.has(block)) return;
     rec.colSeen.add(block);
     rec.cols.push(this.cols.snapshotBlock(block));
-    let bytes = COL_BLOCK_BYTES;
+    rec.bytes += COL_BLOCK_BYTES;
+    this.totalBytes += COL_BLOCK_BYTES;
     const [i0, k0, i1, k1] = Columns.blockRect(block);
-    const pb0x = Math.floor(i0 / PATCH / PATCH_BLOCK);
-    const pb1x = Math.floor(i1 / PATCH / PATCH_BLOCK);
-    const pb0z = Math.floor(k0 / PATCH / PATCH_BLOCK);
-    const pb1z = Math.floor(k1 / PATCH / PATCH_BLOCK);
+    this.copyLife(rec, i0, k0, i1, k1);
+    this.trim();
+  }
+
+  /** Copy the not-yet-copied life blocks over a column rectangle into a record. Returns whether any were copied. */
+  private copyLife(rec: UndoRecord, i0: number, k0: number, i1: number, k1: number): boolean {
+    const side = PATCH * PATCH_BLOCK; // columns per life block side
+    const pb0x = Math.max(0, Math.floor(i0 / side));
+    const pb1x = Math.min(PBLOCKS - 1, Math.floor(i1 / side));
+    const pb0z = Math.max(0, Math.floor(k0 / side));
+    const pb1z = Math.min(PBLOCKS - 1, Math.floor(k1 / side));
+    let bytes = 0;
     for (let bz = pb0z; bz <= pb1z; bz++) {
       for (let bx = pb0x; bx <= pb1x; bx++) {
         const pb = bx + bz * PBLOCKS;
@@ -157,12 +198,15 @@ export class UndoStack {
     }
     rec.bytes += bytes;
     this.totalBytes += bytes;
-    this.trim();
+    return bytes > 0;
   }
 
-  /** Drop the oldest records until within the limits (the open record is always the newest, so it stays). */
+  /**
+   * Drop the oldest records until within the limits. The open record is always the newest,
+   * so it stays; while it is still empty it doesn't count against the 20.
+   */
   private trim(): void {
-    while (this.records.length > 1 && (this.records.length > this.maxRecords || this.totalBytes > this.maxBytes)) {
+    while (this.records.length > 1 && (this.count > this.maxRecords || this.totalBytes > this.maxBytes)) {
       const old = this.records.shift()!;
       this.totalBytes -= old.bytes;
     }

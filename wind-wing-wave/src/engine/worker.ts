@@ -5,6 +5,10 @@
  * sliding sand, a held stroke) and 10 times a second when the island is quiet, so a resting
  * phone isn't kept busy. A message that needs the fast pace (a stroke starting) brings the
  * next tick forward instead of waiting out a quiet-time pause.
+ *
+ * Until the first sea is ready, any failure here (building the sea, or sending it to the
+ * page) crashes this thread on purpose: the page sees the crash and runs the engine itself
+ * (host.ts), so a problem only this thread has never leaves the game stuck loading.
  */
 import { Engine, LOADING_TICK_BUDGET_MS, WORKER_TICK_BUDGET_MS } from './engine';
 import type { FromEngine, ToEngine } from './protocol';
@@ -14,7 +18,14 @@ const scope = self as unknown as {
   onmessage: ((e: MessageEvent<ToEngine>) => void) | null;
 };
 
-const engine = new Engine((msg, transfer) => scope.postMessage(msg, transfer ?? []));
+/** Crash the thread: thrown from a timer, the error reaches the page's `onerror` (host.ts). */
+function crash(err: unknown): void {
+  setTimeout(() => {
+    throw err;
+  });
+}
+
+const engine = new Engine((msg, transfer) => scope.postMessage(msg, transfer ?? []), { onFatal: crash });
 
 /** Start of the last tick (ms), when the next one is due, and its timer. */
 let last = performance.now();

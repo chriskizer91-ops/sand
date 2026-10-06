@@ -11,6 +11,7 @@
  *     ECO   u32 length + the ecology's own state as JSON, then u32 field count and, for every
  *           persistent life-grid field: u16 name length, name, u8 element type,
  *           u32 byte length, raw bytes
+ *     SUM   always last: u32 CRC-32 of every byte before this section
  *
  * The whole thing is compressed with deflate (CompressionStream 'deflate-raw'); a sea is
  * typically well under 2 MB.
@@ -23,6 +24,10 @@
  *   smooth ground into runs of small numbers that compress very well.
  * - Loading builds a brand-new world and only swaps it in when everything checked out, so
  *   a damaged or foreign file can never leave a half-loaded sea.
+ * - 'deflate-raw' has no checksum of its own: a file damaged by a single flipped bit often
+ *   still unpacks to the right length, just with wrong ground or life in it. The SUM
+ *   section catches that (and a file cut short), so a damaged save is refused instead of
+ *   quietly opening a different sea.
  * - Life-grid fields are stored by name, so the ecology can add fields in later versions;
  *   fields a save doesn't have keep their fresh values.
  */
@@ -36,6 +41,11 @@ export const SAVE_FORMAT = 1;
 const MAGIC = 'WWWS';
 const TAG_COLS = tag('COLS');
 const TAG_ECO = tag('ECO ');
+const TAG_SUM = tag('SUM ');
+/** The SUM section: tag, length, CRC-32. */
+const SUM_BYTES = 12;
+/** Magic, format and header length: the smallest start a save can have. */
+const START_BYTES = 10;
 /** Bytes per column in the COLS section: rock 2, sand 2, lava 2, temperature 1, sand kind 1, rock kind 1. */
 const COL_BYTES = 9;
 /**
@@ -137,7 +147,7 @@ export function encodeRaw(src: SaveSource): Uint8Array {
   const colsLen = 8 + n * COL_BYTES;
   let ecoLen = 4 + ecoJson.length + 4;
   for (let f = 0; f < fields.length; f++) ecoLen += 2 + names[f].length + 1 + 4 + fields[f].arr.byteLength;
-  const out = new Uint8Array(4 + 2 + 4 + header.length + 8 + colsLen + 8 + ecoLen);
+  const out = new Uint8Array(START_BYTES + header.length + 8 + colsLen + 8 + ecoLen + SUM_BYTES);
   const dv = new DataView(out.buffer);
   let o = 0;
   for (let i = 0; i < 4; i++) out[o++] = MAGIC.charCodeAt(i);
@@ -182,6 +192,11 @@ export function encodeRaw(src: SaveSource): Uint8Array {
     out.set(bytesOf(arr), o);
     o += arr.byteLength;
   }
+
+  // SUM
+  dv.setUint32(o, TAG_SUM, true);
+  dv.setUint32(o + 4, 4, true);
+  dv.setUint32(o + 8, crc32(out.subarray(0, o)), true);
   return out;
 }
 
@@ -291,12 +306,17 @@ class Reader {
 
 /** Decode an uncompressed save into fresh objects. Throws SaveError with a plain message. */
 export function decodeRaw(raw: Uint8Array): DecodedSave {
-  const r = new Reader(raw);
-  if (raw.length < 10) throw new SaveError(SAVE_ERRORS.notASave);
-  for (let i = 0; i < 4; i++) if (r.u8() !== MAGIC.charCodeAt(i)) throw new SaveError(SAVE_ERRORS.notASave);
-  const format = r.u16();
+  if (raw.length < START_BYTES) throw new SaveError(SAVE_ERRORS.notASave);
+  for (let i = 0; i < 4; i++) if (raw[i] !== MAGIC.charCodeAt(i)) throw new SaveError(SAVE_ERRORS.notASave);
+  const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  const format = dv.getUint16(4, true);
   if (format > SAVE_FORMAT) throw new SaveError(SAVE_ERRORS.newer);
   if (format < 1) throw new SaveError(SAVE_ERRORS.notASave);
+  // Nothing is read until the checksum confirms every byte is as it was saved.
+  const end = raw.length - SUM_BYTES;
+  if (end < START_BYTES || dv.getUint32(end, true) !== TAG_SUM || dv.getUint32(end + 4, true) !== 4) throw new SaveError(SAVE_ERRORS.damaged);
+  if (dv.getUint32(end + 8, true) !== crc32(raw.subarray(0, end))) throw new SaveError(SAVE_ERRORS.damaged);
+  const r = new Reader(raw, 6, end);
   const header = parseHeader(r.take(r.u32()));
   let cols: Columns | null = null;
   let eco: { eco: EcoSave; fields: SavedField[] } | null = null;
@@ -340,7 +360,8 @@ function parseHeader(bytes: Uint8Array): SaveHeader {
     throw new SaveError(SAVE_ERRORS.damaged);
   }
   if (!isRecord(h) || !isRecord(h.glow)) throw new SaveError(SAVE_ERRORS.damaged);
-  const page = h.page;
+  // A save made without page state has none (older or scripted saves may leave the key out).
+  const page = h.page ?? null;
   if (page !== null && !isRecord(page)) throw new SaveError(SAVE_ERRORS.damaged);
   return {
     format: finite(h.format),
@@ -455,6 +476,27 @@ export function patchesHash(grid: PatchGrid): number {
     for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 16777619) >>> 0;
   }
   return h >>> 0;
+}
+
+// ---------- checksum ----------
+
+/** CRC-32 lookup table (the common IEEE polynomial), built on first use. */
+let crcTable: Uint32Array | null = null;
+
+/** CRC-32 of a byte range: any single damaged byte, or burst of damage, changes it. */
+export function crc32(bytes: Uint8Array): number {
+  let t = crcTable;
+  if (!t) {
+    t = crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      t[n] = c >>> 0;
+    }
+  }
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = t[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
 }
 
 // ---------- compression ----------
