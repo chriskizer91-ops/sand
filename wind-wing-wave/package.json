@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "browser-check": "node e2e/browser-check.mjs",
     "look": "node e2e/look.mjs",
-    "simulate": "node --experimental-strip-types tools/simulate.ts",
+    "simulate": "esbuild tools/simulate.ts --bundle --platform=node --format=esm --outfile=dist/simulate.mjs --log-level=warning && node dist/simulate.mjs",
     "check": "npm run typecheck && npm test && npm run build && npm run browser-check"
   },
   "dependencies": {

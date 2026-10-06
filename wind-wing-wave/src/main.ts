@@ -60,7 +60,8 @@ const quality: Quality = {
 
 const fields = new WorldFields();
 const u = createWorldUniforms(fields);
-const deps: SystemDeps = { renderer, scene, camera, fields, u, quality, species: SPECIES, isTouch };
+const prefs = { fewerFlashes: settings.fewerFlashes, sound: settings.sound, dayMode: 'cycle' as const, vibration: settings.vibration, volume: 1 };
+const deps: SystemDeps = { renderer, scene, camera, fields, u, quality, species: SPECIES, isTouch, prefs };
 
 // ---------- page systems (update order matters: ARCHITECTURE §6.1) ----------
 

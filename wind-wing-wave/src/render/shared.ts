@@ -174,6 +174,18 @@ export interface PageSystem {
   dispose?(): void;
 }
 
+/** Player preferences that systems read live (main.ts keeps this object up to date). */
+export interface PagePrefs {
+  /** Softer lightning, no sky flashes. */
+  fewerFlashes: boolean;
+  sound: boolean;
+  /** Sky clock: 'cycle' (default), 'day' (always midday), 'golden' (always golden hour). */
+  dayMode: 'cycle' | 'day' | 'golden';
+  vibration: boolean;
+  /** Master volume 0..1. */
+  volume: number;
+}
+
 /** What every system factory receives. */
 export interface SystemDeps {
   renderer: THREE.WebGLRenderer;
@@ -184,6 +196,7 @@ export interface SystemDeps {
   quality: Quality;
   species: readonly SpeciesDef[];
   isTouch: boolean;
+  prefs: PagePrefs;
 }
 
 /** Add the shared uniforms (by reference) to a shader in onBeforeCompile. */
