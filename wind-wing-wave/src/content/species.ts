@@ -18,6 +18,27 @@
  * an animal, a voice, or a water effect (brine shrimp turn salt ponds pink; plankton glow).
  * There are no cave species, because the ground has no caves (DECISIONS 2).
  *
+ * Left out on purpose (from the research lists in docs/design-notes, ecology.md §12 and
+ * look-and-sound.md §5.3), and why:
+ *   - Nothing to see or hear at play distance: midges and flies, ants, drywood termites, fig wasps
+ *     (so the strangler fig asks only for trees and the birds that sow it), the wēkiu bug, pond
+ *     snails, stream shrimp and the climbing goby, the sea urchin and the cleaner wrasse.
+ *   - Need caves, which this ground never makes: the cave swiftlet and cave crickets.
+ *   - Folded into a species that shows the same story better: fire moss into woolly moss; the
+ *     anole and skinks into the mourning gecko and lava lizard; the marine iguana into the lava
+ *     lizard (the rocky shore); land, hermit and fiddler crabs into the ghost crab, Sally Lightfoot
+ *     and coconut crab; the golden orb-weaver into the ballooning spider; carpenter bees and hawk
+ *     moths into the yellow-faced bee and the pea-blue butterfly; the rafted tree frog into the
+ *     coquí; the bananaquit into the silvereye; reef fish into the chromis and parrotfish.
+ *   - A second species for a job already done: the brown pelican (the boobies and frigatebirds
+ *     already fish here), the rail and the ground dove (the megapode and fruit dove fill their
+ *     places), the hummingbird (an Americas bird; the ʻapapane and the bee pollinate here), the
+ *     parrot and the short-eared owl (the fruit doves, pigeons and bats already reward a grown
+ *     forest), and sandalwood (a root parasite that looks like any small tree).
+ *   So no species uses the cicada, frog-croak, hoot, click or rustle voices (the sound engine may
+ *   keep them for ambience), and there is no parrot or ground dove: the night chorus is tree
+ *   crickets, geckos and coquí, and the coos are the fruit dove and the imperial pigeon.
+ *
  * How to read the `eco` numbers (the shared assumptions with the ecology, WP-D1):
  *   - `rate` is arrival attempts per century at the reference island. At normal pace a century
  *     passes in 50 real seconds, so rate 2 means about one attempt every 25 s there. Small new
@@ -32,9 +53,17 @@
  *   - Moisture runs 0 (bone dry) .. 0.3 (a dry rain shadow) .. 0.5 (a low island) ..
  *     0.75 (the rainy windward side) .. 0.9 (cloud mist) .. 1 (standing water).
  *     Salt spray runs 1 at a windward waterline to 0 well inland.
+ *   - For sea plants (`marine`: coral, coralline algae, seagrass, mangroves) `substrate` is the
+ *     material of the sea BOTTOM under the water: rock (basalt, stone, limestone) is a hard
+ *     bottom, sand a soft one. The starting seabed is all sand, so coral and coralline algae
+ *     (rock only) wait for the player to make shallow rock, and seagrass and mangroves (sand
+ *     only) never grow on a bare lava shelf.
  *   - Plants' `habitats` mean "this patch's habitat is one of these". Animals' `habitats` mean
  *     "the island has at least `minPatches` patches whose habitat is one of these". `places` and
  *     `requires` must all be present. No plant needs a habitat that only it can create.
+ *   - An animal's `where` (where the page shows it) holds every habitat its `habitats` accept,
+ *     so a species that has settled can always be seen; one with no habitat needs at all (the
+ *     ballooning spider) shows on any kind of land.
  *   - `mainNeed` is the reason its first "couldn't stay" story gives; `text.seen` says the same
  *     thing in the species' own words.
  *
@@ -1164,13 +1193,13 @@ const DRAFTS: Draft[] = [
     },
     hint: [
       'A tree that stands in the sea on stilts.',
-      'Needs calm, shallow, sheltered water at the shore.',
-      'Red mangrove: shelter a shallow bay with headlands or islands so the waves stay small.',
+      'Needs calm, shallow, sheltered water over a sandy bottom.',
+      'Red mangrove: shelter a shallow sandy bay with headlands or islands so the waves stay small.',
     ],
-    needs: 'Needs calm, shallow water at the shore.',
+    needs: 'Needs calm, shallow water over sand.',
     eco: {
       rate: 0.6, reach: 0.8, hop: 1500,
-      substrate: [S.Sea, S.Sand], depth: [0, 1.5], alt: [-1.5, 0.8], saltMax: 1, slopeMax: 15, shade: 0.3,
+      substrate: [S.Sand], depth: [0, 1.5], alt: [-1.5, 0.8], saltMax: 1, slopeMax: 15, shade: 0.3,
       places: ['mangrove-shore'],
       grow: 150, life: 100, spread: 0.8,
       gives: { nests: 0.6, soil: 0.03 },
@@ -1197,13 +1226,13 @@ const DRAFTS: Draft[] = [
     },
     hint: [
       'A tree whose roots stick up out of the mud like snorkels.',
-      'Needs the muddy edge of a salt pond near the sea.',
-      'Black mangrove: make a shallow salt pond just behind a low shore.',
+      'Needs a low sandy shore beside a salt pond.',
+      'Black mangrove: make a shallow salt pond just behind a low sandy shore.',
     ],
-    needs: 'Needs the edge of a salt pond by the sea.',
+    needs: 'Needs sandy ground by a salt pond.',
     eco: {
       rate: 0.4, reach: 0.7, hop: 1500,
-      substrate: [S.Sand, S.Sea], depth: [0, 0.5], alt: [-0.5, 1.5], saltMax: 1, slopeMax: 15, shade: 0.2,
+      substrate: [S.Sand], depth: [0, 0.5], alt: [-0.5, 1.5], saltMax: 1, slopeMax: 15, shade: 0.2,
       places: ['salt-pond'],
       grow: 150, life: 80, spread: 0.6,
       gives: { nests: 0.4, soil: 0.02 },
@@ -1228,7 +1257,7 @@ const DRAFTS: Draft[] = [
     fact: 'This pink “living cement” glues reefs together, and young corals choose to settle on it.',
     text: {
       arrive: 'Pink crusts paint the rocks under the water at {place}.',
-      seen: 'Coralline algae drifted past {isl}, but the water there was too deep for them.',
+      seen: 'Coralline algae drifted past {isl}, but found only sand below the waves, with no shallow rock to paint.',
       back: 'There is shallow rock under the water now, and pink crusts have painted it.',
       lost: 'The pink crusts are gone from your reefs. Shallow rocks will gather them again.',
     },
@@ -1240,7 +1269,7 @@ const DRAFTS: Draft[] = [
     needs: 'Needs shallow rock under clear water.',
     eco: {
       rate: 2, reach: 1, hop: 2000,
-      substrate: [S.Sea], depth: [0, 15], saltMax: 1,
+      substrate: ROCK, depth: [0, 15], saltMax: 1,
       grow: 50, life: 100, spread: 2,
       gives: { sand: 0.1 },
       mainNeed: 'no-reef',
@@ -1267,12 +1296,12 @@ const DRAFTS: Draft[] = [
     hint: [
       'An underwater lawn for turtles.',
       'Needs calm, sandy shallows sheltered from the waves.',
-      'Turtle grass: enclose shallow water with land, as a lagoon or a sheltered bay.',
+      'Turtle grass: enclose shallow sandy water with land, as a lagoon or a sheltered bay.',
     ],
-    needs: 'Needs calm, sheltered shallows.',
+    needs: 'Needs calm, sandy shallows.',
     eco: {
       rate: 0.8, reach: 0.7, hop: 1500,
-      substrate: [S.Sea], depth: [0.5, 8], saltMax: 1,
+      substrate: [S.Sand], depth: [0.5, 8], saltMax: 1,
       habitats: [H.Lagoon, H.Seagrass, H.Sound],
       grow: 120, life: 60, spread: 1.5,
       mainNeed: 'no-lagoon',
@@ -1304,7 +1333,7 @@ const DRAFTS: Draft[] = [
     needs: 'Needs shallow rock under clear water.',
     eco: {
       rate: 0.8, reach: 0.8, hop: 1500,
-      substrate: [S.Sea], depth: [1, 15], saltMax: 1,
+      substrate: ROCK, depth: [1, 15], saltMax: 1,
       grow: 300, life: 200, spread: 0.8,
       gives: { sand: 0.3 },
       mainNeed: 'no-reef',
@@ -1810,7 +1839,7 @@ const DRAFTS: Draft[] = [
     guide: 'birds',
     roads: ['flight'],
     rarity: 'common',
-    animal: { model: A.Seabird, colors: [0xfafafa, 0x1a1a1a, 0x3a5ad0], size: 0.3, behaviour: 'colony', active: 'day', where: [H.Forest, H.Scrub], max: 10, speed: 7 },
+    animal: { model: A.Seabird, colors: [0xfafafa, 0x1a1a1a, 0x3a5ad0], size: 0.3, behaviour: 'colony', active: 'day', where: [H.Forest, H.WetForest, H.Scrub], max: 10, speed: 7 },
     voice: { kind: 'chirp', pitch: 2600, rate: 3, when: 'day', loud: 0.3 },
     fact: 'It lays its single egg on a bare branch with no nest at all, and the chick hatches with strong feet to hold on.',
     text: {
@@ -1872,7 +1901,7 @@ const DRAFTS: Draft[] = [
     guide: 'birds',
     roads: ['flight'],
     rarity: 'uncommon',
-    animal: { model: A.Seabird, colors: [0x2a2a2e, 0xf4f4f0, 0x2a2a2e], size: 0.43, behaviour: 'colony', active: 'any', where: [H.Beach, H.Dune, H.Grass], max: 30, speed: 9 },
+    animal: { model: A.Seabird, colors: [0x2a2a2e, 0xf4f4f0, 0x2a2a2e], size: 0.43, behaviour: 'colony', active: 'any', where: [H.Beach, H.Dune, H.Grass, H.BareRock], max: 30, speed: 9 },
     voice: { kind: 'colony', pitch: 1800, rate: 20, when: 'any', loud: 0.6 },
     fact: 'Young sooty terns stay out at sea for years, flying day and night without ever landing.',
     text: {
@@ -2089,6 +2118,7 @@ const DRAFTS: Draft[] = [
     roads: ['storm'],
     rarity: 'rare',
     animal: { model: A.Wader, colors: [0xf7f7f2, 0xe8c070, 0xe8c84a], size: 0.5, behaviour: 'wade', active: 'day', where: [H.Grass, H.Scrub], max: 4, speed: 0.4 },
+    // No voice on purpose: cattle egrets are almost silent away from their nesting colonies.
     fact: 'Cattle egrets crossed from Africa to South America on their own in the late 1800s, then spread across the Americas.',
     text: {
       arrive: 'A storm blew a cattle egret to {isl}; now it walks beside the tortoises, catching insects.',
@@ -2331,10 +2361,11 @@ const DRAFTS: Draft[] = [
     guide: 'birds',
     roads: ['flight'],
     rarity: 'rare',
-    animal: { model: A.Shorebird, colors: [0x4a3a2e, 0x6a6a6a, 0xe8a03a], size: 0.38, behaviour: 'graze', active: 'day', where: [H.Forest, H.Scrub], max: 3, speed: 0.4 },
+    animal: { model: A.Shorebird, colors: [0x4a3a2e, 0x6a6a6a, 0xe8a03a], size: 0.38, behaviour: 'graze', active: 'day', where: [H.Forest, H.WetForest, H.Scrub, H.BareRock], max: 3, speed: 0.4 },
+    voice: { kind: 'whistle', pitch: 900, rate: 2, when: 'dawn', loud: 0.35 },
     fact: 'It buries its eggs in ground warmed by the volcano and leaves them. The chicks dig out already feathered.',
     text: {
-      arrive: 'Megapodes dig at {place}, burying their eggs in the warm ground.',
+      arrive: 'Megapodes dig at {place}, leaving their eggs for the volcano’s heat to hatch.',
       seen: 'A megapode looked on {isl} for warm volcanic ground to bury its eggs in, and flew on.',
       back: 'There is warm ground beside the forest now, and the megapode came back to dig.',
       lost: 'The megapodes are gone. Warm volcanic ground by a forest will call them back.',
@@ -2364,7 +2395,11 @@ const DRAFTS: Draft[] = [
     guide: 'small',
     roads: ['wind'],
     rarity: 'common',
-    animal: { model: A.Spider, colors: [0x5a4a3a, 0xe8e0d0, 0x8a7a6a], size: 0.004, behaviour: 'web', active: 'any', where: [H.BareRock, H.Crust, H.Grass, H.Scrub], max: 3, speed: 0.05 },
+    animal: {
+      model: A.Spider, colors: [0x5a4a3a, 0xe8e0d0, 0x8a7a6a], size: 0.004, behaviour: 'web', active: 'any', max: 3, speed: 0.05,
+      // Any land at all, from the first bare rock or sand cay to the cloud forest.
+      where: [H.BareRock, H.Crust, H.Beach, H.Dune, H.RockShore, H.Cliff, H.Grass, H.Scrub, H.Forest, H.WetForest, H.CloudForest, H.Summit],
+    },
     fact: 'Nine months after Krakatau erupted in 1883, the only life found there was one tiny spider, spinning its web.',
     text: {
       arrive: 'A tiny spider sailed in on a silk thread and spun its first web on {place}.',
@@ -2391,19 +2426,18 @@ const DRAFTS: Draft[] = [
     sci: 'Caconemobius fori',
     kind: 'animal',
     guide: 'small',
-    roads: ['wind'],
-    rarity: 'common',
+    roads: ['raft'],
+    rarity: 'uncommon',
     animal: { model: A.Bee, colors: [0x2a2622, 0x4a4440, 0x8a8078], size: 0.012, behaviour: 'creep', active: 'night', where: [H.Crust, H.BareRock], max: 3, speed: 0.05 },
-    voice: { kind: 'cricket', pitch: 5200, rate: 20, when: 'night', loud: 0.25 },
-    fact: 'Lava crickets live on bare new lava, eating bits of life blown in on the wind, and move on once plants arrive.',
+    fact: 'Wingless and silent, lava crickets reach new lava within months and eat bits of life the wind drops there, then fade away once plants move in.',
     text: {
-      arrive: 'Lava crickets chirp in the cracks of {place} at night.',
+      arrive: 'Dark lava crickets forage in the cracks of {place} at night, eating what the wind brings.',
       seen: 'Lava crickets looked for fresh, bare lava on {isl}, but plants had already covered the rock.',
-      back: 'There is fresh lava again, and the lava crickets have come back to chirp in it.',
+      back: 'There is fresh lava again, and the lava crickets have come back to forage in its cracks.',
       lost: 'Your lava is all green now, so the lava crickets have gone. New lava will bring them back.',
     },
     hint: [
-      'A night singer that only lives on the newest, barest rock.',
+      'A silent night forager on the newest, barest rock.',
       'Needs fresh, bare lava with no plants yet.',
       'Lava cricket: pour a new lava field and let it cool.',
     ],
@@ -2725,7 +2759,7 @@ const DRAFTS: Draft[] = [
     guide: 'land',
     roads: ['raft'],
     rarity: 'common',
-    animal: { model: A.Lizard, colors: [0x5a5248, 0xd8603a, 0x2a2622], size: 0.2, behaviour: 'bask', active: 'day', where: [H.BareRock, H.Crust, H.RockShore], max: 6, speed: 1.5 },
+    animal: { model: A.Lizard, colors: [0x5a5248, 0xd8603a, 0x2a2622], size: 0.2, behaviour: 'bask', active: 'day', where: [H.BareRock, H.Crust, H.RockShore, H.Grass], max: 6, speed: 1.5 },
     fact: 'Male lava lizards do push-ups on warm rocks to warn rivals away from their patch.',
     text: {
       arrive: 'A lava lizard rode a branch ashore and now does push-ups on a warm rock of {place}.',
@@ -2902,7 +2936,7 @@ const DRAFTS: Draft[] = [
     guide: 'land',
     roads: ['flight'],
     rarity: 'uncommon',
-    animal: { model: A.Bat, colors: [0x8a7a6a, 0xd8d0c0, 0x4a3a2a], size: 0.12, behaviour: 'night-fly', active: 'night', where: [H.Pond, H.Forest, H.Grass], max: 3, speed: 6 },
+    animal: { model: A.Bat, colors: [0x8a7a6a, 0xd8d0c0, 0x4a3a2a], size: 0.12, behaviour: 'night-fly', active: 'night', where: [H.Pond, H.Marsh, H.Forest, H.WetForest, H.Grass], max: 3, speed: 6 },
     fact: 'The ʻōpeʻapeʻa is Hawaiʻi’s only native land mammal; its ancestors flew there from the Americas.',
     text: {
       arrive: 'A hoary bat flits over {place} at night, hunting moths.',
@@ -2931,7 +2965,7 @@ const DRAFTS: Draft[] = [
     guide: 'land',
     roads: ['flight'],
     rarity: 'rare',
-    animal: { model: A.Lizard, colors: [0x3a3a2e, 0xc8b860, 0x2a2a22], size: 1.8, behaviour: 'bask', active: 'day', where: [H.Beach, H.Forest, H.Mangrove, H.Stream], max: 2, speed: 0.7 },
+    animal: { model: A.Lizard, colors: [0x3a3a2e, 0xc8b860, 0x2a2a22], size: 1.8, behaviour: 'bask', active: 'day', where: [H.Beach, H.Forest, H.WetForest, H.Mangrove, H.Stream], max: 2, speed: 0.7 },
     fact: 'Water monitors swim well, even across the sea, and will eat almost anything, eggs included.',
     text: {
       arrive: 'A water monitor swam ashore on {place}. Ground-nesting birds may now prefer your islets.',
@@ -2947,7 +2981,7 @@ const DRAFTS: Draft[] = [
     needs: 'Needs a large forested island with water.',
     eco: {
       rate: 0.12, reach: 0.2, hop: 1500,
-      habitats: [H.Forest, H.WetForest, H.Stream, H.Mangrove, H.Pond], minPatches: 50, minArea: 40000, predator: true,
+      habitats: [H.Forest, H.WetForest, H.Stream, H.Mangrove], minPatches: 50, minArea: 40000, predator: true,
       grow: 120,
       mainNeed: 'too-small',
     },

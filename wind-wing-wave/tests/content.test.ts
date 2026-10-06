@@ -228,6 +228,21 @@ describe('species catalogue: shape', () => {
     }
   });
 
+  it('shows every settled animal: it spawns in every habitat its needs accept', () => {
+    // The page spawns animals only on patches matching `where` (ARCHITECTURE §6.7), so a habitat
+    // the ecology accepts but `where` leaves out would hide an animal that lives there.
+    const anyLand = [Habitat.BareRock, Habitat.Beach, Habitat.Dune, Habitat.RockShore, Habitat.Cliff, Habitat.Grass, Habitat.Scrub, Habitat.Forest, Habitat.WetForest];
+    for (const s of SPECIES) {
+      const a = s.animal;
+      if (!a) continue;
+      const e: EcoNeeds = s.eco;
+      for (const h of e.habitats ?? []) expect(a.where, `${s.key} lives in habitat ${h} but is never shown there`).toContain(h);
+      // No habitat, place or partner needs at all: it lives on any land, so it shows on any land
+      // (a sand cay's first animal must be visible on the sand).
+      if (!s.marine && !e.habitats && !e.places && !e.requires) for (const h of anyLand) expect(a.where, `${s.key} on habitat ${h}`).toContain(h);
+    }
+  });
+
   it('uses every plant model and every animal body plan', () => {
     const plantModels = new Set(SPECIES.map((s) => s.plant?.model).filter((m) => m !== undefined));
     const animalModels = new Set(SPECIES.map((s) => s.animal?.model).filter((m) => m !== undefined));
@@ -251,6 +266,15 @@ describe('species catalogue: shape', () => {
     const voiced = new Set(SPECIES.filter((s) => s.voice).map((s) => s.voice!.kind));
     for (const k of ['cricket', 'frog-coqui', 'gecko', 'bat', 'whale', 'seal', 'wail', 'colony', 'trill', 'coo'] as VoiceKind[]) expect(voiced.has(k), k).toBe(true);
     expect(SPECIES.filter((s) => s.guide === 'birds' && s.voice).length).toBeGreaterThanOrEqual(18);
+  });
+
+  it('gives every bird a voice except the ones that are really silent, and never sings for a silent animal', () => {
+    // Cattle egrets are almost silent away from their colonies; lava crickets have no wings to chirp with.
+    const silent = ['cattle-egret', 'lava-cricket'];
+    for (const k of silent) expect(speciesByKey(k)?.voice, k).toBeUndefined();
+    for (const s of SPECIES.filter((x) => x.guide === 'birds' && !silent.includes(x.key))) expect(s.voice, s.key).toBeDefined();
+    const cricket = speciesByKey('lava-cricket')!;
+    for (const [label, t] of textsOf(cricket)) expect(t, `lava-cricket ${label}`).not.toMatch(/\b(chirp\w*|sing\w*|songs?)\b/i);
   });
 
   it('has the two water effects: glowing plankton and pink brine shrimp ponds', () => {
@@ -372,6 +396,28 @@ describe('species catalogue: what life needs', () => {
     for (const s of SPECIES) visit(s.key, []);
   });
 
+  it('tells the sea plants which seabed they need (substrate = the bottom under the water)', () => {
+    const rock = [Substrate.Basalt, Substrate.Stone, Substrate.Limestone];
+    const subs = (k: string): number[] => eco(speciesByKey(k)!).substrate ?? [];
+    // Every sea plant names its bottom; "Sea" would mean any bottom, and the starting seabed is all sand.
+    for (const s of SPECIES.filter((x) => x.kind === 'plant' && x.marine)) {
+      const sub = eco(s).substrate;
+      expect(sub && sub.length > 0, `${s.key} names no seabed`).toBe(true);
+      expect(sub, s.key).not.toContain(Substrate.Sea);
+      expect(sub, s.key).not.toContain(Substrate.Pond);
+    }
+    // Reef builders need hard rock: the player must make shallow rock before a reef can start.
+    for (const k of ['coral', 'coralline']) {
+      expect(subs(k), k).not.toContain(Substrate.Sand);
+      expect(rock.every((r) => subs(k).includes(r)), k).toBe(true);
+    }
+    // Seagrass and mangroves root in soft sand, never on a bare rock shelf.
+    for (const k of ['turtle-grass', 'red-mangrove', 'black-mangrove']) {
+      expect(subs(k), k).toContain(Substrate.Sand);
+      for (const r of rock) expect(subs(k), k).not.toContain(r);
+    }
+  });
+
   it('never makes a plant wait for a habitat only it can create', () => {
     const forest = [Habitat.Forest, Habitat.WetForest, Habitat.CloudForest];
     for (const s of SPECIES.filter((x) => x.kind === 'plant')) {
@@ -390,7 +436,9 @@ describe('species catalogue: what life needs', () => {
     expect(SPECIES.filter((s) => eco(s).noPredators).length).toBeGreaterThanOrEqual(2);
   });
 
-  it('makes the beat sheet possible (ARCHITECTURE §4)', () => {
+  // These are the catalogue's side of the pacing: the right kinds of species exist, in the right
+  // order. The real timings are checked by tools/simulate.ts once the ecology runs this catalogue.
+  it('keeps the beat sheet within reach (ARCHITECTURE §4)', () => {
     const e = (k: string) => eco(speciesByKey(k)!);
     // ≤ 20 s: a wind pioneer that needs nothing but cool land.
     const pioneers = SPECIES.filter((s) => s.roads.includes('wind') && eco(s).rate >= 8);
@@ -515,6 +563,28 @@ describe('stories', () => {
     const other = entryText({ ...base, params: { reason: 'predators' } }, SPECIES, islandName);
     expect(other).toContain(reasonLine('predators'));
     expect(other).toContain('green turtle');
+  });
+
+  it('says how a storm’s castaway came: rafted on branches, or blown off course', () => {
+    const storm = (over: Partial<JournalEntry>): string => entryText({ id: 1, year: 9, kind: 'storm', island: 1, headline: true, ...over }, SPECIES, islandName);
+    const egret = speciesByKey('cattle-egret')!.id;
+    const iguana = speciesByKey('iguana')!.id;
+    // A storm-blown bird never "drifted ashore on a raft", however the ecology passes it.
+    for (const t of [storm({ species: egret }), storm({ params: { castaway: egret } }), storm({ species: egret, params: { raft: 1 } })]) {
+      expect(t).toContain('cattle egret');
+      expect(t).toContain('off its course');
+      expect(t).not.toMatch(/raft/i);
+    }
+    // A rafting lizard comes on the branches.
+    for (const t of [storm({ species: iguana }), storm({ params: { castaway: iguana } }), storm({ species: iguana, road: 'raft' })]) {
+      expect(t).toContain('raft of branches');
+      expect(t).toContain('green iguana');
+    }
+    // The ecology's road wins when it sends one.
+    expect(storm({ species: iguana, road: 'storm' })).toContain('off its course');
+    // A raft with nobody aboard still washes up.
+    expect(storm({ params: { raft: 1 } })).toContain('raft of tangled branches');
+    expect(storm({ params: { raft: 1 } })).not.toMatch(/bringing/);
   });
 
   it('fills every species line for every place without leaving holes', () => {

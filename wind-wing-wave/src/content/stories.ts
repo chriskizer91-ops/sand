@@ -20,7 +20,10 @@
  *                   otherwise a plain line built from reasonLine().
  *   return, lost    species, island, place.
  *   storm           island; params.great (1 = a great storm), params.fallen (trees felled),
- *                   params.castaway (species id that came on a raft).
+ *                   params.raft (1 = a raft of branches came ashore); the castaway it brought
+ *                   as species (or params.castaway), and how it came as road ('raft', or
+ *                   'storm' for a bird blown off course; if missing, the castaway's own roads
+ *                   decide: rafters and floaters came on the raft, everything else on the wind).
  *   place           place, island; params.waiting = a species id that visited before and
  *                   needed exactly this place.
  *   first           first (a FIRSTS key), species, island.
@@ -64,7 +67,7 @@ export const FIRSTS: FirstDef[] = [
   { key: 'first-tree', name: 'First tree', line: 'The first tree popped up.', hint: 'A palm on a beach, or ʻōhiʻa on wet lava.' },
   { key: 'first-return', name: 'First return', line: 'A visitor that couldn’t stay came back, and stayed.', hint: 'Build what a visitor needed; it will come back.' },
   { key: 'first-storm', name: 'First storm weathered', line: 'Your islands weathered their first storm.', hint: 'Storms come in the wet season, once shrubs grow.' },
-  { key: 'first-castaway', name: 'First castaway', line: 'A raft of storm-felled branches brought castaways ashore.', hint: 'Storms bring rafts to windward shores.' },
+  { key: 'first-castaway', name: 'First castaway', line: 'A storm brought the first castaway, rafted in on branches or blown far off its course.', hint: 'Storms bring rafts and lost birds to windward shores.' },
   { key: 'first-forest', name: 'First forest', line: 'Trees closed overhead into a forest.', hint: 'Give trees soil and rain, and time.' },
   { key: 'first-song', name: 'First song', line: 'The first birdsong rang out over your land.', hint: 'Songbirds need shrubs and trees.' },
   { key: 'first-cloud', name: 'First cloud', line: 'Your peak caught its first cloud; rain will fall on its windward side.', hint: 'Build a peak tall enough to catch the trade-wind clouds.' },
@@ -497,6 +500,16 @@ const HOP_WORDS: Record<Road, string> = {
   storm: 'was blown over by a storm',
 };
 
+/**
+ * Did a storm's castaway come on a raft of branches (rather than on the wind)? The ecology's
+ * road says so when it sends one; otherwise the species' own roads decide, so a storm-blown
+ * bird is never said to have rafted.
+ */
+function cameByRaft(sp: SpeciesDef, road: Road | undefined): boolean {
+  if (road !== undefined) return road === 'raft' || road === 'sea';
+  return sp.roads.includes('raft') || sp.roads.includes('sea');
+}
+
 /** The text of a journal entry (no year; the UI adds the year stamp). */
 export function entryText(e: JournalEntry, species: readonly SpeciesDef[], islandName: (id: number) => string): string {
   const p = e.params ?? {};
@@ -554,8 +567,13 @@ export function entryText(e: JournalEntry, species: readonly SpeciesDef[], islan
       return sp ? fill(sp.text.lost, ctx) : 'Something has gone quiet on your islands, for now.';
     case 'storm': {
       const head = num(p.great) > 0 ? 'A great storm swept over your islands.' : 'A storm passed over your islands.';
-      const castaway = speciesParam(p.castaway);
-      if (castaway) return `${head} A raft of branches drifted ashore on ${isl}, bringing the ${nameInSentence(castaway.name)}.`;
+      const castaway = speciesParam(p.castaway) ?? sp;
+      if (castaway) {
+        const name = nameInSentence(castaway.name);
+        if (cameByRaft(castaway, e.road)) return `${head} A raft of branches drifted ashore on ${isl}, bringing the ${name}.`;
+        return `${head} Its winds carried the ${name} to ${isl}, far off its course.`;
+      }
+      if (num(p.raft) > 0) return `${head} A raft of tangled branches drifted ashore on ${isl}.`;
       if (num(p.fallen) > 0) return `${head} A few trees fell; seedlings will soon fill the gaps.`;
       return `${head} The sea left driftwood and seaweed on the beaches.`;
     }
