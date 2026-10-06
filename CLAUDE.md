@@ -8,9 +8,10 @@
 ## Rules
 - Work only in this repo. Never read or take anything from the owner's other repos without asking first.
 - No images, ever: no generated or downloaded pictures, textures, sprites or sound files. Models, sand, water, sky, icons and sounds are all made in code.
-- Each game lives in its own folder (currently only `sandcastle-cays/`).
+- Each game lives in its own folder (`sandcastle-cays/`, `wind-wing-wave/`).
 - Before sending the owner a build, run that game's checks (see its README) and say plainly what passed, what failed, and what you couldn't test.
 
 ## Repo layout
 - `sandcastle-cays/`: the sandcastle sailing game. Start with `sandcastle-cays/README.md`, then `sandcastle-cays/docs/PLAN.md` (the agreed plan) and `sandcastle-cays/docs/DECISIONS.md` (why things are the way they are).
 - Every version sent to the owner is kept in `sandcastle-cays/builds/`, with notes in `sandcastle-cays/docs/CHANGELOG.md`.
+- `wind-wing-wave/`: the island-making game built from the sandcastle engine. Start with `wind-wing-wave/README.md`, then `docs/PLAN.md`, `docs/ARCHITECTURE.md` (the technical contract) and `docs/DECISIONS.md`. Builds go in `wind-wing-wave/builds/`, notes in its `docs/CHANGELOG.md`.

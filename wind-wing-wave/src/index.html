@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#7fd6e6">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Wind, Wing &amp; Wave</title>
+<style>
+/* Lead scaffold. WP-H owns the interface styles. */
+:root {
+  --ink: #3b3328;
+  --ink-soft: #6f6a5e;
+  --paper: rgba(255, 252, 245, 0.92);
+  --paper-solid: #fffcf5;
+  --journal: #f6efdf;
+  --sea: #2fb5b0;
+  --sea-deep: #157e93;
+  --ember: #f07a35;
+  --shadow: 0 6px 18px rgba(40, 60, 70, 0.18);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #bfe3f2; color: var(--ink);
+  font-family: ui-rounded, "SF Pro Rounded", "Nunito", "Varela Round", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-user-select: none; user-select: none; overscroll-behavior: none; }
+#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+#hud { position: fixed; inset: 0; pointer-events: none; }
+#hud > * { pointer-events: auto; }
+button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; touch-action: manipulation; }
+</style>
+</head>
+<body>
+<canvas id="view" tabindex="0"></canvas>
+<div id="hud"></div>
+<!--SCRIPT-->
+</body>
+</html>

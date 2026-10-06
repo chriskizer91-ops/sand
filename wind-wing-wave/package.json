@@ -1,0 +1,28 @@
+{
+  "name": "wind-wing-wave",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A calm island-making game: shape land from the sea and watch life find it. Runs in the browser.",
+  "scripts": {
+    "build": "node build.mjs",
+    "release": "node build.mjs --release",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "browser-check": "node e2e/browser-check.mjs",
+    "look": "node e2e/look.mjs",
+    "simulate": "node --experimental-strip-types tools/simulate.ts",
+    "check": "npm run typecheck && npm test && npm run build && npm run browser-check"
+  },
+  "dependencies": {
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/three": "0.186.0",
+    "esbuild": "0.28.2",
+    "playwright-core": "1.63.0",
+    "typescript": "5.9.3",
+    "vitest": "5.0.3"
+  }
+}
