@@ -1,0 +1,437 @@
+// Opens the built game in headless Chromium as a laptop (1280x760, mouse and trackpad) and as
+// a Pixel-sized phone (412x915, touch, DPR 2.625), plays a little, and checks what the player
+// touches: starting, pouring, camera gestures that must never edit the land, every tool, the
+// journal (and that it pauses time), cards, Look, settings, photo, save and load, watch mode,
+// the checks page, page errors, and the triangle and draw-call budgets.
+//   node e2e/browser-check.mjs [--html dist/index.html]
+// Headless Chromium draws with software (SwiftShader): frame rates mean nothing here and are
+// never asserted. Screenshots and a JSON report go to e2e/output/.
+import { mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { LAPTOP, PHONE, launch, openGame, root, setCamera, sleep } from './lib.mjs';
+
+const args = process.argv.slice(2);
+const htmlArg = args.indexOf('--html');
+const html = htmlArg >= 0 ? args[htmlArg + 1] : undefined;
+const out = join(root, 'e2e/output');
+mkdirSync(out, { recursive: true });
+
+// Budgets (docs/ARCHITECTURE.md §7): main pass plus shadow pass, as three.js counts them per frame.
+const BUDGET_TRIANGLES = 350000 + 100000;
+const BUDGET_CALLS = 80 + 20;
+
+const report = { steps: [], pass: true };
+function step(name, ok, detail = '') {
+  report.steps.push({ name, ok, detail });
+  if (!ok) report.pass = false;
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  (' + detail + ')' : ''}`);
+}
+async function attempt(name, fn) {
+  try {
+    await fn();
+  } catch (err) {
+    step(name, false, `error: ${err.message.split('\n')[0]}`);
+  }
+}
+
+const game = (page, fn, arg) => page.evaluate(fn, arg);
+const cam = (page) => game(page, () => window.__game.camera.state);
+const hash = (page) => game(page, () => window.__game.heightHash());
+const heightAt = (page, x, z) => game(page, ([x, z]) => window.__game.fields.heightAt(x, z), [x, z]);
+const project = (page, x, z) => game(page, ([x, z]) => window.__game.project(x, window.__game.fields.heightAt(x, z), z), [x, z]);
+const wake = (page) => game(page, () => window.__game.wake());
+/** Wait for a camera glide to finish (software drawing runs game time slower than real time). */
+const glided = (page) => page.waitForFunction(() => !window.__game.camera.gliding, null, { timeout: 60000 });
+const closeMenu = (page) => game(page, () => window.__game.closeMenu());
+
+/** Wait until no lava is molten and the heights stop changing (so gesture checks start from a still world). */
+async function settle(page) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 90000) {
+    const lava = await game(page, () => window.__game.lavaArea);
+    const a = await hash(page);
+    await sleep(1200);
+    const b = await hash(page);
+    if (lava === 0 && a === b) return true;
+  }
+  return false;
+}
+
+async function budgets(page, label, poses) {
+  for (const [name, pose] of poses) {
+    await setCamera(page, ...pose);
+    await sleep(900);
+    const s = await game(page, () => window.__game.stats());
+    step(`${label}: budget at ${name}`, s.triangles <= BUDGET_TRIANGLES && s.calls <= BUDGET_CALLS, `${s.triangles} triangles (≤ ${BUDGET_TRIANGLES}), ${s.calls} draw calls (≤ ${BUDGET_CALLS})`);
+  }
+}
+
+const browser = await launch();
+
+// ---------- laptop ----------
+{
+  const t0 = Date.now();
+  const { ctx, page, errors } = await openGame(browser, LAPTOP, html);
+  const mode = await game(page, () => window.__game.mode);
+  step('Laptop: the game loads', true, `ready in ${((Date.now() - t0) / 1000).toFixed(1)} s, island engine on ${mode === 'worker' ? 'a background thread' : 'the page'}`);
+  await page.waitForSelector('.begin:not([disabled])', { timeout: 60000 });
+  await page.screenshot({ path: join(out, 'bc-laptop-start.png') });
+  await page.click('.begin');
+  await sleep(1200);
+  step('Laptop: Begin starts the game', await game(page, () => window.__game.started));
+
+  await attempt('Laptop: pour lava with the mouse', async () => {
+    const glow = await game(page, () => window.__game.glow);
+    await setCamera(page, glow.x, glow.z, 260, -0.5, 0.9);
+    await wake(page);
+    await game(page, () => window.__game.selectTool('lava'));
+    const h0 = await heightAt(page, glow.x, glow.z);
+    const p = await project(page, glow.x, glow.z);
+    await page.mouse.move(p.x, p.y);
+    await page.mouse.down();
+    await sleep(800);
+    await page.mouse.move(p.x + 6, p.y + 4, { steps: 3 });
+    await sleep(800);
+    await page.mouse.up();
+    await sleep(1500);
+    const h1 = await heightAt(page, glow.x, glow.z);
+    step('Laptop: touching the glow pours lava (the land rises)', h1 > h0 + 0.3, `height ${h0.toFixed(1)} m → ${h1.toFixed(1)} m`);
+    await page.screenshot({ path: join(out, 'bc-laptop-pour.png') });
+    step('Laptop: the land settles after pouring', await settle(page));
+  });
+
+  await attempt('Laptop: camera gestures never edit', async () => {
+    await wake(page);
+    const h0 = await hash(page);
+    await page.mouse.move(640, 380);
+    const c0 = await cam(page);
+    for (let i = 0; i < 8; i++) {
+      await page.mouse.wheel(18.5, 7);
+      await sleep(40);
+    }
+    await sleep(500);
+    const c1 = await cam(page);
+    step('Laptop: two-finger swipe pans', Math.hypot(c1[0] - c0[0], c1[2] - c0[2]) > 5, `target moved ${Math.hypot(c1[0] - c0[0], c1[2] - c0[2]).toFixed(1)} m`);
+    await page.keyboard.down('Control');
+    for (let i = 0; i < 6; i++) {
+      await page.mouse.wheel(0, -12);
+      await sleep(40);
+    }
+    await page.keyboard.up('Control');
+    await sleep(500);
+    const c2 = await cam(page);
+    step('Laptop: pinch zooms in', c2[3] < c1[3] * 0.95, `distance ${c1[3].toFixed(0)} m → ${c2[3].toFixed(0)} m`);
+    await page.mouse.wheel(0, 100);
+    await sleep(500);
+    const c3 = await cam(page);
+    step('Laptop: mouse wheel zooms out', c3[3] > c2[3] * 1.05, `distance ${c2[3].toFixed(0)} m → ${c3[3].toFixed(0)} m`);
+    await page.mouse.move(640, 380);
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.move(760, 420, { steps: 8 });
+    await page.mouse.up({ button: 'right' });
+    await sleep(500);
+    const c4 = await cam(page);
+    step('Laptop: right-drag turns and tilts', Math.abs(c4[4] - c3[4]) > 0.2, `turned ${(c4[4] - c3[4]).toFixed(2)} rad`);
+    await page.mouse.click(700, 300, { button: 'right' });
+    await sleep(200);
+    step('Laptop: right-click glides there', await game(page, () => window.__game.camera.gliding));
+    await glided(page);
+    step('Laptop: no camera gesture changed the land', (await hash(page)) === h0);
+  });
+
+  await attempt('Laptop: tools', async () => {
+    await wake(page);
+    const picked = [];
+    for (const t of ['lava', 'rock', 'sand', 'hands', 'scoop', 'look']) {
+      await page.click(`.tool-${t}`);
+      picked.push((await game(page, () => window.__game.tool)) === t);
+    }
+    step('Laptop: every tool can be chosen from the tray', picked.every(Boolean), picked.join(', '));
+    await page.keyboard.press('3');
+    step('Laptop: number keys choose tools', (await game(page, () => window.__game.tool)) === 'sand');
+    const s0 = await game(page, () => window.__game.size);
+    await page.click('.tool.size');
+    const s1 = await game(page, () => window.__game.size);
+    step('Laptop: the size button changes the size', s1 !== s0, `${s0} → ${s1}`);
+  });
+
+  await attempt('Laptop: journal', async () => {
+    await wake(page);
+    await page.click('.journal-btn');
+    await page.waitForSelector('.journal.open');
+    await sleep(1200);
+    const pause = await game(page, () => window.__game.lastSent('pause'));
+    const y0 = await game(page, () => window.__game.year);
+    await sleep(2000);
+    const y1 = await game(page, () => window.__game.year);
+    step('Laptop: the journal opens and time stops', pause?.on === true && y1 === y0, `pause sent: ${pause?.on}, year ${y0} → ${y1}`);
+    await page.screenshot({ path: join(out, 'bc-laptop-journal.png') });
+    await page.click('.j-tab:nth-child(2)');
+    await sleep(500);
+    const cards = await page.locator('.gcard').count();
+    step('Laptop: the field guide lists species', cards > 0, `${cards} cards`);
+    await page.click('.j-tab:nth-child(3)');
+    await sleep(800);
+    await page.screenshot({ path: join(out, 'bc-laptop-chart.png') });
+    await page.click('.j-close');
+    await sleep(1200);
+    const resumed = await game(page, () => window.__game.lastSent('pause'));
+    const y2 = await game(page, () => window.__game.year);
+    await sleep(2000);
+    const y3 = await game(page, () => window.__game.year);
+    step('Laptop: closing the journal lets time run again', !resumed?.on && y3 > y2 && !(await game(page, () => window.__game.journalOpen)), `year ${y2} → ${y3}`);
+    await page.keyboard.press('j');
+    await sleep(400);
+    const open = await game(page, () => window.__game.journalOpen);
+    await page.keyboard.press('j');
+    await sleep(400);
+    step('Laptop: J opens and closes the journal', open && !(await game(page, () => window.__game.journalOpen)));
+  });
+
+  await attempt('Laptop: a card tap glides the camera there', async () => {
+    await setCamera(page, -300, 300, 300, -0.5, 1);
+    await wake(page);
+    await page.waitForSelector('.card-slip.in', { timeout: 60000 });
+    await page.screenshot({ path: join(out, 'bc-laptop-card.png') });
+    const entry = await game(page, () => [...window.__game.journalEntries].reverse().find((e) => e.headline && e.x !== undefined));
+    await page.click('.card-slip.in');
+    await sleep(300);
+    await glided(page);
+    const c = await cam(page);
+    const off = Math.hypot(c[0] - entry.x, c[2] - entry.z);
+    step('Laptop: a card tap glides the camera there', off < 30 && Math.abs(c[3] - 150) < 20, `${off.toFixed(1)} m from the story's place, ${c[3].toFixed(0)} m away`);
+  });
+
+  await attempt('Laptop: Look', async () => {
+    await setCamera(page, 40, -20, 280, -0.6, 0.9);
+    await wake(page);
+    await game(page, () => window.__game.selectTool('look'));
+    const p = await project(page, 40, -20);
+    const h0 = await hash(page);
+    await page.mouse.click(p.x, p.y);
+    await page.waitForSelector('.look-bubble.in', { timeout: 10000 });
+    const words = (await page.textContent('.look-bubble .look-line')) ?? '';
+    step('Laptop: Look answers with a sentence', words.trim().length > 3, `"${words.trim()}"`);
+    await page.screenshot({ path: join(out, 'bc-laptop-look.png') });
+    await sleep(800);
+    step('Laptop: Look never changes the land', (await hash(page)) === h0);
+  });
+
+  await attempt('Laptop: settings change the pace', async () => {
+    await wake(page);
+    await page.click('.menu-btn');
+    await page.click('text=Settings');
+    await page.click('text=Brisk · 5 a second');
+    await sleep(300);
+    const m = await game(page, () => window.__game.lastSent('settings'));
+    step('Laptop: settings change the pace (the engine is told)', m?.settings?.pace === 'brisk', JSON.stringify(m?.settings));
+    await page.screenshot({ path: join(out, 'bc-laptop-settings.png') });
+    await page.click('text=Normal · 2 a second');
+    const stored = await game(page, () => JSON.parse(localStorage.getItem('wind-wing-wave:settings') ?? '{}').pace);
+    step('Laptop: settings are remembered', stored === 'normal', `stored pace: ${stored}`);
+    await page.click('.sheet-head button[aria-label="Close"]');
+  });
+
+  await attempt('Laptop: photo', async () => {
+    await wake(page);
+    await page.click('.menu-btn');
+    const dl = page.waitForEvent('download', { timeout: 20000 });
+    await page.click('text=Take a photo');
+    const d = await dl;
+    const path = join(out, 'bc-photo.png');
+    await d.saveAs(path);
+    step('Laptop: a photo is saved as a picture', statSync(path).size > 1000 && d.suggestedFilename().endsWith('.png'), `${d.suggestedFilename()}, ${statSync(path).size} bytes`);
+  });
+
+  await attempt('Laptop: save to a file and load it back', async () => {
+    await wake(page);
+    const before = await hash(page);
+    await page.click('.menu-btn');
+    const dl = page.waitForEvent('download', { timeout: 30000 });
+    await page.click('text=Save to a file');
+    const d = await dl;
+    const path = join(out, 'bc-sea.wwwsave');
+    await d.saveAs(path);
+    const bytes = statSync(path).size;
+    step('Laptop: "Save to a file" gives a .wwwsave file', d.suggestedFilename().endsWith('.wwwsave') && bytes > 0, `${d.suggestedFilename()}, ${bytes} bytes`);
+    await closeMenu(page);
+    await page.click('.menu-btn');
+    const chooser = page.waitForEvent('filechooser', { timeout: 10000 });
+    await page.click('text=Open a saved file');
+    await (await chooser).setFiles(path);
+    const toast = await page.waitForFunction(() => {
+      const t = document.querySelector('.toast.show')?.textContent ?? '';
+      return /Your sea is back|Couldn't open/.test(t) ? t : null;
+    }, null, { timeout: 90000 });
+    const words = await toast.jsonValue();
+    await sleep(2500);
+    const after = await hash(page);
+    step('Laptop: the saved file loads back to the same sea', /Your sea is back/.test(words) && after === before, `"${words}"`);
+  });
+  await closeMenu(page);
+
+  await attempt('Laptop: watch mode', async () => {
+    await setCamera(page, 40, -20, 300, -0.6, 0.9);
+    await game(page, () => {
+      window.__game.wake();
+      window.__game.selectTool('lava');
+      window.__game.goIdle();
+    });
+    await sleep(1000);
+    const watching = await game(page, () => document.body.classList.contains('watching') && window.__game.watching);
+    step('Laptop: after a minute without input the buttons fade (watch mode)', watching);
+    await page.screenshot({ path: join(out, 'bc-laptop-watch.png') });
+    const h0 = await hash(page);
+    const p = await project(page, 40, -20);
+    await page.mouse.move(p.x, p.y);
+    await page.mouse.down();
+    await sleep(600);
+    await page.mouse.up();
+    await sleep(1500);
+    const st = await game(page, () => ({ watching: window.__game.watching, tool: window.__game.tool }));
+    step('Laptop: a touch brings the buttons back without pouring', !st.watching && (await hash(page)) === h0, `tool is now ${st.tool}`);
+  });
+
+  await attempt('Laptop: the checks page', async () => {
+    await wake(page);
+    await page.click('.menu-btn');
+    await page.click('text=Run the checks on this device');
+    await page.waitForSelector('.checks-summary.ok, .checks-summary.bad', { timeout: 180000 });
+    const rows = await page.$$eval('.check-row', (els) => els.map((e) => ({ ok: !e.querySelector('.mark.bad'), label: e.querySelector('.check-label')?.textContent })));
+    // Smoothness is measured on real devices only: software drawing here is always slow.
+    const failed = rows.filter((r) => !r.ok && !/Smooth/.test(r.label ?? ''));
+    step('Laptop: the checks page runs and everything but smoothness passes here', rows.length > 5 && failed.length === 0, `${rows.length} rows${failed.length ? '; failed: ' + failed.map((r) => r.label).join(', ') : ''}`);
+    await page.screenshot({ path: join(out, 'bc-laptop-checks.png') });
+    await page.click('.sheet-head button[aria-label="Close"]');
+  });
+
+  await budgets(page, 'Laptop', [
+    ['the whole zone', [-20, 40, 1600, -0.3, 1.25]],
+    ['the volcano', [40, -20, 420, -0.6, 0.9]],
+    ['a low close-up', [60, -10, 40, 0.9, 0.3]],
+    ['the cay', [-260, 250, 150, -1.2, 0.6]],
+  ]);
+  step('Laptop: no page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
+  await ctx.close();
+}
+
+// ---------- phone ----------
+{
+  const t0 = Date.now();
+  const { ctx, page, errors } = await openGame(browser, PHONE, html);
+  const mode = await game(page, () => window.__game.mode);
+  step('Phone: the game loads', true, `ready in ${((Date.now() - t0) / 1000).toFixed(1)} s, island engine on ${mode === 'worker' ? 'a background thread' : 'the page'}`);
+  await page.waitForSelector('.begin:not([disabled])', { timeout: 60000 });
+  await page.screenshot({ path: join(out, 'bc-phone-start.png') });
+  await page.tap('.begin');
+  await sleep(1200);
+  const cdp = await ctx.newCDPSession(page);
+  const touch = (type, points) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points.map((p, i) => ({ x: p.x, y: p.y, id: i })) });
+
+  await attempt('Phone: pour with one finger', async () => {
+    const glow = await game(page, () => window.__game.glow);
+    await setCamera(page, glow.x, glow.z, 260, -0.5, 0.9);
+    await wake(page);
+    await game(page, () => window.__game.selectTool('lava'));
+    const h0 = await heightAt(page, glow.x, glow.z);
+    const p = await project(page, glow.x, glow.z);
+    await touch('touchStart', [p]);
+    await sleep(1500);
+    await touch('touchEnd', []);
+    await sleep(1500);
+    const h1 = await heightAt(page, glow.x, glow.z);
+    step('Phone: one finger pours lava on the glow', h1 > h0 + 0.3, `height ${h0.toFixed(1)} m → ${h1.toFixed(1)} m`);
+    step('Phone: the land settles after pouring', await settle(page));
+  });
+
+  await attempt('Phone: a quick tap never shapes', async () => {
+    await wake(page);
+    const h0 = await hash(page);
+    // Sent back to back (not awaited in between): software drawing makes each touch slow to be
+    // acknowledged, which would otherwise turn the test's tap into a long press.
+    await Promise.all([touch('touchStart', [{ x: 200, y: 500 }]), touch('touchEnd', [])]);
+    await sleep(1500);
+    step('Phone: a quick tap never shapes the land', (await hash(page)) === h0);
+  });
+
+  await attempt('Phone: two-finger gestures', async () => {
+    await setCamera(page, 40, -20, 400, -0.6, 0.9);
+    await wake(page);
+    const h0 = await hash(page);
+    const c0 = await cam(page);
+    await touch('touchStart', [{ x: 150, y: 500 }, { x: 260, y: 500 }]);
+    for (let i = 1; i <= 10; i++) {
+      await touch('touchMove', [{ x: 150 + i * 9, y: 500 - i * 6 }, { x: 260 + i * 9, y: 500 - i * 6 }]);
+      await sleep(30);
+    }
+    await touch('touchEnd', []);
+    await sleep(600);
+    const c1 = await cam(page);
+    const moved = Math.hypot(c1[0] - c0[0], c1[2] - c0[2]);
+    step('Phone: two-finger drag pans', moved > 10 && Math.abs(c1[3] - c0[3]) < c0[3] * 0.05, `target moved ${moved.toFixed(1)} m`);
+
+    await touch('touchStart', [{ x: 160, y: 460 }, { x: 250, y: 460 }]);
+    for (let i = 1; i <= 10; i++) {
+      await touch('touchMove', [{ x: 160 - i * 7, y: 460 }, { x: 250 + i * 7, y: 460 }]);
+      await sleep(30);
+    }
+    await touch('touchEnd', []);
+    await sleep(600);
+    const c2 = await cam(page);
+    step('Phone: pinch zooms in', c2[3] < c1[3] * 0.8, `distance ${c1[3].toFixed(0)} m → ${c2[3].toFixed(0)} m`);
+
+    const at = (a) => [
+      { x: 206 - 70 * Math.cos(a), y: 460 - 70 * Math.sin(a) },
+      { x: 206 + 70 * Math.cos(a), y: 460 + 70 * Math.sin(a) },
+    ];
+    await touch('touchStart', at(0));
+    for (let i = 1; i <= 12; i++) {
+      await touch('touchMove', at(i * 0.07));
+      await sleep(30);
+    }
+    await touch('touchEnd', []);
+    await sleep(600);
+    const c3 = await cam(page);
+    step('Phone: two-finger twist turns the view', c3[4] - c2[4] > 0.4, `turned ${(c3[4] - c2[4]).toFixed(2)} rad`);
+
+    await Promise.all([touch('touchStart', [{ x: 180, y: 300 }, { x: 220, y: 320 }]), touch('touchEnd', [])]);
+    await sleep(150);
+    step('Phone: a quick two-finger tap glides there', await game(page, () => window.__game.camera.gliding));
+    await glided(page);
+    step('Phone: two-finger gestures never change the land', (await hash(page)) === h0);
+  });
+
+  await attempt('Phone: tray and journal', async () => {
+    await wake(page);
+    const picked = [];
+    for (const t of ['lava', 'rock', 'sand', 'hands', 'scoop', 'look']) {
+      await page.tap(`.tool-${t}`);
+      picked.push((await game(page, () => window.__game.tool)) === t);
+    }
+    step('Phone: every tool can be tapped in the tray', picked.every(Boolean));
+    await page.screenshot({ path: join(out, 'bc-phone-tray.png') });
+    await page.tap('.journal-btn');
+    await page.waitForSelector('.journal.open');
+    await sleep(800);
+    await page.screenshot({ path: join(out, 'bc-phone-journal.png') });
+    await page.tap('.j-close');
+    await sleep(800);
+    step('Phone: the journal opens and closes', !(await game(page, () => window.__game.journalOpen)));
+  });
+
+  await budgets(page, 'Phone', [
+    ['the volcano', [40, -20, 420, -0.6, 0.9]],
+    ['a low close-up', [60, -10, 40, 0.9, 0.3]],
+  ]);
+  step('Phone: no page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
+  await ctx.close();
+}
+
+await browser.close();
+writeFileSync(join(out, 'browser-check.json'), JSON.stringify(report, null, 2));
+const failed = report.steps.filter((s) => !s.ok);
+console.log(`\n${report.steps.length - failed.length} of ${report.steps.length} browser checks passed.`);
+if (failed.length) {
+  console.log('Failed:\n' + failed.map((s) => `  - ${s.name}${s.detail ? ': ' + s.detail : ''}`).join('\n'));
+  process.exitCode = 1;
+}
