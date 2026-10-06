@@ -53,12 +53,12 @@ export class LagoonTerrain implements Terrain {
     // Water wicks up from the water table (the "capillary fringe").
     const cap = above < 0.3 ? lerp(235, 120, above / 0.3) : Math.max(0, 120 - (above - 0.3) * 300);
     // Under the sun-dried skin the beach stays damp.
-    const interior = depth < 0.035 ? 14 : depth < 0.1 ? lerp(14, 115, (depth - 0.035) / 0.065) : 115;
+    const interior = depth < 0.05 ? 14 : depth < 0.17 ? lerp(14, 115, (depth - 0.05) / 0.12) : 115;
     return clamp(Math.round(Math.max(cap, interior)), 0, 255);
   }
 
   packAt(_x: number, y: number, _z: number, depth: number): number {
-    let p = depth < 0.035 ? 50 : 150;
+    let p = depth < 0.05 ? 50 : 150;
     if (y < this.waterLevel + 0.12) p = Math.max(p, 175);
     return p;
   }

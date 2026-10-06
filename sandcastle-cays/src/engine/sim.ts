@@ -334,6 +334,7 @@ export class Sim {
     cB.wet[lb] = Math.round((cB.wet[lb] * fb + cA.wet[la] * m) / nf);
     cB.pack[lb] = Math.round((cB.pack[lb] * fb + (loosen ? 0 : cA.pack[la]) * m) / nf);
     cB.fill[lb] = nf;
+    if (cB.wet[lb] > 205) cB.maybeSoaked = true;
     const fa = cA.fill[la] - m;
     cA.fill[la] = fa;
     if (fa === 0) {
@@ -402,6 +403,7 @@ export class Sim {
         c.wet[li] = Math.round((c.wet[li] * f + wet * put) / nf);
         c.pack[li] = Math.round((c.pack[li] * f) / nf);
         c.fill[li] = nf;
+        if (c.wet[li] > 205) c.maybeSoaked = true;
         w.changed(c, li);
         m -= put;
         this.wakeAround(i, j, k);
@@ -662,10 +664,11 @@ export class Sim {
     const w = this.world;
     const dtc = c.lastDry < 0 ? 0 : Math.min(10, this.time - c.lastDry);
     c.lastDry = this.time;
+    const wl = w.terrain.waterLevel;
+    if (c.maybeSoaked) this.drain(c, dtc, wl);
     if (!c.surface) c.surface = this.computeSurface(c);
     const surf = c.surface;
     if (surf.length === 0) return;
-    const wl = w.terrain.waterLevel;
     let visual = false;
     for (let s = 0; s < surf.length; s++) {
       const li = surf[s] & 0xffff;
@@ -703,6 +706,33 @@ export class Sim {
       }
     }
     if (visual && this.onWetVisual) this.onWetVisual(c);
+  }
+
+  /**
+   * Soaked sand above the water table drains within seconds, settling at
+   * "just right" damp (or at the wetness the water table keeps it at).
+   */
+  private drain(c: Chunk, dtc: number, wl: number): void {
+    const w = this.world;
+    let any = false;
+    const step = Math.max(1, Math.round(9 * dtc));
+    for (let li = 0; li < 4096; li++) {
+      const old = c.wet[li];
+      if (old <= 205 || c.fill[li] === 0) continue;
+      const j = c.cy * 16 + (li >> 8);
+      const above = w.cellY(j) - wl;
+      if (above < 0.02) continue;
+      const floor = Math.max(185, above < 0.3 ? 235 + (120 - 235) * (above / 0.3) : 0);
+      if (old <= floor) continue;
+      const nw = Math.max(floor, old - step);
+      c.wet[li] = nw;
+      if (nw > 205) any = true;
+      if (old > 215 && nw <= 215) {
+        this.enqueue(c.cx * 16 + (li & 15), j, c.cz * 16 + ((li >> 4) & 15));
+      }
+    }
+    c.maybeSoaked = any;
+    if (this.onWetVisual) this.onWetVisual(c);
   }
 
   /** Cells touching the air. Bit 16 set = open to the sky (dries fastest). */

@@ -139,7 +139,7 @@ export function raycast(
 }
 
 /** How fast the centre of the brush empties (fraction of a cell per second). */
-const DIG_SPEED = 7;
+const DIG_SPEED = 3.5;
 
 /** Scoop sand from around the hit point into your hands. Returns the amount dug. */
 export function dig(sim: Sim, hand: Hand, hit: Hit, radius: number, dt: number): number {

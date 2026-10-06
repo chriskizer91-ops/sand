@@ -105,6 +105,7 @@ export function decodeWorld(world: World, raw: Uint8Array): SaveHeader {
     c.pack.set(raw.subarray(o, o + CHUNK_VOL));
     o += CHUNK_VOL;
     c.surface = null;
+    world.markColumnsDirty(cx, cz);
   }
   return header;
 }

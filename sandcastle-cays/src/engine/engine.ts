@@ -70,7 +70,19 @@ export class Engine {
   private ready = false;
   private perf = { simMs: 0, meshMs: 0 };
 
+  /** On the page (no background thread) the physics works in smaller slices per step. */
+  private pageMode = false;
+
   constructor(private post: Post) {}
+
+  setPageMode(on: boolean): void {
+    this.pageMode = on;
+    if (this.sim) this.sim.maxCellsPerStep = on ? 12000 : 60000;
+  }
+
+  get isReady(): boolean {
+    return this.ready;
+  }
 
   // ---------- setup ----------
 
@@ -78,6 +90,7 @@ export class Engine {
     this.world = new World(LAGOON_DIMS, new LagoonTerrain());
     this.sim = new Sim(this.world);
     this.sim.dryRate = DRYING_RATE[this.settings.drying];
+    this.sim.maxCellsPerStep = this.pageMode ? 12000 : 60000;
     this.mesher = new Mesher(this.world);
     this.undo = new UndoStack(this.world);
     this.hand = new Hand();
@@ -233,6 +246,9 @@ export class Engine {
         this.post({ t: 'checks', id: msg.id, results });
         return;
       }
+      case 'demo':
+        if (this.world) buildDemo(this.world, this.sim);
+        return;
     }
   }
 
@@ -514,6 +530,60 @@ export class Engine {
     );
     this.events = emptyEvents();
   }
+}
+
+/** A sample castle for screenshots and visual checks (not reachable from the game's buttons). */
+function buildDemo(w: World, sim: Sim): void {
+  const cellAt = (x: number, z: number) => [Math.floor((x - w.originX) / CELL), Math.floor((z - w.originZ) / CELL)];
+  const groundJ = (i: number, k: number) => Math.floor((w.heights[i + k * w.nx] - w.originY) / CELL);
+  const shape = (x0: number, z0: number, r: number, h: number, test: (dx: number, dz: number, y: number) => boolean, wet: number, pack: number) => {
+    const [ci, ck] = cellAt(x0, z0);
+    const R = Math.ceil(r / CELL) + 1;
+    const H = Math.ceil(h / CELL);
+    for (let k = ck - R; k <= ck + R; k++) {
+      for (let i = ci - R; i <= ci + R; i++) {
+        if (!w.inRegionXZ(i, k)) continue;
+        const g = groundJ(i, k);
+        for (let y = -2; y < H; y++) {
+          const dx = (i - ci) * CELL;
+          const dz = (k - ck) * CELL;
+          if (test(dx, dz, y * CELL)) w.setCell(i, g + y, k, 255, wet, pack);
+        }
+      }
+    }
+    const gj = groundJ(Math.max(0, Math.min(w.nx - 1, ci)), Math.max(0, Math.min(w.nz - 1, ck)));
+    sim.wakeBox(ci - R - 1, gj - 4, ck - R - 1, ci + R + 1, gj + H + 4, ck + R + 1);
+  };
+  // A packed tower with battlements.
+  shape(-0.9, 1.0, 0.16, 0.5, (dx, dz, y) => {
+    const d = Math.hypot(dx, dz);
+    if (d > 0.15) return false;
+    if (y < 0.42) return true;
+    const a = Math.atan2(dz, dx);
+    return d > 0.09 && Math.cos(a * 4) > 0;
+  }, 150, 255);
+  // A wall with a tunnel through it.
+  shape(0.2, 1.5, 0.75, 0.33, (dx, dz, y) => {
+    if (Math.abs(dz) > 0.07 || Math.abs(dx) > 0.7) return false;
+    if (Math.abs(dx) < 0.08 && y < 0.14) return false;
+    return y < 0.3;
+  }, 150, 240);
+  // Loose damp heap and a dry heap (they slump to their natural slopes).
+  shape(1.3, 0.7, 0.3, 0.45, (dx, dz, y) => Math.hypot(dx, dz) < 0.28 * (1 - y / 0.45), 140, 0);
+  shape(2.1, 1.3, 0.3, 0.45, (dx, dz, y) => Math.hypot(dx, dz) < 0.28 * (1 - y / 0.45), 10, 0);
+  // A hole dug near the water (it fills with water).
+  const [hi, hk] = cellAt(0.4, -0.6);
+  for (let k = hk - 8; k <= hk + 8; k++) {
+    for (let i = hi - 8; i <= hi + 8; i++) {
+      const r = Math.hypot(i - hi, k - hk);
+      if (r > 7.5) continue;
+      const g = groundJ(i, k);
+      const depth = Math.round(6 * (1 - (r / 7.5) ** 2));
+      for (let y = 0; y <= depth; y++) w.setCell(i, g - y + 1, k, 0, 0, 0);
+    }
+  }
+  const hg = groundJ(hi, hk);
+  sim.wakeBox(hi - 9, hg - 8, hk - 9, hi + 9, hg + 3, hk + 9);
 }
 
 function now(): number {

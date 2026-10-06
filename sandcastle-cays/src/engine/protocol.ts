@@ -31,7 +31,9 @@ export type ToEngine =
   | { t: 'save'; id: number; header: Partial<SaveHeader> }
   | { t: 'load'; id: number; data: ArrayBuffer }
   | { t: 'reset' }
-  | { t: 'checks'; id: number };
+  | { t: 'checks'; id: number }
+  /** Developer/test only: build a sample castle to look at. */
+  | { t: 'demo' };
 
 export interface TickEvents {
   dug: number;

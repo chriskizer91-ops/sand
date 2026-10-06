@@ -25,6 +25,8 @@ export class Chunk {
   surface: Int32Array | null = null;
   /** Sim time this chunk was last dried (-1 = never). */
   lastDry = -1;
+  /** May hold soaked sand above the water table (which drains). */
+  maybeSoaked = false;
   constructor(
     readonly key: number,
     readonly cx: number,
@@ -58,6 +60,9 @@ export class World {
   /** Same, for a 4-cell margin around the region (scenery side of the edges). */
   private heightsExt: Float32Array;
   private tmpColH = new Float32Array(0);
+  /** Cached top-of-sand height per column, refreshed only where cells changed. */
+  private topCache: Float32Array;
+  private topDirty: Uint8Array;
   private static readonly MARGIN = 4;
   private colMin: Float32Array;
   private colMax: Float32Array;
@@ -91,6 +96,8 @@ export class World {
         this.heights[i + k * this.nx] = terrain.heightAt(this.originX + (i + 0.5) * CELL, z);
       }
     }
+    this.topCache = this.heights.slice();
+    this.topDirty = new Uint8Array(this.nx * this.nz);
     const M = World.MARGIN;
     const ex = this.nx + 2 * M;
     this.heightsExt = new Float32Array(ex * (this.nz + 2 * M));
@@ -266,6 +273,7 @@ export class World {
     const lz = (li >> 4) & 15;
     const ly = li >> 8;
     c.surface = null;
+    this.topDirty[c.cx * 16 + lx + (c.cz * 16 + lz) * this.nx] = 1;
     // A change on a chunk's border can expose cells in the neighbouring chunk.
     if (lx === 0 && c.cx > 0) this.clearSurface(c.cx - 1, c.cy, c.cz);
     if (lx === 15 && c.cx < this.ncx - 1) this.clearSurface(c.cx + 1, c.cy, c.cz);
@@ -274,6 +282,13 @@ export class World {
     if (ly === 0 && c.cy > 0) this.clearSurface(c.cx, c.cy - 1, c.cz);
     if (ly === 15 && c.cy < this.ncy - 1) this.clearSurface(c.cx, c.cy + 1, c.cz);
     if (this.onChunkChanged) this.onChunkChanged(c, lx, ly, lz);
+  }
+
+  /** Forget cached top heights for a chunk column (after loading). */
+  markColumnsDirty(cx: number, cz: number): void {
+    for (let lz = 0; lz < CHUNK; lz++) {
+      for (let lx = 0; lx < CHUNK; lx++) this.topDirty[cx * CHUNK + lx + (cz * CHUNK + lz) * this.nx] = 1;
+    }
   }
 
   private clearSurface(cx: number, cy: number, cz: number): void {
@@ -450,6 +465,13 @@ export class World {
   /** Height of the top sand surface in a column (metres), used for water depth and the camera. */
   topHeight(i: number, k: number): number {
     if (!this.inRegionXZ(i, k)) return this.columnHeight(i, k);
+    const ci = i + k * this.nx;
+    if (!this.topDirty[ci]) return this.topCache[ci];
+    this.topDirty[ci] = 0;
+    return (this.topCache[ci] = this.scanTop(i, k));
+  }
+
+  private scanTop(i: number, k: number): number {
     const cx = i >> 4;
     const cz = k >> 4;
     // Start from the highest stored chunk in this column; untouched chunks above it are empty.

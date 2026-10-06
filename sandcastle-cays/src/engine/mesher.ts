@@ -34,6 +34,15 @@ for (let a = 0; a < 8; a++) {
   }
 }
 const EA = Int8Array.from(EDGES.map((e) => e[0]));
+// Sample directions for ambient occlusion: 6 axes and 8 diagonals, 1.5 cells out.
+const AO_DIRS: number[] = [];
+for (const [dx, dy, dz] of [
+  [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+  [1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1], [-1, 1, 1], [-1, 1, -1], [-1, -1, 1], [-1, -1, -1],
+]) {
+  const l = Math.hypot(dx, dy, dz);
+  AO_DIRS.push((dx / l) * 1.5, (dy / l) * 1.5, (dz / l) * 1.5);
+}
 const EB = Int8Array.from(EDGES.map((e) => e[1]));
 
 export class Mesher {
@@ -42,6 +51,9 @@ export class Mesher {
   private pack = new Uint8Array(W * W * W);
   private stored = new Uint8Array(W * W * W);
   private layer = new Int8Array(W);
+  /** Signed vertical distance to the surface at each cell centre (in cells, + inside the sand). */
+  private sdf = new Float32Array(W * W * W);
+  private tmp = new Float32Array(W * W * W);
   private vIndex = new Int32Array(NC * NC * NC);
   private pos = new Float32Array(NC * NC * NC * 3);
   private nrm = new Int8Array(NC * NC * NC * 3);
@@ -49,6 +61,25 @@ export class Mesher {
   private idx = new Uint16Array(NC * NC * NC * 18);
 
   constructor(private world: World) {}
+
+  /** Smoothly interpolated fill (0..1) at a point in window coordinates. */
+  private fillAt(x: number, y: number, z: number): number {
+    const f = this.fill;
+    const ix = Math.max(0, Math.min(W - 2, Math.floor(x)));
+    const iy = Math.max(0, Math.min(W - 2, Math.floor(y)));
+    const iz = Math.max(0, Math.min(W - 2, Math.floor(z)));
+    const fx = Math.max(0, Math.min(1, x - ix));
+    const fy = Math.max(0, Math.min(1, y - iy));
+    const fz = Math.max(0, Math.min(1, z - iz));
+    const o = ix + iz * W + iy * W2;
+    const c00 = f[o] + (f[o + 1] - f[o]) * fx;
+    const c10 = f[o + W2] + (f[o + W2 + 1] - f[o + W2]) * fx;
+    const c01 = f[o + W] + (f[o + W + 1] - f[o + W]) * fx;
+    const c11 = f[o + W + W2] + (f[o + W + W2 + 1] - f[o + W + W2]) * fx;
+    const c0 = c00 + (c10 - c00) * fy;
+    const c1 = c01 + (c11 - c01) * fy;
+    return (c0 + (c1 - c0) * fz) / 255;
+  }
 
   /** Mesh one chunk. Returns null if there is no surface in it. */
   meshChunk(cx: number, cy: number, cz: number): ChunkMesh | null {
@@ -62,6 +93,55 @@ export class Mesher {
     const stored = this.stored;
     world.sampleBlock(i0, j0, k0, W, W, W, fill, wet, pack, stored);
 
+    // Turn "how full is each cell" into "how far is the surface, up or down" (in cells).
+    // A part-filled cell resting on sand has its surface at exactly its fill level,
+    // so heights come out exact and gentle slopes are smooth (no terraces).
+    const sdf = this.sdf;
+    for (let y = 0; y < W; y++) {
+      for (let z = 0; z < W; z++) {
+        let o = z * W + y * W2;
+        for (let x = 0; x < W; x++, o++) {
+          const f = fill[o] / 255;
+          let v: number;
+          if (f >= 1) {
+            const fa = y + 1 < W ? fill[o + W2] / 255 : 1;
+            if (fa >= 1) v = 1.5 + (y + 2 < W ? fill[o + 2 * W2] / 255 : 1);
+            else v = 0.5 + fa;
+          } else if (f <= 0) {
+            const fb = y > 0 ? fill[o - W2] / 255 : 0;
+            if (fb >= 1) v = -0.5;
+            else if (fb > 0) v = fb - 1.5;
+            else v = (y > 1 ? fill[o - 2 * W2] / 255 : 0) - 2.5;
+          } else {
+            v = f - 0.5;
+          }
+          sdf[o] = v;
+        }
+      }
+    }
+
+    // Soften steep stair-steps: blend each cell with its sideways neighbours (1-2-1).
+    // An even slope is unchanged by this, so gentle ground stays exact.
+    const tmp = this.tmp;
+    for (let y = 0; y < W; y++) {
+      for (let z = 0; z < W; z++) {
+        const row = z * W + y * W2;
+        for (let x = 1; x < W - 1; x++) tmp[row + x] = 0.25 * sdf[row + x - 1] + 0.5 * sdf[row + x] + 0.25 * sdf[row + x + 1];
+        tmp[row] = sdf[row];
+        tmp[row + W - 1] = sdf[row + W - 1];
+      }
+    }
+    for (let y = 0; y < W; y++) {
+      for (let x = 0; x < W; x++) {
+        for (let z = 1; z < W - 1; z++) {
+          const o = x + z * W + y * W2;
+          sdf[o] = 0.25 * tmp[o - W] + 0.5 * tmp[o] + 0.25 * tmp[o + W];
+        }
+        sdf[x + y * W2] = tmp[x + y * W2];
+        sdf[x + (W - 1) * W + y * W2] = tmp[x + (W - 1) * W + y * W2];
+      }
+    }
+
     // Quick exit: no inside/outside change anywhere near the chunk.
     let anyIn = false;
     let anyOut = false;
@@ -69,7 +149,7 @@ export class Mesher {
       for (let z = P - 1; z <= P + CHUNK && !(anyIn && anyOut); z++) {
         let o = P - 1 + z * W + y * W2;
         for (let x = P - 1; x <= P + CHUNK; x++, o++) {
-          if (fill[o] >= 128) anyIn = true;
+          if (sdf[o] > 0) anyIn = true;
           else anyOut = true;
         }
       }
@@ -97,7 +177,7 @@ export class Mesher {
       for (let z = P - 1; z <= P + CHUNK && st !== 2; z++) {
         let o = P - 1 + z * W + yw * W2;
         for (let x = P - 1; x <= P + CHUNK; x++, o++) {
-          const v = fill[o] >= 128 ? 1 : 0;
+          const v = sdf[o] > 0 ? 1 : 0;
           if (st === -1) st = v;
           else if (st !== v) {
             st = 2;
@@ -117,16 +197,16 @@ export class Mesher {
           const base = x + P + (z + P) * W + (y + P) * W2;
           // Which of the 8 corners are inside the sand (bit0 = x, bit1 = y, bit2 = z).
           const mask =
-            (fill[base] >= 128 ? 1 : 0) |
-            (fill[base + 1] >= 128 ? 2 : 0) |
-            (fill[base + W2] >= 128 ? 4 : 0) |
-            (fill[base + 1 + W2] >= 128 ? 8 : 0) |
-            (fill[base + W] >= 128 ? 16 : 0) |
-            (fill[base + 1 + W] >= 128 ? 32 : 0) |
-            (fill[base + W + W2] >= 128 ? 64 : 0) |
-            (fill[base + 1 + W + W2] >= 128 ? 128 : 0);
+            (sdf[base] > 0 ? 1 : 0) |
+            (sdf[base + 1] > 0 ? 2 : 0) |
+            (sdf[base + W2] > 0 ? 4 : 0) |
+            (sdf[base + 1 + W2] > 0 ? 8 : 0) |
+            (sdf[base + W] > 0 ? 16 : 0) |
+            (sdf[base + 1 + W] > 0 ? 32 : 0) |
+            (sdf[base + W + W2] > 0 ? 64 : 0) |
+            (sdf[base + 1 + W + W2] > 0 ? 128 : 0);
           if (mask === 0 || mask === 255) continue;
-          for (let c = 0; c < 8; c++) d[c] = fill[base + CORNER[c]] / 255;
+          for (let c = 0; c < 8; c++) d[c] = sdf[base + CORNER[c]];
           // Average of the edge crossings.
           let sx = 0;
           let sy = 0;
@@ -140,7 +220,7 @@ export class Mesher {
             if (ia === ib) continue;
             const da = d[a];
             const db = d[b];
-            const t = Math.abs(db - da) < 1e-6 ? 0.5 : (0.5 - da) / (db - da);
+            const t = Math.abs(db - da) < 1e-6 ? 0.5 : da / (da - db);
             sx += (a & 1) + ((b & 1) - (a & 1)) * t;
             sy += ((a >> 1) & 1) + (((b >> 1) & 1) - ((a >> 1) & 1)) * t;
             sz += ((a >> 2) & 1) + (((b >> 2) & 1) - ((a >> 2) & 1)) * t;
@@ -153,11 +233,12 @@ export class Mesher {
           let wetSum = 0;
           let packSum = 0;
           let fillSum = 0;
+          let nearSum = 0;
           for (let c = 0; c < 8; c++) {
             const o = base + CORNER[c];
-            gx[c] = fill[o + 1] - fill[o - 1];
-            gy[c] = fill[o + W2] - fill[o - W2];
-            gz[c] = fill[o + W] - fill[o - W];
+            gx[c] = sdf[o + 1] - sdf[o - 1];
+            gy[c] = sdf[o + W2] - sdf[o - W2];
+            gz[c] = sdf[o + W] - sdf[o - W];
             const f = fill[o];
             if (f > 0 && !stored[o]) {
               // Untouched sand: look up its starting moisture and compaction now.
@@ -171,8 +252,32 @@ export class Mesher {
               stored[o] = 1;
             }
             fillSum += f;
-            wetSum += wet[o] * f;
-            packSum += pack[o] * f;
+            const near = f * Math.max(0.04, 1 - Math.abs(sdf[o]) / 1.6);
+            nearSum += near;
+            wetSum += wet[o] * near;
+            packSum += pack[o] * near;
+          }
+          if (nearSum < 0.05) {
+            // Smoothing put this point just outside the sand: borrow wetness from a wider block.
+            for (let oy = -1; oy <= 2; oy++) {
+              for (let oz = -1; oz <= 2; oz++) {
+                for (let ox = -1; ox <= 2; ox++) {
+                  const o = base + ox + oz * W + oy * W2;
+                  const f = fill[o];
+                  if (f === 0) continue;
+                  if (!stored[o]) {
+                    const props = world.procProps(i0 + (o % W), j0 + Math.floor(o / W2), k0 + (Math.floor(o / W) % W));
+                    wet[o] = props & 255;
+                    pack[o] = props >> 8;
+                    stored[o] = 1;
+                  }
+                  const near = f * Math.max(0.04, 1 - Math.abs(sdf[o]) / 2.5);
+                  nearSum += near;
+                  wetSum += wet[o] * near;
+                  packSum += pack[o] * near;
+                }
+              }
+            }
           }
           let nx = 0;
           let ny = 0;
@@ -187,14 +292,17 @@ export class Mesher {
             nz -= gz[c] * wgt;
           }
           const nl = Math.hypot(nx, ny, nz) || 1;
-          // Ambient occlusion: how buried this spot is (corners plus a wider ring of samples).
-          let outer = 0;
-          for (let c = 0; c < 8; c++) {
-            const o = base + (c & 1 ? 2 : -1) + ((c >> 2) & 1 ? 2 : -1) * W + ((c >> 1) & 1 ? 2 : -1) * W2;
-            outer += fill[o];
+          // Ambient occlusion: how much sand surrounds this exact spot (smoothly sampled),
+          // compared with a flat beach (half sand, half air).
+          const px = x + P + fx;
+          const py = y + P + fy;
+          const pz = z + P + fz;
+          let around = 0;
+          for (let a = 0; a < AO_DIRS.length; a += 3) {
+            around += this.fillAt(px + AO_DIRS[a], py + AO_DIRS[a + 1], pz + AO_DIRS[a + 2]);
           }
-          const buried = (fillSum / 8 + outer / 8) / 2 / 255;
-          const ao = Math.max(0.3, Math.min(1.08, 1 - (buried - 0.45) * 1.5));
+          const buried = around / (AO_DIRS.length / 3);
+          const ao = Math.max(0.3, Math.min(1.08, 1 - (buried - 0.5) * 1.7));
 
           const vi = nv++;
           vIndex[x + 1 + (z + 1) * NC + (y + 1) * NC * NC] = vi;
@@ -204,8 +312,8 @@ export class Mesher {
           nrm[vi * 3] = Math.round((nx / nl) * 127);
           nrm[vi * 3 + 1] = Math.round((ny / nl) * 127);
           nrm[vi * 3 + 2] = Math.round((nz / nl) * 127);
-          att[vi * 4] = fillSum > 0 ? Math.round(wetSum / fillSum) : 0;
-          att[vi * 4 + 1] = fillSum > 0 ? Math.round(packSum / fillSum) : 0;
+          att[vi * 4] = nearSum > 0 ? Math.round(wetSum / nearSum) : 0;
+          att[vi * 4 + 1] = nearSum > 0 ? Math.round(packSum / nearSum) : 0;
           att[vi * 4 + 2] = Math.round((ao / 1.08) * 255);
           att[vi * 4 + 3] = 0;
         }
@@ -240,17 +348,17 @@ export class Mesher {
       for (let z = 0; z < CHUNK; z++) {
         for (let x = 0; x < CHUNK; x++) {
           const o = x + P + (z + P) * W + (y + P) * W2;
-          const inside = fill[o] >= 128;
+          const inside = sdf[o] > 0;
           // Edge along +x.
-          if (inside !== fill[o + 1] >= 128) {
+          if (inside !== sdf[o + 1] > 0) {
             quad(V(x, y - 1, z - 1), V(x, y, z - 1), V(x, y, z), V(x, y - 1, z), !inside);
           }
           // Edge along +y.
-          if (inside !== fill[o + W2] >= 128) {
+          if (inside !== sdf[o + W2] > 0) {
             quad(V(x - 1, y, z - 1), V(x - 1, y, z), V(x, y, z), V(x, y, z - 1), !inside);
           }
           // Edge along +z.
-          if (inside !== fill[o + W] >= 128) {
+          if (inside !== sdf[o + W] > 0) {
             quad(V(x - 1, y - 1, z), V(x, y - 1, z), V(x, y, z), V(x - 1, y, z), !inside);
           }
         }
