@@ -73,6 +73,11 @@ export const GROUND = {
   seagrassDark: 0x355f2c,
   /** Coralline algae: pink-purple crust on reef rock. */
   coralline: 0xc98aa0,
+  /**
+   * The deep floor (deeper than about 25 m), which the sea above almost hides: plain golden sea-floor
+   * sand, already darkened the way wet sand under water is, so shallower floor fades into it evenly.
+   */
+  seabedFloor: 0xb2a07a,
   /** Colour the sea absorbs the seabed toward as it gets deeper. */
   deepWater: 0x0e5872,
   /** Bright web of sunlight on the shallow sea floor. */

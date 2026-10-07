@@ -9,10 +9,13 @@
  *   screen stays about even: near things get small triangles, far things big ones.
  * - The graphics chip lifts every vertex to the height it reads from the height map, so nothing is
  *   rebuilt when the land changes: the engine only sends new heights (a few kilobytes for lava).
+ * - The grid's little squares are cut into triangles like a chessboard (the diagonal alternates), so a
+ *   sheer step between two columns looks the same whichever way it runs, rather than turning into a
+ *   row of sharp fins along one diagonal direction.
  * - Toward the far end of each level's range, every in-between vertex slides smoothly onto the next
- *   coarser grid ("geomorphing", from the CDLOD method), so detail never pops; where squares of
- *   different sizes meet, both put their edge vertices in exactly the same places, so no crack can
- *   open (tests/terrain.test.ts replays this on the CPU to prove it).
+ *   coarser grid ("geomorphing", from the CDLOD method), ending exactly on that grid's own triangles,
+ *   so detail never pops; where squares of different sizes meet, both put their edge vertices in
+ *   exactly the same places, so no crack can open (tests/terrain.test.ts replays both on the CPU).
  * - Every square also hangs a short curtain ("skirt") below its edges, a safety net against any
  *   hairline gap from rounding.
  * - Beyond the 1 km zone the edge of the world falls gently into the deep, under the (opaque) sea,
@@ -40,8 +43,12 @@ export const LEAF_SIZE = GRID_N * CELL;
 export const ROOT_SIZE = LEAF_SIZE * (1 << (LEVELS - 1));
 /** The flat deep floor beyond the apron: eight squares this big (m) around the 3 x 3 top-level ones. */
 export const OUTER_SIZE = 3 * ROOT_SIZE;
-/** Their level: high enough that they never morph (they are flat anyway). */
-const OUTER_LEVEL = 6;
+/**
+ * The level those squares are drawn with. They are flat and their grid doesn't line up with the
+ * quadtree's, so they must never morph: at this level the morph would only start r0 x 2^24 metres
+ * away (thousands of kilometres), far beyond any far plane.
+ */
+export const NO_MORPH_LEVEL = 24;
 /** Level-0 nodes per zone side. */
 const LEAVES = NX / GRID_N;
 /** World x/z of the last column centre (the far edge of the height samples). */
@@ -201,7 +208,7 @@ export class TerrainLod {
         if (rx === 0 && rz === 0) continue;
         const x0 = GRID_X0 - ROOT_SIZE + rx * OUTER_SIZE;
         const z0 = GRID_Z0 - ROOT_SIZE + rz * OUTER_SIZE;
-        if (!culler || culler.visible(x0, DEEP_Y, z0, x0 + OUTER_SIZE, DEEP_Y, z0 + OUTER_SIZE)) this.emit(x0, z0, OUTER_SIZE, OUTER_LEVEL, 2);
+        if (!culler || culler.visible(x0, DEEP_Y, z0, x0 + OUTER_SIZE, DEEP_Y, z0 + OUTER_SIZE)) this.emit(x0, z0, OUTER_SIZE, NO_MORPH_LEVEL, 2);
       }
     }
     this.culler = null;
@@ -301,10 +308,22 @@ export class FrustumCuller implements NodeCuller {
 // ---------- the shared patch ----------
 
 /**
+ * Which way grid square (i, j) is cut into two triangles. Squares alternate like a chessboard: even
+ * squares from their (i, j) corner to (i+1, j+1), odd squares the other way. With every square cut the
+ * same way, a sheer step running along that one diagonal became a row of sharp fins; alternating
+ * treats both diagonal directions alike. Around the middle of every 2 x 2 block the four cuts form an
+ * X, which is what lets a fully morphed grid become exactly the coarser chessboard (the shader's
+ * geomorph rule; tests/terrain.test.ts replays it). Square indices count from the zone's grid origin;
+ * every node starts on a multiple of 32 squares, so a node's own indices have the same parity.
+ */
+export function cutsForward(i: number, j: number): boolean {
+  return ((i + j) & 1) === 0;
+}
+
+/**
  * The one grid patch every node draws: (N+1)^2 vertices at (u, 0, v) for u, v in 0..1, plus a ring of
  * skirt vertices (y = 1 marks "hang below the edge"). Triangles face up (counter-clockwise seen from
- * above) and all split along the same diagonal, so a fully morphed node is exactly the coarser grid.
- * Skirts face outward.
+ * above), cut in the chessboard pattern of cutsForward(). Skirts face outward.
  */
 export function buildPatchGeometry(): { positions: Float32Array; index: Uint16Array } {
   const N = GRID_N;
@@ -335,16 +354,29 @@ export function buildPatchGeometry(): { positions: Float32Array; index: Uint16Ar
   let q = 0;
   for (let j = 0; j < N; j++) {
     for (let i = 0; i < N; i++) {
+      // a b    (i grows to the east, j to the south)
+      // c d
       const a = i + j * side;
       const b = a + 1;
       const c = a + side;
       const d = c + 1;
-      index[q++] = a;
-      index[q++] = c;
-      index[q++] = b;
-      index[q++] = b;
-      index[q++] = c;
-      index[q++] = d;
+      if (cutsForward(i, j)) {
+        // Cut a-d.
+        index[q++] = a;
+        index[q++] = c;
+        index[q++] = d;
+        index[q++] = a;
+        index[q++] = d;
+        index[q++] = b;
+      } else {
+        // Cut b-c.
+        index[q++] = a;
+        index[q++] = c;
+        index[q++] = b;
+        index[q++] = b;
+        index[q++] = c;
+        index[q++] = d;
+      }
     }
   }
   // Each skirt quad joins two neighbouring edge vertices to their copies below.
@@ -375,8 +407,14 @@ export function triangleBudget(q: Quality): number {
   if (q.phone) return 150_000;
   return q.tier === 2 ? 360_000 : q.tier === 1 ? 240_000 : 150_000;
 }
-/** The shadow pass gets its own, smaller budget. */
-export const SHADOW_TRIANGLES = 100_000;
+/**
+ * The land's share of the shadow pass (ARCHITECTURE §7 allows 100k triangles in all on the Pixel).
+ * On the phone the land takes about half, leaving the rest for the plants near the camera (WP-F);
+ * laptops have room for more.
+ */
+export function shadowTriangleBudget(q: Quality): number {
+  return q.phone ? 55_000 : 100_000;
+}
 
 /**
  * Range of the finest level (m), from the wanted on-screen size of one grid square at the far end of
@@ -388,11 +426,6 @@ export function finestRange(q: Quality, screenPx: number, fovDeg: number): numbe
   const squarePx = q.phone ? (q.tier === 2 ? 13 : q.tier === 1 ? 16 : 22) : q.tier === 2 ? 10 : q.tier === 1 ? 14 : 20;
   const pxPerRadian = screenPx / (2 * Math.tan(THREE.MathUtils.degToRad(fovDeg) / 2));
   return Math.max(48, Math.min(480, (CELL * pxPerRadian) / squarePx));
-}
-
-/** Terrain shadows: laptop on normal or richer quality; phone only on richer (ARCHITECTURE §6.4). */
-export function terrainCastsShadows(q: Quality): boolean {
-  return q.shadows && (!q.phone || q.tier === 2);
 }
 
 /** Live numbers for checks and screenshots (read through scene.getObjectByName('terrain').userData.lod). */
@@ -531,13 +564,14 @@ export function createTerrain(deps: SystemDeps): PageSystem {
 
       // Shadow casters, chosen by the sun's box: the same ranges as the view (so casters match what
       // is drawn) unless that is over the shadow budget, then coarser (safe: shadows are cast by the
-      // ground's sun-averted faces, which coarser ground barely moves).
-      const casts = terrainCastsShadows(quality);
+      // ground's sun-averted faces, which coarser ground barely moves). Whether there are shadows at
+      // all is main.ts's call (quality.shadows), made from the setting and the measured frame time.
+      const casts = quality.shadows;
       shadowMesh.visible = casts;
       shadowList.count = 0;
       if (casts && sunKnown) {
         sunCuller.setFromMatrix(sunViewProj);
-        const r0s = lod.selectWithin(cp.x, cp.y, cp.z, r0, sunCuller, shadowList, Math.floor(SHADOW_TRIANGLES / TRIS_PER_NODE));
+        const r0s = lod.selectWithin(cp.x, cp.y, cp.z, r0, sunCuller, shadowList, Math.floor(shadowTriangleBudget(quality) / TRIS_PER_NODE));
         tu.uLodShadow.value.set(r0s, MORPH_START);
         upload(shadowList, sent.shadow, shadow.node, shadow.skirt);
       }

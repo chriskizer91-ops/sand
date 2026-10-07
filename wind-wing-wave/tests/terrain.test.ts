@@ -21,14 +21,16 @@ import {
   GRID_Z0,
   LEAF_SIZE,
   MORPH_START,
+  NO_MORPH_LEVEL,
   OUTER_SIZE,
   ROOT_SIZE,
-  SHADOW_TRIANGLES,
   TRIS_PER_NODE,
   TerrainLod,
   buildPatchGeometry,
+  cutsForward,
   finestRange,
   makeNodeList,
+  shadowTriangleBudget,
   triangleBudget,
   type NodeList,
 } from '../src/render/terrain';
@@ -117,6 +119,20 @@ function gridHeightAt(x: number, z: number): number {
   return h + (DEEP_Y - h) * smoothstep(0, FALL, out);
 }
 
+const mod2 = (v: number): number => ((v % 2) + 2) % 2;
+
+/**
+ * The shader's geomorph rule (tgTerrainVertex) for the vertex with grid index (gx, gz) at some level:
+ * which way (in grid steps) it slides to reach the next coarser grid. Odd indices slide back; the
+ * middle vertex of a coarse square whose cut runs the other way slides forward in x instead.
+ */
+function morphDir(gx: number, gz: number): [number, number] {
+  const ox = mod2(gx);
+  const oz = mod2(gz);
+  const forward = ox === 1 && oz === 1 && mod2(Math.floor(gx / 2) + Math.floor(gz / 2)) === 1;
+  return [forward ? 1 : -ox, -oz];
+}
+
 /** The shader's geomorph (tgTerrainVertex), replayed on the CPU: where a grid vertex ends up. */
 function morphed(x: number, z: number, node: Node, cam: THREE.Vector3, r0: number): [number, number] {
   let spacing = node.size / GRID_N;
@@ -124,15 +140,48 @@ function morphed(x: number, z: number, node: Node, cam: THREE.Vector3, r0: numbe
   for (let i = 0; i < 4; i++) {
     const d = Math.hypot(cam.x - x, cam.y - gridHeightAt(x, z), cam.z - z);
     const k = Math.max(0, Math.min(1, (d - range * MORPH_START) / (range * (1 - MORPH_START))));
-    const ox = ((Math.floor((x - GRID_X0) / spacing + 0.5) % 2) + 2) % 2;
-    const oz = ((Math.floor((z - GRID_Z0) / spacing + 0.5) % 2) + 2) % 2;
-    x -= ox * spacing * k;
-    z -= oz * spacing * k;
+    const [dx, dz] = morphDir(Math.floor((x - GRID_X0) / spacing + 0.5), Math.floor((z - GRID_Z0) / spacing + 0.5));
+    x += dx * spacing * k;
+    z += dz * spacing * k;
     if (k < 1) break;
     spacing *= 2;
     range *= 2;
   }
   return [x, z];
+}
+
+/**
+ * The patch's ground triangles for a node whose first grid index is (gx0, gz0), with every vertex
+ * slid by `k` of its morph step: as [x0, z0, x1, z1, x2, z2] in grid steps of the node's level.
+ */
+function morphedPatch(gx0: number, gz0: number, k: number): number[][] {
+  const { index } = buildPatchGeometry();
+  const side = GRID_N + 1;
+  const at = (v: number): [number, number] => {
+    const gx = gx0 + (v % side);
+    const gz = gz0 + Math.floor(v / side);
+    const [dx, dz] = morphDir(gx, gz);
+    return [gx + dx * k, gz + dz * k];
+  };
+  const tris: number[][] = [];
+  for (let t = 0; t < GRID_N * GRID_N * 2; t++) tris.push([...at(index[t * 3]), ...at(index[t * 3 + 1]), ...at(index[t * 3 + 2])]);
+  return tris;
+}
+
+/** Twice the signed area seen from above, positive for a triangle that faces up (as the patch's do). */
+function upArea(t: number[]): number {
+  const ux = t[2] - t[0];
+  const uz = t[3] - t[1];
+  const vx = t[4] - t[0];
+  const vz = t[5] - t[1];
+  return uz * vx - ux * vz;
+}
+
+/** A triangle as text, the same whichever corner it starts from (winding kept). */
+function triKey(t: number[]): string {
+  const corners = [0, 1, 2].map((i) => `${t[i * 2]},${t[i * 2 + 1]}`);
+  const first = corners.indexOf([...corners].sort()[0]);
+  return [0, 1, 2].map((i) => corners[(first + i) % 3]).join(' ');
 }
 
 const PHONE: Quality = { setting: 'auto', phone: true, tier: 1, density: 0.8, shadows: true };
@@ -186,6 +235,71 @@ describe('terrain patch', () => {
     }
     expect(up).toBe(N * N * 2);
     expect(out).toBe(4 * N * 2);
+  });
+
+  it('cuts its squares like a chessboard, so neither diagonal direction is favoured', () => {
+    // Count the squares cut from their (i, j) corner to (i+1, j+1): the cut is the edge shared by
+    // the square's two triangles.
+    const side = N + 1;
+    let forward = 0;
+    for (let s = 0; s < N * N; s++) {
+      const i = s % N;
+      const j = Math.floor(s / N);
+      const a = new Set(index.subarray(s * 6, s * 6 + 3));
+      const shared = [...index.subarray(s * 6 + 3, s * 6 + 6)].filter((v) => a.has(v));
+      const isForward = shared.includes(i + j * side) && shared.includes(i + 1 + (j + 1) * side);
+      expect(isForward).toBe(cutsForward(i, j));
+      if (isForward) forward++;
+    }
+    expect(forward).toBe((N * N) / 2);
+  });
+
+  it('becomes exactly the next coarser grid when fully morphed (nothing pops when the level changes)', () => {
+    // Node origins sit on multiples of 32 grid steps (also outside the zone, where they are negative).
+    for (const [gx0, gz0] of [
+      [0, 0],
+      [32, 64],
+      [-32, 96],
+      [-64, -32],
+    ]) {
+      const fine = new Set<string>();
+      for (const t of morphedPatch(gx0, gz0, 1)) {
+        const area = upArea(t);
+        expect(area).toBeGreaterThanOrEqual(0);
+        if (area === 0) continue; // collapsed to a line or a point
+        const key = triKey(t);
+        expect(fine.has(key), `triangle ${key} twice`).toBe(false);
+        fine.add(key);
+      }
+      // The coarser level's own triangles over the same ground, in the finer level's grid steps.
+      const coarse = new Set<string>();
+      for (let J = 0; J < N / 2; J++) {
+        for (let I = 0; I < N / 2; I++) {
+          const gi = gx0 / 2 + I;
+          const gj = gz0 / 2 + J;
+          const [ax, az, bx, bz, cx, cz, dx, dz] = [gi, gj, gi + 1, gj, gi, gj + 1, gi + 1, gj + 1].map((v) => v * 2);
+          const tris = cutsForward(gi, gj)
+            ? [
+                [ax, az, cx, cz, dx, dz],
+                [ax, az, dx, dz, bx, bz],
+              ]
+            : [
+                [ax, az, cx, cz, bx, bz],
+                [bx, bz, cx, cz, dx, dz],
+              ];
+          for (const t of tris) coarse.add(triKey(t));
+        }
+      }
+      expect([...fine].sort()).toEqual([...coarse].sort());
+    }
+  });
+
+  it('never folds a triangle over while morphing', () => {
+    for (let k = 0; k <= 1.0001; k += 0.125) {
+      let worst = Infinity;
+      for (const t of morphedPatch(32, 64, k)) worst = Math.min(worst, upArea(t));
+      expect(worst, `at morph ${k}`).toBeGreaterThanOrEqual(0);
+    }
   });
 });
 
@@ -297,35 +411,55 @@ describe('terrain node selection', () => {
     }
   });
 
-  it('keeps the sun-shadow selection within its budget, coarsening only as much as needed', () => {
+  it('keeps the sun-shadow selection within its share of the shadow budget, coarsening only as much as needed', () => {
     const lod = readyLod();
     const list = makeNodeList(4096);
-    const r0 = finestRange(LAPTOP, 900 * 1.5, 50);
     // The sun's box as daylight sets it: up to 300 m either side of the camera target.
     const sun = new THREE.OrthographicCamera(-300, 300, 300, -300, 1, 2000);
     const culler = new FrustumCuller();
-    let worst = 0;
-    for (const [tx, tz] of [
-      [40, -20],
-      [-260, 250],
-    ]) {
-      for (const d of [40, 120, 420, 900]) {
-        const half = Math.min(300, Math.max(40, d * 0.8));
-        sun.left = -half;
-        sun.right = half;
-        sun.top = half;
-        sun.bottom = -half;
-        sun.updateProjectionMatrix();
-        sun.position.set(tx + 0.45 * 800, 0.8 * 800, tz - 0.35 * 800);
-        sun.lookAt(tx, 0, tz);
-        sun.updateMatrixWorld();
-        culler.setFromMatrix(new THREE.Matrix4().multiplyMatrices(sun.projectionMatrix, sun.matrixWorldInverse));
-        const used = lod.selectWithin(tx + 0.4 * d, 0.7 * d, tz + 0.5 * d, r0, culler, list, Math.floor(SHADOW_TRIANGLES / TRIS_PER_NODE));
-        expect(used).toBeGreaterThan(r0 * 0.3);
-        worst = Math.max(worst, list.count * TRIS_PER_NODE);
+    for (const [q, px] of [
+      [PHONE, 915 * 2],
+      [LAPTOP, 900 * 1.5],
+    ] as [Quality, number][]) {
+      const r0 = finestRange(q, px, 50);
+      const budget = shadowTriangleBudget(q);
+      // On the Pixel the land leaves room in the shadow pass (100k triangles in all) for the plants.
+      expect(budget).toBeLessThanOrEqual(q.phone ? 60_000 : 100_000);
+      let worst = 0;
+      for (const [tx, tz] of [
+        [40, -20],
+        [-260, 250],
+      ]) {
+        for (const d of [40, 120, 420, 900]) {
+          const half = Math.min(300, Math.max(40, d * 0.8));
+          sun.left = -half;
+          sun.right = half;
+          sun.top = half;
+          sun.bottom = -half;
+          sun.updateProjectionMatrix();
+          sun.position.set(tx + 0.45 * 800, 0.8 * 800, tz - 0.35 * 800);
+          sun.lookAt(tx, 0, tz);
+          sun.updateMatrixWorld();
+          culler.setFromMatrix(new THREE.Matrix4().multiplyMatrices(sun.projectionMatrix, sun.matrixWorldInverse));
+          const used = lod.selectWithin(tx + 0.4 * d, 0.7 * d, tz + 0.5 * d, r0, culler, list, Math.floor(budget / TRIS_PER_NODE));
+          expect(used, `${q.phone ? 'phone' : 'laptop'} at ${d} m`).toBeGreaterThan(r0 * 0.3);
+          worst = Math.max(worst, list.count * TRIS_PER_NODE);
+        }
       }
+      expect(worst).toBeLessThanOrEqual(budget);
     }
-    expect(worst).toBeLessThanOrEqual(SHADOW_TRIANGLES);
+  });
+
+  it('never morphs the flat floor out to the horizon (its grid does not line up with the quadtree)', () => {
+    const lod = readyLod();
+    const list = makeNodeList(4096);
+    lod.select(0, 400, 0, 120, null, list);
+    const outer = nodesOf(list).filter((n) => n.size === OUTER_SIZE);
+    expect(outer.length).toBe(8);
+    for (const n of outer) expect(n.level).toBe(NO_MORPH_LEVEL);
+    // Even with the smallest finest range, the morph would only start far beyond any far plane.
+    const smallest = finestRange({ ...LAPTOP, tier: 0 }, 300, 70);
+    expect(smallest * 2 ** NO_MORPH_LEVEL * MORPH_START).toBeGreaterThan(1e7);
   });
 
   it('is stable: the same view gives the same nodes, and a small move changes only a few', () => {
