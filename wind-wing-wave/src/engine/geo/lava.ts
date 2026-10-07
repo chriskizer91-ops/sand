@@ -10,6 +10,9 @@
  *    where it is thick enough for its slope (thickness x slope above its yield strength), and
  *    that strength grows as it cools. Hot lava runs down slopes in thin sheets; cooling lava
  *    stalls into thick lobes and domes.
+ *  - Like a heap of grain, it also needs some slope to keep going: about 1° when fresh, rising
+ *    to about 7° as its crust thickens. So lava poured in one place builds a low, rounded
+ *    shield (gentle on top, steeper toward its cooler edges), not a flat-topped lava pond.
  *  - Mobility (how freely the rest moves) drops steeply as it cools.
  *  - A column never gives away more than its moving part, and never more than a small share
  *    of the height difference to any one neighbour, so the surface can never see-saw.
@@ -25,7 +28,7 @@
  */
 import { CELL, LAVA_FREEZE, NX, NZ, ORIGIN_X, ORIGIN_Z, SEA_LEVEL } from '../../config';
 import { ChangeFlag, RockKind, type Columns } from '../columns';
-import { ActiveSet, blockOf, EDGE, NB_DIST, NB_OFF, qSed, type ChangeTracker, type Sand } from './sand';
+import { ActiveSet, blockOf, EDGE, mixKind, NB_DIST, NB_OFF, qSed, type ChangeTracker, type Sand } from './sand';
 
 /** 1 / distance to each neighbour. */
 const NB_INV_DIST = NB_DIST.map((d) => 1 / d);
@@ -43,7 +46,14 @@ const YIELD_HOT = 0.01;
  * hot, then stiffens sharply as it nears setting, so flows stall into lobes and levees.
  */
 const YIELD_COOL = 10;
-/** Slopes gentler than this count as this (so flat ground has a finite yield thickness). */
+/**
+ * The slope lava needs to keep moving: FRICTION_HOT when fresh, plus FRICTION_COOL x (1 - T) as
+ * it cools (so about 0.015 rising to 0.12, or 1° to 7°). It acts like extra yield strength that
+ * grows with thickness, so even a deep pool holds a gentle slope instead of levelling flat.
+ */
+const FRICTION_HOT = 0.015;
+const FRICTION_COOL = 0.15;
+/** Slopes gentler than this count as this (no dividing by a flat surface's zero slope). */
 const MIN_SLOPE = 0.01;
 /** Mobility of fresh lava. Flux = mobility * moving^2 * slope * dt. */
 const MOBILITY = 200;
@@ -64,15 +74,15 @@ const COOL_EDGE = 0.03;
 /** Lava whose surface is below this is in the sea. */
 const QUENCH_LEVEL = SEA_LEVEL + 0.3;
 /** Cooling in the sea. */
-const COOL_SEA = 0.6;
+const COOL_SEA = 0.8;
 /** Share of lava frozen under the sea that shatters into black sand. */
 const BLACK_SAND = 0.3;
 /** Shattered lava tumbles to a neighbour at least this much lower (m). */
 const TALUS_DROP = 0.5;
 /** Less lava than this in a column just becomes part of the rock. */
 const TRACE = 1e-5;
-/** Lava newly covering ground higher than this burns the life on it. */
-const BURN_ABOVE = SEA_LEVEL - 1;
+/** Lava newly covering ground higher than this burns the life on it (the tools use it too). */
+export const BURN_ABOVE = SEA_LEVEL - 1;
 
 // Local copies of shared values used in the hot loops (module lookups cost time in some hosts).
 const FREEZE = LAVA_FREEZE;
@@ -109,9 +119,11 @@ export interface LavaStats {
 
 export class Lava {
   readonly set = new ActiveSet();
-  /** Lava arriving in each column this substep, and the heat it brings (scratch, kept at 0). */
-  private readonly inL = new Float32Array(NX * NZ);
-  private readonly inH = new Float32Array(NX * NZ);
+  /**
+   * Lava arriving in each column this substep ([2c]) and the heat it brings ([2c + 1]); side by
+   * side so one memory fetch serves both. Scratch, kept at 0 between substeps.
+   */
+  private readonly inflow = new Float32Array(2 * NX * NZ);
   /** Per listed column: total outflow, cooling rate, sea cooling rate. */
   private outQ = new Float32Array(4096);
   private coolRate = new Float32Array(4096);
@@ -137,6 +149,8 @@ export class Lava {
   private readonly glow: [number, number, number, number] = [0, 0, 0, 0];
   /** The glow is worked out only when asked for, and only after the lava has changed. */
   private glowStale = false;
+  /** Counts freezes, to vary the colour rounding of the black sand they make (see mixKind). */
+  private freezes = 0;
 
   constructor(
     private readonly cols: Columns,
@@ -217,8 +231,7 @@ export class Lava {
     const outQ = this.outQ;
     const coolRate = this.coolRate;
     const seaRate = this.seaRate;
-    const inL = this.inL;
-    const inH = this.inH;
+    const inflow = this.inflow;
     const q8 = this.q8;
     const flag = set.flag;
     // Entries before n1 stay put even if the list grows, so this array is safe to read for them.
@@ -226,6 +239,9 @@ export class Lava {
     // Local names for the shared tables keep the hot loops free of module lookups.
     const off = NB_OFF;
     const edge = EDGE;
+    const invDist = NB_INV_DIST;
+    const minSlope = MIN_SLOPE;
+    const pairCap = PAIR_CAP;
 
     // 1. From the same "before" picture, work out what each column sends to each lower
     //    neighbour, and gather what every receiver will get (and the heat it brings).
@@ -247,7 +263,7 @@ export class Lava {
       const S = rock[c] + sed[c] + L;
       const u = 1 - T;
       const u2 = u * u;
-      const strength = YIELD_HOT + YIELD_COOL * u2 * u2;
+      const strength = YIELD_HOT + YIELD_COOL * u2 * u2 + (FRICTION_HOT + FRICTION_COOL * u) * L;
       const k = MOBILITY_TABLE[T >= 1 ? 256 : (T * 256) | 0] * dts;
       let out = 0;
       let most = 0;
@@ -259,11 +275,14 @@ export class Lava {
         let q = 0;
         const drop = S - (rock[n] + sed[n] + Ln);
         if (drop > 0 && edge[n] === 0) {
-          const slope = drop * NB_INV_DIST[d];
-          const moving = L - strength / (slope > MIN_SLOPE ? slope : MIN_SLOPE);
+          const slope = drop * invDist[d];
+          const s = slope > minSlope ? slope : minSlope;
+          // Thick enough to move (L above the yield thickness strength / s)? Tested without a
+          // division, as most neighbours of a stalled or crusting flow fail here.
+          const moving = L * s > strength ? L - strength / s : 0;
           if (moving > 0) {
             q = k * moving * moving * slope;
-            const cap = drop * PAIR_CAP;
+            const cap = drop * pairCap;
             if (q > cap) q = cap;
             out += q;
             if (moving > most) most = moving;
@@ -271,20 +290,22 @@ export class Lava {
         }
         q8[d] = q;
       }
-      // Never give away more than the part that can move.
+      // Never give away more than the part that can move. Specks smaller than TRACE are not
+      // sent at all: they would only become a film of rock (and burn life) beyond the flow.
       const scale = out > most ? most / out : 1;
+      let sent = 0;
       if (out > 0) {
-        const H = T * scale;
         for (let d = 0; d < 8; d++) {
-          const q = q8[d];
-          if (q <= 0) continue;
+          const q = q8[d] * scale;
+          if (q < TRACE) continue;
           const n = c + off[d];
-          inL[n] += q * scale;
-          inH[n] += q * H;
+          inflow[2 * n] += q;
+          inflow[2 * n + 1] += q * T;
+          sent += q;
           if (flag[n] === 0) set.add(n);
         }
       }
-      outQ[j] = out * scale;
+      outQ[j] = sent;
       const sea = S < QUENCH_LEVEL ? COOL_SEA : 0;
       seaRate[j] = sea;
       coolRate[j] = COOL_BASE + COOL_THIN / (L > 0.4 ? L : 0.4) + (COOL_EDGE * dry) / 8 + sea;
@@ -310,13 +331,15 @@ export class Lava {
       let L = lava[c];
       let T = temp[c];
       if (j < n1) L -= outQ[j];
-      const add = inL[c];
+      // A column that had no lava (it only just got listed as a receiver).
+      const bare = L <= 0;
+      const add = inflow[2 * c];
       if (add > 0) {
-        if (L <= 0 && rock[c] + sed[c] > BURN_ABOVE) burns.mark(c, BURNT);
-        T = L > 0 ? (L * T + inH[c]) / (L + add) : inH[c] / add;
+        const heat = inflow[2 * c + 1];
+        T = L > 0 ? (L * T + heat) / (L + add) : heat / add;
         L += add;
-        inL[c] = 0;
-        inH[c] = 0;
+        inflow[2 * c] = 0;
+        inflow[2 * c + 1] = 0;
       }
       if (L <= TRACE) {
         // A trace left behind (or lava removed by something else): it just joins the rock.
@@ -327,6 +350,8 @@ export class Lava {
         changes.mark(c, MOVED);
         continue;
       }
+      // Lava has really reached this ground: anything living on it burns (or is buried).
+      if (bare && rock[c] + sed[c] > BURN_ABOVE) burns.mark(c, BURNT);
       if (j < n1) {
         T -= coolRate[j] * dts;
         const sea = seaRate[j];
@@ -356,8 +381,8 @@ export class Lava {
       const c = set.list[j];
       for (let d = 0; d < 8; d++) {
         const n = c + NB_OFF[d];
-        this.inL[n] = 0;
-        this.inH[n] = 0;
+        this.inflow[2 * n] = 0;
+        this.inflow[2 * n + 1] = 0;
       }
     }
     for (let j = listed; j < set.count; j++) set.flag[set.list[j]] = 0;
@@ -397,7 +422,7 @@ export class Lava {
       }
       if (to !== c) cols.touch(to);
       const had = sed[to];
-      sandKind[to] = had > 0 ? Math.round((had * sandKind[to]) / (had + black)) : 0;
+      sandKind[to] = mixKind(sandKind[to], had, black, 0, to, ++this.freezes);
       sed[to] = had + black;
       this.changes.mark(to, MOVED);
       this.sand.wakeAround(to);

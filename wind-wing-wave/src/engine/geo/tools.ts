@@ -22,13 +22,12 @@ import {
   NZ,
   ORIGIN_X,
   ORIGIN_Z,
-  SEA_LEVEL,
   type ToolId,
 } from '../../config';
 import { ChangeFlag, RockKind, type Columns } from '../columns';
 import { smoothstep } from '../noise';
-import type { Lava } from './lava';
-import { hashInt, qSed, type Reporter, type Sand } from './sand';
+import { BURN_ABOVE, type Lava } from './lava';
+import { ChangeTracker, hashInt, mixKind, PATCH_BITS, qSed, type Reporter, type Sand } from './sand';
 
 export interface ToolResult {
   /** Volume added (+) or removed (-) this call, m^3. */
@@ -38,11 +37,11 @@ export interface ToolResult {
 }
 
 /**
- * Lava pours this many cubic metres per second for each square metre of brush (so 0.8 m of
+ * Lava pours this many cubic metres per second for each square metre of brush (so 0.9 m of
  * depth per second averaged over the brush). Tuned so the medium brush seen from 300 m
  * (radius 18 m) lifts a 60 m-wide island out of the sea from a -2.5 m knoll in 20-30 s.
  */
-export const LAVA_RATE = 0.8;
+export const LAVA_RATE = 0.9;
 /** Rock is placed at a third of lava's rate: it is for cliffs and stacks, not bulk land. */
 export const ROCK_RATE = LAVA_RATE / 3;
 /** Sand pours at half of lava's rate. */
@@ -61,6 +60,9 @@ const HANDS_ROCK = 0.06;
 const HANDS_MAX = 0.6;
 /** Rock lands as tumbling boulders: each column gets a random share of 65%-135% each step. */
 const ROCK_LUMP = 0.7;
+/** Every tool change is reported with these flags (plus Burn where lava newly covers ground). */
+const TOOL_CHANGE = ChangeFlag.Tool | ChangeFlag.Geom | ChangeFlag.Look;
+const TOOL_BURN = TOOL_CHANGE | ChangeFlag.Burn;
 
 /** Scratch size: the widest brush plus a 2-column margin for the Hands average, per side. */
 const BOX = 2 * Math.ceil(BRUSH_MAX / CELL) + 8;
@@ -72,9 +74,13 @@ export class Tools {
   private readonly surf = new Float32Array(BOX * BOX);
   private readonly rowSum = new Float32Array(BOX * BOX);
   private readonly want = new Float32Array(BOX * BOX);
-  /** What one call changed, and where it covered living ground with lava. */
+  /** What one call changed. */
   private readonly rect = new Rect();
-  private readonly burnt = new Rect();
+  /**
+   * Where one call newly covered ground with lava, gathered per patch: a pour's round edge then
+   * burns only the patches the lava really reached, not the corners of the square around it.
+   */
+  private readonly burns = new ChangeTracker(PATCH_BITS);
   private rockPlaced = 0;
   private tick = 0;
 
@@ -104,7 +110,6 @@ export class Tools {
     if (i1 < i0 || k1 < k0) return { volume: 0, rect: null };
     this.tick++;
     this.rect.reset();
-    this.burnt.reset();
     const total = this.weigh(tool, x, z, r, i0, k0, i1, k1);
     if (total <= 0) return { volume: 0, rect: null };
     strength = Math.min(1, strength);
@@ -171,7 +176,6 @@ export class Tools {
     const w = this.weight;
     const bw = i1 - i0 + 1;
     const rect = this.rect;
-    const burnt = this.burnt;
     let volume = 0;
     for (let k = k0; k <= k1; k++) {
       for (let i = i0; i <= i1; i++) {
@@ -184,7 +188,7 @@ export class Tools {
         add = Math.min(add, LAVA_HEAP - L, BUILD_MAX - top - L);
         if (add <= 1e-6) continue;
         this.cols.touch(c);
-        if (L <= 0 && top > SEA_LEVEL - 1) burnt.add(i, k);
+        if (L <= 0 && top > BURN_ABOVE) this.burns.mark(c, TOOL_BURN);
         temp[c] = L > 0 ? (L * temp[c] + add) / (L + add) : 1;
         lava[c] = L + add;
         this.lava.wake(c);
@@ -238,8 +242,8 @@ export class Tools {
         if (add <= 0) continue;
         this.cols.touch(c);
         const had = sed[c];
-        // Poured sand is golden; it mixes by volume with the sand already there.
-        sandKind[c] = Math.round((had * sandKind[c] + add * POUR_KIND) / (had + add));
+        // Poured sand is golden; it mixes with the top of the sand already there.
+        sandKind[c] = mixKind(sandKind[c], had, add, POUR_KIND, c, this.tick);
         sed[c] = had + add;
         rect.add(i, k);
         volume += add;
@@ -342,7 +346,6 @@ export class Tools {
     const giveShare = Math.min(1, wanted / canGive);
     const takeShare = Math.min(1, canGive / wanted);
     const rect = this.rect;
-    const burnt = this.burnt;
     // Take from the bumps (lava, then sand, then rock), keeping each material in its own pool.
     let poolLava = 0;
     let poolHeat = 0;
@@ -398,14 +401,14 @@ export class Tools {
         cols.touch(c);
         if (al > 0) {
           const L = lava[c];
-          if (L <= 0 && rock[c] + sed[c] > SEA_LEVEL - 1) burnt.add(i, k);
+          if (L <= 0 && rock[c] + sed[c] > BURN_ABOVE) this.burns.mark(c, TOOL_BURN);
           temp[c] = L > 0 ? (L * temp[c] + al * heat) / (L + al) : heat;
           lava[c] = L + al;
           this.lava.wake(c);
         }
         if (as > 0) {
           const S = sed[c];
-          sandKind[c] = Math.round((S * sandKind[c] + as * kind) / (S + as));
+          sandKind[c] = mixKind(sandKind[c], S, as, kind, c, this.tick);
           sed[c] = S + as;
           sandLeft -= as;
         }
@@ -422,11 +425,9 @@ export class Tools {
   /** Report the change (and any burning) and wake sand around it. */
   private finish(volume: number, wakeSand: boolean): ToolResult {
     const rect = this.rect;
-    const burnt = this.burnt;
     if (rect.empty) return { volume: 0, rect: null };
-    const flags = ChangeFlag.Tool | ChangeFlag.Geom | ChangeFlag.Look;
-    this.report(rect.i0, rect.k0, rect.i1, rect.k1, flags);
-    if (!burnt.empty) this.report(burnt.i0, burnt.k0, burnt.i1, burnt.k1, flags | ChangeFlag.Burn);
+    this.report(rect.i0, rect.k0, rect.i1, rect.k1, TOOL_CHANGE);
+    if (this.burns.pending) this.burns.flush(this.report);
     if (wakeSand) this.sand.wakeRect(rect.i0 - 1, rect.k0 - 1, rect.i1 + 1, rect.k1 + 1);
     return { volume, rect: [rect.i0, rect.k0, rect.i1, rect.k1] };
   }

@@ -99,21 +99,76 @@ function reachDownhill(geo: Geo, before: Float32Array, x0: number): number {
   return far;
 }
 
+// ---------- timing ----------
+
+/** Up to this many timing rounds, with a short pause between them (other work may finish meanwhile). */
+const SPEED_ROUNDS = 8;
+const SPEED_PAUSE_MS = 500;
+/** A round ran undisturbed if this thread ran for at least this share of its wall-clock time... */
+const QUIET_SHARE = 0.75;
 /**
- * The quickest and the middle of a set of step timings. The speed checks judge the quickest:
- * the computer may be busy with other work, which only ever adds time, so the quickest step is
- * the fairest measure of what the code itself costs. The middle one is reported alongside. If
- * the machine is very busy, a check takes a short pause and measures again (up to SPEED_ROUNDS).
+ * ...or, where the host can't tell, if its slow steps (90th percentile) stay within this many
+ * times its quick ones (25th). Settling sand varies a little from step to step by itself; a step
+ * the computer paused for a time slice costs several times more.
  */
-function timing(ms: number[]): { best: number; middle: number } {
-  if (ms.length === 0) return { best: Infinity, middle: Infinity };
-  const sorted = ms.slice().sort((a, b) => a - b);
-  return { best: sorted[0], middle: sorted[sorted.length >> 1] };
+const QUIET_SPREAD = 3;
+const pause = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+
+/** This thread's CPU time so far (ms) where the host reports it (Node, where vitest runs), otherwise null. */
+function cpuNow(): number | null {
+  if (typeof process === 'undefined') return null;
+  const usage = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : typeof process.cpuUsage === 'function' ? process.cpuUsage() : null;
+  return usage ? (usage.user + usage.system) / 1000 : null;
 }
 
-const SPEED_ROUNDS = 5;
-const SPEED_PAUSE_MS = 300;
-const pause = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+/** The value p (0..1) of the way up a sorted list. */
+const percentile = (sorted: number[], p: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+
+/**
+ * Time the physics fairly, in rounds. `round` builds a fresh test, runs it, and returns each
+ * step's cost scaled to the target workload (ms).
+ *
+ * Each round is judged by its 25th-percentile step: the work is steady, so this skips the odd
+ * hiccup without trusting one lucky step. The median and the slow (90th percentile) steps are
+ * reported too. Other programs on the computer can only ever add time, so a round that meets
+ * the target is a fair pass however busy the computer was. A round that misses it counts as a
+ * fail only if it ran undisturbed (QUIET_SHARE, or QUIET_SPREAD where the host can't report
+ * CPU time); if every round that missed was disturbed, the check says it could not measure
+ * reliably instead of guessing either way. It stops at the first round that meets the target.
+ */
+async function speedCheck(target: number, workload: string, round: () => number[]): Promise<{ pass: boolean; detail: string }> {
+  type Timing = { p25: number; p50: number; p90: number; quiet: boolean };
+  // The best round so far: one that met the target, else an undisturbed one, else the quickest.
+  const rank = (x: Timing) => (x.p25 <= target ? 0 : x.quiet ? 1 : 2);
+  let best: Timing | null = null;
+  let mostShare = 0;
+  for (let r = 0; r < SPEED_ROUNDS; r++) {
+    if (r > 0) await pause(SPEED_PAUSE_MS);
+    const c0 = cpuNow();
+    const w0 = performance.now();
+    const per = round();
+    const wall = performance.now() - w0;
+    const c1 = cpuNow();
+    if (per.length === 0) continue;
+    const sorted = per.slice().sort((a, b) => a - b);
+    const share = c0 !== null && c1 !== null && wall > 0 ? (c1 - c0) / wall : null;
+    if (share !== null) mostShare = Math.max(mostShare, share);
+    const t: Timing = { p25: percentile(sorted, 0.25), p50: percentile(sorted, 0.5), p90: percentile(sorted, 0.9), quiet: false };
+    t.quiet = share !== null ? share >= QUIET_SHARE : t.p90 <= QUIET_SPREAD * t.p25;
+    if (!best || rank(t) < rank(best) || (rank(t) === rank(best) && t.p25 < best.p25)) best = t;
+    if (best.p25 <= target) break;
+  }
+  const ms = (v: number) => v.toFixed(2);
+  if (!best || (best.p25 > target && !best.quiet)) {
+    const why = mostShare > 0 ? `this check got at most ${Math.round(mostShare * 100)}% of the computer's time` : 'every round was interrupted';
+    const seen = best ? ` The quickest quarter of steps took ${ms(best.p25)} ms or less.` : '';
+    return { pass: false, detail: `Could not measure reliably: the computer was too busy (${why}).${seen} Run it again when it is quieter.` };
+  }
+  return {
+    pass: best.p25 <= target,
+    detail: `${ms(best.p25)} ms per step for ${workload} (median ${ms(best.p50)} ms, slow steps ${ms(best.p90)} ms; ${target} ms allowed).`,
+  };
+}
 
 function surfCopy(geo: Geo): Float32Array {
   const s = new Float32Array(geo.cols.n);
@@ -424,6 +479,177 @@ registerChecks('geo', [
     },
   },
   {
+    id: 'lava-shield',
+    label: 'Touching the glow for half a minute raises a rounded island about 60 m across',
+    quick: false,
+    run() {
+      // The first-minute pour: the medium brush seen from 300 m (radius 18 m), held on the glow.
+      const cols = new Columns();
+      const geo = new Geo(cols, 1);
+      geo.generateSeabed();
+      const { x, z } = geo.seabed.glow;
+      hold(geo, 'lava', x, z, 18, 25);
+      settle(geo);
+      // Width above the sea through the glow, east-west and north-south.
+      const across = (dx: number, dz: number) => {
+        let n = 0;
+        for (let s = -60; s <= 60; s++) if (cols.top(cols.colAt(x + s * CELL * dx, z + s * CELL * dz)) > SEA_LEVEL) n++;
+        return n * CELL;
+      };
+      const width = Math.min(across(1, 0), across(0, 1));
+      // A rounded top: from the glow outward the land falls all the way to the coast, rather
+      // than staying flat and dropping off a rim.
+      const h = (d: number, dx: number, dz: number) => cols.top(cols.colAt(x + d * dx, z + d * dz));
+      let falls = true;
+      let rise = 0;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const h0 = h(0, dx, dz);
+        const h8 = h(8, dx, dz);
+        const h16 = h(16, dx, dz);
+        const h24 = h(24, dx, dz);
+        if (!(h8 <= h0 + 0.05 && h16 < h8 && h24 < h16)) falls = false;
+        rise += (h0 - h16) / 4;
+      }
+      return {
+        pass: width >= 54 && width <= 72 && falls && rise >= 0.4,
+        detail: `After 25 s the island is ${width} m across; its middle stands ${f1(cols.top(cols.colAt(x, z)))} m high, ${rise.toFixed(2)} m above the ground 16 m out, falling ${falls ? 'steadily' : 'unevenly'} to the coast.`,
+      };
+    },
+  },
+  {
+    id: 'lava-burns-where-it-goes',
+    label: 'Lava burns only the ground it really covers',
+    quick: true,
+    run() {
+      // Pour on a slope (all of it land), then let it run and set; note every column reported
+      // as burnt and every column the lava ever reached.
+      const geo = testWorld((x) => 30 - x * 0.1);
+      const cols = geo.cols;
+      const burnt = new Uint8Array(cols.n);
+      const reached = new Uint8Array(cols.n);
+      const rock0 = cols.rock.slice();
+      cols.addListener((i0, k0, i1, k1, flags) => {
+        if ((flags & ChangeFlag.Burn) === 0) return;
+        for (let k = k0; k <= k1; k++) for (let i = i0; i <= i1; i++) burnt[i + k * NX] = 1;
+      });
+      // The lava stays well inside this window (it runs downhill, toward +x).
+      const wi0 = at(-30, 0) % NX;
+      const wi1 = at(150, 0) % NX;
+      const wk0 = (at(0, -60) / NX) | 0;
+      const wk1 = (at(0, 60) / NX) | 0;
+      const look = () => {
+        for (let k = wk0; k <= wk1; k++) for (let i = wi0; i <= wi1; i++) if (cols.lava[i + k * NX] > 0) reached[i + k * NX] = 1;
+      };
+      for (let s = 0; s < 2 / PHYS_STEP; s++) {
+        geo.applyTool('lava', 0, 0, 6, PHYS_STEP, 1);
+        look();
+        geo.step(PHYS_STEP, 1000);
+        look();
+      }
+      for (let s = 0; s < 30 / PHYS_STEP && !geo.isSettled(); s++) {
+        geo.step(PHYS_STEP, 1000);
+        look();
+      }
+      let nBurnt = 0;
+      let wrong = 0;
+      let missed = 0;
+      for (let c = 0; c < cols.n; c++) {
+        const covered = reached[c] === 1 || cols.rock[c] - rock0[c] > 1e-4;
+        if (burnt[c]) nBurnt++;
+        if (burnt[c] && !covered) wrong++;
+        if (covered && !burnt[c]) missed++;
+      }
+      return {
+        pass: nBurnt > 100 && wrong === 0 && missed === 0,
+        detail: `${nBurnt} columns burnt; ${wrong} of them never had lava on them; ${missed} covered columns were not burnt.`,
+      };
+    },
+  },
+  {
+    id: 'sand-colour',
+    label: 'Golden sand poured on a black beach shows golden',
+    quick: true,
+    run() {
+      const geo = testWorld(
+        () => 5,
+        () => 4,
+      );
+      geo.cols.sandKind.fill(0);
+      hold(geo, 'sand', 0, 0, 12, 2);
+      const kind = geo.cols.sandKind[at(0, 0)];
+      return { pass: kind >= 140 && kind <= 150, detail: `After 2 s of pouring on 4 m of black sand, the top is colour ${kind} (golden is 150, black 0).` };
+    },
+  },
+  {
+    id: 'cliff-retreat',
+    label: 'Windward sea cliffs keep wearing back slowly, leaving a rock platform',
+    quick: false,
+    run() {
+      // A 20 m cliff facing the wind (east) over 8 m of water, its shore re-found every year as
+      // the first sea column in front of it, as the ecology does.
+      const geo = testWorld((x) => (x < 0 ? 20 : -8));
+      const cols = geo.cols;
+      const shore = new Int32Array(40);
+      const edgeOf = (k: number) => {
+        let last = -1;
+        for (let i = 1; i < NX - 1; i++) if (cols.top(i + k * NX) > SEA_LEVEL) last = i;
+        return last;
+      };
+      const k0 = (at(0, -40) / NX) | 0;
+      const before = edgeOf(k0 + 20);
+      for (let year = 0; year < 2000; year++) {
+        let n = 0;
+        for (let k = k0; k < k0 + 40; k++) {
+          const last = edgeOf(k);
+          if (last >= 0) shore[n++] = last + 1 + k * NX;
+        }
+        geo.coastYears(1, shore, n, null);
+        if (year % 10 === 9) runFor(geo, 0.5);
+      }
+      const after = edgeOf(k0 + 20);
+      const moved = before - after;
+      // The rock left in front of the cliff: a platform just under the sea.
+      let platform = 0;
+      for (let i = after + 1; i <= before; i++) if (Math.abs(cols.rock[i + (k0 + 20) * NX] + 0.5) < 0.05) platform++;
+      return {
+        pass: moved >= 2 && platform >= moved - 1,
+        detail: `After 2,000 windward years the cliff edge moved back ${moved} columns (${moved * CELL} m), leaving ${platform} columns of platform at about -0.5 m.`,
+      };
+    },
+  },
+  {
+    id: 'reef-whitens',
+    label: 'Reef sand slowly whitens even a thick beach',
+    quick: false,
+    run() {
+      // A lee (west-facing) beach with 3 m of golden sand, fed 1 cm of coral sand a year.
+      const geo = testWorld(
+        (x) => Math.max(-6, x * 0.12) - 1,
+        () => 3,
+      );
+      const cols = geo.cols;
+      const shore: number[] = [];
+      for (let k = 230; k < 282; k++) {
+        let best = -1;
+        for (let i = 1; i < NX - 1; i++) {
+          const c = i + k * NX;
+          if (best < 0 || Math.abs(cols.top(c)) < Math.abs(cols.top(best))) best = c;
+        }
+        shore.push(best);
+      }
+      const list = Int32Array.from(shore);
+      const reef = new Float32Array(list.length).fill(0.01);
+      const k0 = cols.sandKind[list[0]];
+      for (let year = 0; year < 400; year++) {
+        geo.coastYears(1, list, list.length, reef);
+        if (year % 10 === 9) runFor(geo, 0.5);
+      }
+      let whitest = 0;
+      for (let c = 0; c < cols.n; c++) whitest = Math.max(whitest, cols.sandKind[c]);
+      return { pass: whitest >= 220, detail: `After 400 years the whitest beach sand is colour ${whitest} (it started at ${k0}; coral white is 250).` };
+    },
+  },
+  {
     id: 'seabed',
     label: 'The starting sea has a glowing knoll near the surface and the sandy Shallows',
     quick: false,
@@ -470,46 +696,43 @@ registerChecks('geo', [
     id: 'speed-lava',
     label: 'Lava speed: 10,000 molten columns in under 2 ms a step (this computer)',
     quick: false,
-    async run() {
-      const per: number[] = [];
-      for (let round = 0; round < SPEED_ROUNDS && timing(per).best > 2; round++) {
-        if (round > 0) await pause(SPEED_PAUSE_MS);
-        // A hot sheet of 100 x 100 columns flowing down a gentle slope.
+    run() {
+      return speedCheck(2, '10,000 molten columns', () => {
+        // A hot sheet of 100 x 100 columns flowing down a gentle slope (about 13,000 columns
+        // once it spreads). The cost is measured per molten column and scaled to 10,000.
         const geo = testWorld((x) => 30 - x * 0.05);
         const i0 = at(-100, -100) % NX;
         const k0 = (at(-100, -100) / NX) | 0;
         placeLava(geo, i0, k0, i0 + 99, k0 + 99, 2);
+        const per: number[] = [];
         for (let s = 0; s < 120; s++) {
           const st = geo.step(PHYS_STEP, 1000);
           if (s >= 20) per.push((st.ms / st.lavaCols) * 10000);
         }
-      }
-      const { best, middle } = timing(per);
-      return { pass: best <= 2, detail: `${best.toFixed(2)} ms per step for 10,000 molten columns at best, ${middle.toFixed(2)} ms typical (2 ms allowed).` };
+        return per;
+      });
     },
   },
   {
     id: 'speed-sand',
     label: 'Sand speed: 20,000 settling columns in under 1.5 ms a step (this computer)',
     quick: false,
-    async run() {
-      const per: number[] = [];
-      for (let round = 0; round < SPEED_ROUNDS && timing(per).best > 1.5; round++) {
-        if (round > 0) await pause(SPEED_PAUSE_MS);
+    run() {
+      return speedCheck(1.5, '20,000 settling sand columns', () => {
         // A big dune poured with a wide brush, then settling: a realistic mix of resting and
         // sliding columns. The cost is measured per listed column and scaled to 20,000.
         const geo = testWorld(
           () => 5,
           () => 0.3,
         );
+        const per: number[] = [];
         for (let s = 0; s < 450; s++) {
           if (s < 240) geo.applyTool('sand', 0, 0, 40, PHYS_STEP, 1);
           const st = geo.step(PHYS_STEP, 1000);
           if (st.sandCols >= 1000) per.push((st.ms / st.sandCols) * 20000);
         }
-      }
-      const { best, middle } = timing(per);
-      return { pass: best <= 1.5, detail: `${best.toFixed(2)} ms per step for 20,000 sand columns at best, ${middle.toFixed(2)} ms typical (1.5 ms allowed).` };
+        return per;
+      });
     },
   },
 ]);

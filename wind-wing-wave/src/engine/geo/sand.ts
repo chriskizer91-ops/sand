@@ -18,7 +18,7 @@
  * the change tracker, the neighbour tables, the sediment grid). Sand is the base layer the
  * others build on: lava wakes sand when it freezes, and the tools and the coast wake both.
  */
-import { CELL, COL_BLOCK, NX, NZ, PHYS_STEP, SEA_LEVEL } from '../../config';
+import { CELL, COL_BLOCK, NX, NZ, PATCH, PHYS_STEP, SEA_LEVEL } from '../../config';
 import { mulberry32 } from '../noise';
 import { ChangeFlag, type Columns } from '../columns';
 
@@ -69,6 +69,28 @@ export function hashInt(a: number, b: number): number {
   return h >>> 0;
 }
 
+/**
+ * A column's sand colour (sandKind) is the colour you see: its top layer. Sand landing on a
+ * column mixes with only the top MIX_LAYER metres already there, so golden sand poured on a
+ * deep black beach shows golden, and a thin yearly dusting of coral sand slowly whitens even
+ * a thick beach.
+ */
+const MIX_LAYER = 0.5;
+
+/**
+ * The colour of column c after `add` m of sand of colour `addKind` lands on `had` m of sand of
+ * colour `kind`. sandKind is a whole number, and plain rounding would throw away every small
+ * change (a centimetre of white sand on half a metre of gold moves the colour by less than
+ * one step), so the colour stalls. Instead it is rounded up or down at random in proportion
+ * (`salt` picks the roll: pass a counter that changes from call to call): many small additions
+ * then add up to the right colour on average.
+ */
+export function mixKind(kind: number, had: number, add: number, addKind: number, c: number, salt: number): number {
+  const base = had < MIX_LAYER ? had : MIX_LAYER;
+  const v = (base * kind + add * addKind) / (base + add);
+  return Math.floor(v + hashInt(c, salt) / 4294967296);
+}
+
 /** Report a changed column rectangle (inclusive) with ChangeFlag bits. */
 export type Reporter = (i0: number, k0: number, i1: number, k1: number, flags: number) => void;
 
@@ -103,12 +125,14 @@ export class ActiveSet {
 
 // ---------- shared: change reporting ----------
 
-const BLOCKS_X = NX / COL_BLOCK;
-const BLOCKS = BLOCKS_X * (NZ / COL_BLOCK);
-/** The grid and block sizes are powers of two, so block numbers come from cheap bit shifts. */
+/** The grid, block and patch sizes are powers of two, so tile numbers come from cheap bit shifts. */
 const NX_BITS = Math.log2(NX);
 const BLOCK_BITS = Math.log2(COL_BLOCK);
-if (!Number.isInteger(NX_BITS) || !Number.isInteger(BLOCK_BITS)) throw new Error('NX and COL_BLOCK must be powers of two');
+/** Columns per patch side, as a power of two (the ecology's resolution). */
+export const PATCH_BITS = Math.log2(PATCH);
+if (!Number.isInteger(NX_BITS) || !Number.isInteger(BLOCK_BITS) || !Number.isInteger(PATCH_BITS)) {
+  throw new Error('NX, COL_BLOCK and PATCH must be powers of two');
+}
 
 const NX_MASK = NX - 1;
 const ROW_BLOCK_SHIFT = NX_BITS + BLOCK_BITS;
@@ -120,24 +144,44 @@ export function blockOf(c: number): number {
 }
 
 /**
- * Collects changed columns per 16 x 16 block (the undo block size) and reports one tight
- * rectangle per block. Two pours far apart then send two small rectangles to the page and
- * the ecology, not one huge one.
+ * Collects changed columns per square tile and reports one tight rectangle per tile. Two
+ * pours far apart then send two small rectangles to the page and the ecology, not one huge one.
+ * Ground changes use the 16 x 16 undo blocks; burns use the ecology's 2 x 2 patches, so a
+ * round lava front burns only the patches it really reached, not the corners of a big box.
  */
 export class ChangeTracker {
-  private readonly i0 = new Int16Array(BLOCKS);
-  private readonly k0 = new Int16Array(BLOCKS);
-  private readonly i1 = new Int16Array(BLOCKS);
-  private readonly k1 = new Int16Array(BLOCKS);
-  private readonly flags = new Uint8Array(BLOCKS);
-  private readonly list = new Int32Array(BLOCKS);
+  /** Tile side as a power of two (columns). */
+  private readonly bits: number;
+  private readonly i0: Int16Array;
+  private readonly k0: Int16Array;
+  private readonly i1: Int16Array;
+  private readonly k1: Int16Array;
+  private readonly flags: Uint8Array;
+  private readonly list: Int32Array;
   private count = 0;
+
+  constructor(tileBits = BLOCK_BITS) {
+    this.bits = tileBits;
+    const tiles = (NX >> tileBits) * (NZ >> tileBits);
+    this.i0 = new Int16Array(tiles);
+    this.k0 = new Int16Array(tiles);
+    this.i1 = new Int16Array(tiles);
+    this.k1 = new Int16Array(tiles);
+    this.flags = new Uint8Array(tiles);
+    this.list = new Int32Array(tiles);
+  }
+
+  /** The tile holding column c. */
+  private tile(c: number): number {
+    const bits = this.bits;
+    return ((c & NX_MASK) >> bits) + ((c >> (NX_BITS + bits)) << (NX_BITS - bits));
+  }
 
   /** Note that column c changed (flags must be non-zero). */
   mark(c: number, flags: number): void {
     const i = c & NX_MASK;
     const k = c >> NX_BITS;
-    const b = blockOf(c);
+    const b = this.tile(c);
     if (this.flags[b] === 0) {
       this.list[this.count++] = b;
       this.i0[b] = this.i1[b] = i;
@@ -156,7 +200,7 @@ export class ChangeTracker {
     this.mark(c, flags);
     const i = c & NX_MASK;
     const k = c >> NX_BITS;
-    const b = blockOf(c);
+    const b = this.tile(c);
     if (i > 0 && i - 1 < this.i0[b]) this.i0[b] = i - 1;
     if (i < NX - 1 && i + 1 > this.i1[b]) this.i1[b] = i + 1;
     if (k > 0 && k - 1 < this.k0[b]) this.k0[b] = k - 1;
@@ -167,7 +211,7 @@ export class ChangeTracker {
     return this.count > 0;
   }
 
-  /** Report every changed block and start again. */
+  /** Report every changed tile and start again. */
   flush(report: Reporter): void {
     for (let j = 0; j < this.count; j++) {
       const b = this.list[j];
@@ -429,7 +473,7 @@ export class Sand {
         const sn = sed[n];
         const kn = sandKind[n];
         const kc = sandKind[c];
-        if (kn !== kc) sandKind[n] = sn > 0 ? Math.round((sn * kn + mv * kc) / (sn + mv)) : kc;
+        if (kn !== kc) sandKind[n] = mixKind(kn, sn, mv, kc, n, (sweep << 3) + t);
         have -= mv;
         sed[n] = sn + mv;
         tops[d] = tn + mv;

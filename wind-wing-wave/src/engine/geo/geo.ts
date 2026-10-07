@@ -14,7 +14,7 @@ import { NX, NZ, type ToolId } from '../../config';
 import type { Columns } from '../columns';
 import { Coast } from './coast';
 import { Lava } from './lava';
-import { ChangeTracker, Sand, type Reporter } from './sand';
+import { ChangeTracker, PATCH_BITS, Sand, type Reporter } from './sand';
 import { generateSeabed, seabedLayout, type SeabedLayout } from './seabed';
 import { Tools, type ToolResult } from './tools';
 
@@ -49,9 +49,9 @@ export class Geo implements GeoForEco {
   /** Where the first-minute glow sits (the knoll nearest the centre). Known from the seed alone. */
   readonly seabed: { glow: { x: number; z: number } };
   private readonly layout: SeabedLayout;
-  /** Changed columns (Geom/Look) and newly burnt columns, gathered per block. */
+  /** Changed columns (Geom/Look), gathered per undo block, and newly burnt columns, per patch. */
   private readonly changes = new ChangeTracker();
-  private readonly burns = new ChangeTracker();
+  private readonly burns = new ChangeTracker(PATCH_BITS);
   private readonly sand: Sand;
   private readonly lava: Lava;
   private readonly tools: Tools;
@@ -70,8 +70,10 @@ export class Geo implements GeoForEco {
     this.tools = new Tools(cols, this.lava, this.sand, this.report);
     this.coast = new Coast(cols, this.sand, this.changes, this.report);
     cols.addListener(this.onOutsideChange);
-    // A world that already holds molten lava (built before Geo) carries on flowing.
+    // A world built before Geo (a loaded save) carries on where it was: molten lava keeps
+    // flowing, and sand saved mid-slide keeps sliding instead of staying frozen too steep.
     this.lava.wakeRect(0, 0, NX - 1, NZ - 1);
+    this.sand.wakeUnstableRect(0, 0, NX - 1, NZ - 1);
   }
 
   /** Report a change made by Geo (and don't react to it ourselves). */
@@ -115,6 +117,11 @@ export class Geo implements GeoForEco {
   /**
    * Advance lava, then sand, by dt seconds within budgetMs. If time runs out, the rest waits
    * for the next step: the physics slows down rather than skipping ahead.
+   *
+   * For the hub: one call always runs at least one whole lava substep (so lava never stalls),
+   * which costs about 0.08 ms per 1,000 molten columns on a desktop and perhaps three times that
+   * on a phone. With a lot of molten lava a call can therefore run over budgetMs; once the
+   * tick's budget is spent, don't call step() again in the same tick.
    */
   step(dt: number, budgetMs: number): GeoStepStats {
     const t0 = performance.now();

@@ -1,8 +1,9 @@
 /** Unit tests for the geology package (WP-B): seabed, tools, physics bookkeeping and the coast. */
 import { describe, expect, it, vi } from 'vitest';
-import { BUILD_MIN, CELL, NX, NZ, PHYS_STEP, SEA_LEVEL } from '../src/config';
+import { BUILD_MIN, CELL, NX, NZ, PATCH, PHYS_STEP, SEA_LEVEL } from '../src/config';
 import { ChangeFlag, Columns, RockKind, type ColumnBlock } from '../src/engine/columns';
 import { Geo } from '../src/engine/geo/geo';
+import { mixKind } from '../src/engine/geo/sand';
 import { seabedLayout } from '../src/engine/geo/seabed';
 import { LAVA_RATE, ROCK_RATE, SAND_RATE } from '../src/engine/geo/tools';
 import { hold, runFor, settle, testWorld } from '../src/checks/geoChecks';
@@ -100,6 +101,29 @@ describe('tools', () => {
     expect(seaSeen.some((s) => (s.flags & ChangeFlag.Burn) !== 0)).toBe(false);
   });
 
+  it('burn only the patches the poured lava lands on, not the square around the brush', () => {
+    const geo = testWorld(() => 2);
+    const cols = geo.cols;
+    const seen = recordChanges(cols);
+    const r = 10;
+    geo.applyTool('lava', 0, 0, r, PHYS_STEP, 1);
+    const burns = seen.filter((s) => (s.flags & ChangeFlag.Burn) !== 0);
+    expect(burns.length).toBeGreaterThan(10);
+    for (const b of burns) {
+      // Within one patch, holding lava, and inside the brush (give or take a column).
+      expect(Math.floor(b.i0 / PATCH)).toBe(Math.floor(b.i1 / PATCH));
+      expect(Math.floor(b.k0 / PATCH)).toBe(Math.floor(b.k1 / PATCH));
+      let lava = false;
+      for (let k = b.k0; k <= b.k1; k++) {
+        for (let i = b.i0; i <= b.i1; i++) {
+          if (cols.lava[i + k * NX] > 0) lava = true;
+          expect(Math.hypot(cols.cx(i), cols.cz(k))).toBeLessThan(r + CELL);
+        }
+      }
+      expect(lava).toBe(true);
+    }
+  });
+
   it('flowing lava burns the ground it newly covers, without the Tool flag', () => {
     const geo = testWorld((x) => 20 - x * 0.2);
     const seen = recordChanges(geo.cols);
@@ -139,6 +163,25 @@ describe('tools', () => {
     expect(top).toBeGreaterThan(8);
     // Steep sides: most of the height is gone within the outer half of the brush.
     expect(cols.top(col(cols, 9, 0))).toBeLessThan(-3 + (top + 3) * 0.2);
+  });
+
+  it('mixes sand colours fairly: many tiny additions add up instead of rounding away', () => {
+    // 1 mm of white (250) sand at a time onto golden (150) sand, 500 times, on 200 columns.
+    let sum = 0;
+    for (let c = 0; c < 200; c++) {
+      let kind = 150;
+      let had = 1;
+      for (let n = 0; n < 500; n++) {
+        kind = mixKind(kind, had, 0.001, 250, c, n);
+        had += 0.001;
+      }
+      sum += kind;
+    }
+    // The exact mix into the top half metre: each addition moves the colour 0.001 / 0.501 of the way.
+    const exact = 250 - 100 * Math.pow(1 - 0.001 / 0.501, 500);
+    expect(Math.abs(sum / 200 - exact)).toBeLessThan(2);
+    // Plain rounding would never have moved it: each step is a fifth of a colour step.
+    expect(Math.round(150 + (100 * 0.001) / 0.501)).toBe(150);
   });
 
   it('sand mixes its golden colour with the sand already there', () => {
@@ -264,6 +307,16 @@ describe('physics bookkeeping', () => {
     cols.markChanged(0, 0, NX - 1, NZ - 1, ChangeFlag.Geom);
     expect(geo.isSettled()).toBe(false);
     expect(settle(geo)).toBeLessThan(30);
+  });
+
+  it('picks up sand left too steep in a world built before it (a save taken mid-slide)', () => {
+    const cols = new Columns();
+    cols.rock.fill(5);
+    for (let k = 250; k < 262; k++) for (let i = 250; i < 262; i++) cols.sed[i + k * NX] = 12;
+    const geo = new Geo(cols, 3);
+    expect(geo.isSettled()).toBe(false);
+    settle(geo, 300);
+    expect(geo.isSettled()).toBe(true);
   });
 
   it('keeps going across steps when out of time, and still conserves sand', () => {
@@ -427,6 +480,54 @@ describe('coast', () => {
     let whitest = 0;
     for (let c = 0; c < geo.cols.n; c++) whitest = Math.max(whitest, geo.cols.sandKind[c]);
     expect(whitest).toBeGreaterThan(k0 + 20);
+  });
+
+  it('wear a cliff down to its platform whichever side of the water line the shore column is', () => {
+    // The ecology may list the last land column (the cliff top) rather than the first sea one.
+    const geo = testWorld((x) => (x < 0 ? 20 : -8));
+    const cols = geo.cols;
+    const face = col(cols, -1, 0) % NX;
+    const shore = new Int32Array(50);
+    for (let y = 0; y < 600; y++) {
+      for (let j = 0; j < 50; j++) {
+        const k = 230 + j;
+        let last = 0;
+        for (let i = 1; i < NX - 1; i++) if (cols.top(i + k * NX) > SEA_LEVEL) last = i;
+        shore[j] = last + k * NX;
+      }
+      geo.coastYears(1, shore, 50, null);
+    }
+    expect(cols.rock[face + 255 * NX]).toBeCloseTo(-0.5, 3);
+    expect(cols.top(face - 1 + 255 * NX)).toBeLessThan(20);
+    expect(cols.top(face - 2 + 255 * NX)).toBe(20);
+  });
+
+  it('still land reef sand on a cliff shore in a year the cliff barely wears', () => {
+    const geo = testWorld(
+      (x) => (x < 0 ? 20 : -8),
+      (x) => (x < 0 ? 1 : 0),
+    );
+    const cols = geo.cols;
+    const foot = col(cols, 1, 0);
+    const shore = Int32Array.from([foot]);
+    // So short a time that the cliff's wear rounds to nothing, but the reef sand does not.
+    geo.coastYears(1e-5, shore, 1, Float32Array.from([2]));
+    expect(cols.sed[foot]).toBeGreaterThan(0);
+    expect(cols.sandKind[foot]).toBeGreaterThan(200);
+  });
+
+  it('wake the sand a growing reef lifts', () => {
+    const geo = testWorld(() => -3);
+    const cols = geo.cols;
+    const c = col(cols, 0, 0);
+    // Half a metre of sand: too thick to be cemented in, so it rides up on the reef.
+    cols.sed[c] = 0.5;
+    expect(geo.isSettled()).toBe(true);
+    geo.growReef(Int32Array.from([c]), Float32Array.from([1.5]), 1);
+    expect(cols.rock[c]).toBeCloseTo(-1.5, 5);
+    expect(geo.isSettled()).toBe(false);
+    settle(geo);
+    expect(geo.isSettled()).toBe(true);
   });
 
   it('reefs grow limestone up to half a metre below the surface, never above', () => {
