@@ -17,7 +17,7 @@ import { Habitat, Substrate, type PlaceKind } from '../content/speciesTypes';
 import type { PeakInfo } from '../engine/protocol';
 import { PLACE_KINDS } from './catalog';
 import { CLOUD_BASE, CLOUD_TOP } from './climate';
-import { Flag, LAYERS, NPATCH, habBit, patchAt, patchX, patchZ, type EcoFields } from './fields';
+import { Flag, LAYERS, NPATCH, habBit, patchAt, patchX, patchZ, type ZoneFields } from './fields';
 import { ANNOUNCE_AREA, ISLET_AREA, type IslandRec } from './islands';
 
 const HYDRO_FLAGS = Flag.Pond | Flag.SaltPond | Flag.Marsh | Flag.Stream | Flag.Mouth | Flag.Basin;
@@ -97,6 +97,14 @@ export interface PlacesNow {
   n: Float64Array;
 }
 
+/** What one run of the features finds; made current by commit() with the rest of the zone job. */
+interface FeatureSet {
+  sound: SoundRec | null;
+  peaks: PeakInfo[];
+  placesNow: Map<number, PlacesNow>;
+  kipukas: { key: string; island: number; x: number; z: number }[];
+}
+
 /** Ground-made features for the whole zone. Scratch arrays are kept between runs. */
 export class Features {
   private ray240 = new Uint8Array(NPATCH);
@@ -114,11 +122,26 @@ export class Features {
   peaks: PeakInfo[] = [];
   /** Per island id: recognised places now and where. */
   placesNow = new Map<number, PlacesNow>();
-  /** Kipukas found this run (rounded centre key, island and position). */
+  /** Kipukas found by the last run (rounded centre key, island and position). */
   kipukas: { key: string; island: number; x: number; z: number }[] = [];
+  /** The running job's results, waiting for commit(). */
+  private next: FeatureSet = { sound: null, peaks: [], placesNow: new Map(), kipukas: [] };
 
-  /** Recompute every ground feature (a generator: yields between slices of work). */
-  *run(f: EcoFields, isl: Uint16Array, near: Uint16Array, recs: Map<number, IslandRec>, year: number): Generator<void, void, void> {
+  /** Make the last finished run current (between ecology steps, with the islands). */
+  commit(): void {
+    const n = this.next;
+    this.sound = n.sound;
+    this.peaks = n.peaks;
+    this.placesNow = n.placesNow;
+    this.kipukas = n.kipukas;
+    this.next = { sound: null, peaks: [], placesNow: new Map(), kipukas: [] };
+  }
+
+  /**
+   * Recompute every ground feature into the job's staged fields (a generator: yields between
+   * slices of work). The results become current at commit().
+   */
+  *run(f: ZoneFields, isl: Uint16Array, near: Uint16Array, recs: Map<number, IslandRec>, year: number): Generator<void, void, void> {
     const h = f.h;
     const areaOf = this.areaOf;
     const peakOf = this.peakOf;
@@ -131,6 +154,7 @@ export class Features {
     // ---------- land features ----------
     let freshLava = 0;
     for (let p = 0; p < NPATCH; p++) {
+      if ((p & 16383) === 16383) yield;
       let fl = f.flags[p] & HYDRO_FLAGS;
       const id = isl[p];
       if (id !== 0) {
@@ -172,6 +196,7 @@ export class Features {
       }
       f.flags[p] = fl;
     }
+    yield;
     // Turtle beaches: beach that runs inland, gentle and sandy, at least 12 m deep.
     for (let p = 0; p < NPATCH; p++) {
       if (!(f.flags[p] & Flag.Beach)) continue;
@@ -249,9 +274,10 @@ export class Features {
           rayDistinct[p] = distinct;
         }
       }
-      if ((pk & 31) === 28) yield;
+      if ((pk & 15) === 12) yield;
     }
     for (let p = 0; p < NPATCH; p++) {
+      if ((p & 16383) === 16383) yield;
       f.shelter[p] = 0;
       if (isl[p] !== 0 || h[p] > 0) continue;
       const pi = p % NP;
@@ -289,17 +315,21 @@ export class Features {
       }
     }
     yield;
-    this.sound = bigIslands >= 3 ? this.findSound(f, isl) : null;
-    this.kipukas = [];
-    if (freshLava > 0) this.findKipukas(f, isl, year);
+    const next = this.next;
+    next.sound = bigIslands >= 3 ? this.findSound(f, isl) : null;
+    next.kipukas = [];
+    yield;
+    if (freshLava > 0) this.findKipukas(f, isl, year, next.kipukas);
+    yield;
     this.writeGeoMask(f, isl);
     yield;
-    this.findPeaks(f, isl, recs);
-    this.recognise(f, isl, near, recs, year);
+    next.peaks = this.findPeaks(f, isl, recs);
+    yield;
+    next.placesNow = this.recognise(f, isl, near, recs, year, next.sound);
   }
 
   /** The largest connected stretch of Sound water, and the islands around it. */
-  private findSound(f: EcoFields, isl: Uint16Array): SoundRec | null {
+  private findSound(f: ZoneFields, isl: Uint16Array): SoundRec | null {
     const comp = this.comp;
     const q = this.queue;
     comp.fill(0);
@@ -359,7 +389,7 @@ export class Features {
   }
 
   /** Old living ground ringed by new lava: a kīpuka (a seed source, and a story). */
-  private findKipukas(f: EcoFields, isl: Uint16Array, year: number): void {
+  private findKipukas(f: ZoneFields, isl: Uint16Array, year: number, out: FeatureSet['kipukas']): void {
     const comp = this.comp;
     const q = this.queue;
     const old = this.oldVeg;
@@ -407,11 +437,11 @@ export class Features {
       }
       const x = sx / tail;
       const z = sz / tail;
-      this.kipukas.push({ key: `${Math.round(x / 24)},${Math.round(z / 24)}`, island: isl[q[0]], x, z });
+      out.push({ key: `${Math.round(x / 24)},${Math.round(z / 24)}`, island: isl[q[0]], x, z });
     }
   }
 
-  private writeGeoMask(f: EcoFields, isl: Uint16Array): void {
+  private writeGeoMask(f: ZoneFields, isl: Uint16Array): void {
     for (let p = 0; p < NPATCH; p++) {
       const fl = f.flags[p];
       let m = 0;
@@ -441,7 +471,7 @@ export class Features {
     }
   }
 
-  private findPeaks(f: EcoFields, isl: Uint16Array, recs: Map<number, IslandRec>): void {
+  private findPeaks(f: ZoneFields, isl: Uint16Array, recs: Map<number, IslandRec>): PeakInfo[] {
     const peaks: PeakInfo[] = [];
     for (const rec of recs.values()) {
       if (rec.peak[1] < 10) continue;
@@ -463,11 +493,11 @@ export class Features {
         if (apart) peaks.push({ x, z, h: h[p], cap: true });
       }
     }
-    this.peaks = peaks;
+    return peaks;
   }
 
   /** Which places each island has right now, and where. */
-  private recognise(f: EcoFields, isl: Uint16Array, near: Uint16Array, recs: Map<number, IslandRec>, year: number): void {
+  private recognise(f: ZoneFields, isl: Uint16Array, near: Uint16Array, recs: Map<number, IslandRec>, year: number, sound: SoundRec | null): Map<number, PlacesNow> {
     const index = this.index;
     const list: IslandRec[] = [...recs.values()];
     list.forEach((r, i) => (index[r.id] = i));
@@ -551,13 +581,13 @@ export class Features {
       if (host) setSpot(host, K_STACK, rec.peak[0], rec.peak[2]);
     }
     // The Sound: every island around it has it.
-    if (this.sound) {
-      for (const id of this.sound.islands) {
+    if (sound) {
+      for (const id of sound.islands) {
         const e = placesNow.get(id);
-        if (e) setSpot(e, K_SOUND, this.sound.x, this.sound.z);
+        if (e) setSpot(e, K_SOUND, sound.x, sound.z);
       }
     }
-    this.placesNow = placesNow;
+    return placesNow;
   }
 
   /** Centre of a recognised place on an island (k = PLACE_KINDS index). */
@@ -566,6 +596,33 @@ export class Features {
     if (!e || !(e.bits & (1 << k)) || e.n[k] <= 0) return null;
     return [e.x[k] / e.n[k], e.z[k] / e.n[k]];
   }
+}
+
+/**
+ * The kind of place a patch belongs to, for stories ("High Island's beach"), from its flags,
+ * or null. Callers check the island has that place recognised.
+ */
+export function placeOfFlags(flags: number, land: boolean): PlaceKind | null {
+  if (land) {
+    if (flags & Flag.SeaCliff) return 'sea-cliff';
+    if (flags & Flag.Stack) return 'sea-stack';
+    if (flags & Flag.SaltPond) return 'salt-pond';
+    if (flags & Flag.Pond) return 'pond';
+    if (flags & Flag.Stream) return 'stream';
+    if (flags & Flag.MangroveZone) return 'mangrove-shore';
+    if (flags & Flag.TurtleBeach) return 'turtle-beach';
+    if (flags & Flag.Beach) return 'beach';
+    if (flags & Flag.Dune) return 'dune';
+    if (flags & Flag.RockShore) return 'rock-shore';
+    if (flags & Flag.Summit) return 'summit';
+    if (flags & Flag.Warm) return 'warm-ground';
+    return null;
+  }
+  if (flags & Flag.Sound) return 'sound';
+  if (flags & Flag.Lagoon) return 'lagoon';
+  if (flags & Flag.ReefZone) return 'reef';
+  if (flags & Flag.SeagrassZone) return 'seagrass';
+  return null;
 }
 
 function setSpot(e: PlacesNow, k: number, x: number, z: number): void {

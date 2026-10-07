@@ -91,7 +91,41 @@ const u8 = (n: number): Uint8Array => new Uint8Array(n);
 const u16 = (n: number): Uint16Array => new Uint16Array(n);
 const u32 = (n: number): Uint32Array => new Uint32Array(n);
 
-export class EcoFields {
+/**
+ * What the zone job (zone.ts) works on: the ground and the life it reads straight from the
+ * live fields, and the derived fields it writes. The job writes those into its own staged
+ * copies (ZoneOut) and they replace the live ones in one go between ecology steps, so nobody
+ * ever sees a half-finished picture (no streams vanishing for a moment, no coast at 400 m).
+ * EcoFields fits this shape too.
+ */
+export interface ZoneFields {
+  // ---------- read (live) ----------
+  readonly h: Float32Array;
+  readonly hmin: Float32Array;
+  readonly hmax: Float32Array;
+  readonly slope: Float32Array;
+  readonly sand: Float32Array;
+  readonly bot: Uint8Array;
+  readonly born: Float32Array;
+  readonly soil: Float32Array;
+  readonly warm: Float32Array;
+  readonly sp: Uint8Array;
+  readonly cov: Float32Array;
+  // ---------- written (staged) ----------
+  readonly coast: Float32Array;
+  readonly rain: Float32Array;
+  readonly fog: Float32Array;
+  readonly salt: Float32Array;
+  readonly wind: Float32Array;
+  readonly pondLvl: Float32Array;
+  readonly pondId: Uint16Array;
+  readonly flow: Float32Array;
+  readonly shelter: Float32Array;
+  readonly flags: Uint32Array;
+  readonly geoMask: Uint32Array;
+}
+
+export class EcoFields implements ZoneFields {
   // ---------- live state (persistent) ----------
   /** Species id + 1 per layer (0 = empty), LAYERS per patch. */
   readonly sp: Uint8Array;

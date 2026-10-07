@@ -11,10 +11,16 @@
  * - storms.ts      real-time storms and what they leave behind
  * - director.ts    journal stories, firsts, Ages, milestones, hints, the ending
  * - journal.ts     the journal and the pacing of cards
+ * - dirt.ts        what the page has not been sent yet
  *
- * Clocks: the page's real time drives storms; years advance in fixed one-year steps
- * (ECO_STEP_YEARS) at the chosen pace, spread across work() calls within the time budget.
- * The visible year is the last completed step.
+ * Clocks: the page's real time drives storms, cards and the feedback guarantees (the play
+ * clock); years advance in fixed one-year steps (ECO_STEP_YEARS) at the chosen pace, spread
+ * across work() calls within the time budget. The visible year is the last completed step.
+ *
+ * Everything heavy is sliced so a work() call keeps to its budget on a phone: the first build
+ * of the world, the zone job, installing its results, each step's sweep and the bookkeeping
+ * between steps. The order of the work never changes the outcome, so the same seed and the
+ * same edits give the same history however the slices fall.
  */
 import { ECO_STEP_YEARS, NP, NX, PATCH, SEA_LEVEL, type Season } from '../config';
 import { Habitat, Substrate, type SpeciesDef } from '../content/speciesTypes';
@@ -25,18 +31,18 @@ import type { ArrivalEvent, InspectInfo, JournalEntry, LifeInfo, PlaceEvent, Sto
 import { Arrivals, type SpeciesState } from './arrivals';
 import { SpeciesTable, TintCh } from './catalog';
 import { Dirty, LocalDerive, type ResetSink } from './derive';
-import { Director, type DirectorSave } from './director';
+import { Director, type DirectorSave, type StepFacts } from './director';
 import { Fauna, computeGates } from './fauna';
 import { Flag, L_CANOPY, L_GROUND, L_HERB, L_SHRUB, LAYERS, NPATCH, patchAt, patchX, patchZ } from './fields';
 import { CHART_AREA, type IslandRec } from './islands';
-import { JournalBook } from './journal';
+import { JournalBook, type EntryDraft, type HeldEntry } from './journal';
 import type { EcoNeeds, ReasonCode } from './needs';
 import { nowMs } from './maths';
 import type { PatchGrid } from './patches';
-import { Storms, type StormSave } from './storms';
+import { Storms, type DriftFlag, type StormSave } from './storms';
 import { Sweep } from './succession';
 import { EcoWorld } from './world';
-import { ZoneJob } from './zone';
+import { ZoneJob, type ShoreSink } from './zone';
 
 export interface EcoClock {
   /** Journal or menu open, or page hidden: years and storms stop. */
@@ -65,12 +71,21 @@ export interface EcoSave {
   state: unknown;
 }
 
-/** What serialize() writes into EcoSave.state (version 2). */
-interface StateV2 {
+/** A journal entry as saved: its species by key, so a changed catalogue still reads it. */
+type Saved<T> = Omit<T, 'species'> & { species?: string };
+
+/** Species key -> id on an entry, dropping a species the catalogue no longer has. */
+function withSpecies<T extends { species?: string }>(e: T, idOf: (key: string) => number): Omit<T, 'species'> & { species?: number } {
+  const { species, ...rest } = e;
+  const id = species !== undefined ? idOf(species) : -1;
+  return id >= 0 ? { ...rest, species: id } : rest;
+}
+
+/** What serialize() writes into EcoSave.state (version 3). */
+interface StateV3 {
   /** Species keys in id order when saved (PatchGrid species bytes are remapped by key on load). */
   keys: string[];
   step: number;
-  play: number;
   realPlay: number;
   target: number;
   firstLand: boolean;
@@ -79,7 +94,9 @@ interface StateV2 {
   labeller: ReturnType<ZoneJob['labeller']['save']>;
   pops: [number, string, number][];
   species: Record<string, SpeciesState>;
-  journal: (Omit<JournalEntry, 'species'> & { species?: string })[];
+  journal: Saved<JournalEntry>[];
+  /** Entries waiting for their card. */
+  held: { e: Saved<EntryDraft>; want: HeldEntry['want']; until: number | null }[];
   journalNext: number;
   lastCard: number;
   lastVisitCard: number;
@@ -90,7 +107,7 @@ interface StateV2 {
   lastRefresh: number;
 }
 
-const SAVE_VERSION = 2;
+const SAVE_VERSION = 3;
 /** Re-run the zone job this long (real s) after the land last changed… */
 const SETTLE = 1.2;
 /** …but no later than this after the first change of a busy spell. */
@@ -101,6 +118,21 @@ const REFRESH = 20;
 const BACKLOG = 6;
 /** Coast and reef processes run every this many steps. */
 const COAST_EVERY = 4;
+/** A periodic refresh of the zone job takes at most this share of a tick while the years have work. */
+const JOB_SHARE = 0.4;
+/** Nothing worth telling for this long (play s): the lull guard raises something's odds. */
+const LULL = 90;
+
+/** Run a sliced job to its end at once. */
+function drain(g: Generator<void, void, void>): void {
+  while (!g.next().done);
+}
+
+/** Run a sliced job until `deadline` (ms clock); true when it finished. */
+function runUntil(g: Generator<void, void, void>, deadline: number): boolean {
+  while (nowMs() < deadline) if (g.next().done) return true;
+  return false;
+}
 
 export class Ecology {
   private w: EcoWorld;
@@ -115,25 +147,34 @@ export class Ecology {
   private clock: EcoClock = { paused: false, yps: 2, dayPhase: 0.3, season: 'wet', gentleStorms: false };
   /** Target year (fractional): the steps catch up to it. */
   private target = 0;
+  /** The first build of the world, until it has run (sliced in work(), or at once when needed). */
+  private initGen: Generator<void, void, void> | null;
   private jobGen: Generator<void, void, void> | null = null;
-  private jobDone = false;
+  /** The running job was started by a change of the land (it goes first) rather than a refresh. */
+  private jobUrgent = false;
+  private commitGen: Generator<void, void, void> | null = null;
+  private boundaryGen: Generator<void, void, void> | null = null;
   private zonePending = false;
   private pendingSince = -1;
   private lastChange = -1e9;
   private lastRefresh = 0;
   /** Set when the zone job is a periodic refresh (it need not wait for the land to settle). */
   private refreshDue = false;
-  private inGeo = false;
+  /** The ecology's own coast and reef work, or the storm surf, is changing the ground (drift). */
+  private readonly drift: DriftFlag = { on: false };
   private lifeDirty = true;
   private places: PlaceEvent[] = [];
-  private dirty: [number, number, number, number] | null = null;
   private shoreCols: Int32Array = new Int32Array(0);
   private shoreIsles: Uint16Array = new Uint16Array(0);
   private shoreN = 0;
   private reefSand: Float32Array = new Float32Array(0);
   private reefCols: Int32Array = new Int32Array(0);
   private reefAmt: Float32Array = new Float32Array(0);
+  private supply = new Float32Array(8);
+  /** Each step's facts for the director (one object, reused). */
+  private facts: StepFacts = { found: 0, total: 0, nesters: 0, voiced: 0, nightSingers: 0, plants: 0, sinceNew: 0, colonies: [], colonyIslands: [] };
   private sink: ResetSink;
+  private shoreSink: ShoreSink;
 
   constructor(
     readonly cols: Columns,
@@ -149,19 +190,20 @@ export class Ecology {
     this.fauna = new Fauna(this.w);
     this.director = new Director(this.w, this.book);
     this.arrivals = new Arrivals(this.w, this.sweep, this.fauna, this.director);
-    this.storms = new Storms(this.w, this.sweep, this.arrivals, this.director);
+    this.director.source = this.arrivals;
+    this.storms = new Storms(this.w, this.sweep, this.arrivals, this.director, this.drift);
     const w = this.w;
-    const director = this.director;
     const sweep = this.sweep;
+    const director = this.director;
     this.sink = {
       get year() {
         return w.year;
       },
       touch: (p) => grid.touch(p),
-      burned: (p, canopy) => director.burned(w.f.isl[p], canopy, patchX(p), patchZ(p)),
-      reset: (p) => {
+      burned: (p) => director.burned(p),
+      reset: (p, urgent) => {
         sweep.wake(p);
-        sweep.markChanged(p);
+        sweep.markChanged(p, urgent);
         const pi = p % NP;
         const pk = (p / NP) | 0;
         if (pi > 0) sweep.wake(p - 1);
@@ -170,19 +212,26 @@ export class Ecology {
         if (pk < NP - 1) sweep.wake(p + NP);
       },
     };
-    this.rebuildAll(true);
-    // Land already there (a scripted world): it counts as first land, at year 0.
-    let land = -1;
-    for (let p = 0; p < NPATCH && land < 0; p++) if (w.f.h[p] > 0.2) land = p;
-    if (land >= 0) this.landed(patchX(land), patchZ(land));
+    this.shoreSink = (cols, isles, n) => {
+      this.shoreCols = cols;
+      this.shoreIsles = isles;
+      this.shoreN = n;
+      this.storms.shoreCols = cols;
+      this.storms.shoreN = n;
+    };
+    // The world is built on first need: sliced in work(), or at once by any call that reads it.
+    // A save being loaded replaces this with its own single build (restore).
+    this.initGen = this.init();
   }
 
   /** Completed eco year (integer steps). */
   get year(): number {
+    this.ensureInit();
     return this.w.step * ECO_STEP_YEARS;
   }
   /** Has any land ever broken the surface (the year clock starts then). */
   get firstLand(): boolean {
+    this.ensureInit();
     return this.w.firstLand;
   }
   get storm(): StormState {
@@ -192,24 +241,28 @@ export class Ecology {
   get activePatches(): number {
     return this.sweep.activeN;
   }
-  /** Play seconds since first land (eco step time at the chosen pace). */
+  /** Play seconds since first land (real, unpaused seconds; debugAdvance adds each step's share). */
   get playSeconds(): number {
-    return this.w.play;
+    return this.w.realPlay;
   }
 
   // ---------- inputs ----------
 
   /** Terrain changed in a column rectangle (inclusive). flags: ChangeFlag bits. */
   onTerrainChanged(i0: number, k0: number, i1: number, k1: number, flags: number): void {
+    this.ensureInit();
+    const drift = this.drift.on;
     if (flags & (ChangeFlag.Geom | ChangeFlag.Burn) || (flags & ChangeFlag.Look && flags & ChangeFlag.Tool)) {
       let why: number = Dirty.Geom;
       if (flags & ChangeFlag.Burn) why |= Dirty.Burn;
       if (flags & ChangeFlag.Tool) why |= Dirty.Tool;
-      if (this.inGeo) why |= Dirty.Drift;
+      if (drift) why |= Dirty.Drift;
       this.derive.mark(i0, k0, i1, k1, why);
-      this.markDirty(i0 >> 1, k0 >> 1, i1 >> 1, k1 >> 1);
+      // The page needs the life bytes of reshaped ground at once (land or sea changes what is
+      // packed); the sea's slow work shows up through the sweep instead.
+      if (!drift) this.w.dirt.mark(i0 >> 1, k0 >> 1, i1 >> 1, k1 >> 1, true);
     }
-    if (!this.inGeo) {
+    if (!drift) {
       this.zonePending = true;
       this.lastChange = this.w.real;
       if (this.pendingSince < 0) this.pendingSince = this.w.real;
@@ -235,7 +288,7 @@ export class Ecology {
   advance(realDt: number): void {
     const w = this.w;
     w.real += realDt;
-    if (this.clock.paused || !w.firstLand) return;
+    if (this.initGen || this.clock.paused || !w.firstLand) return;
     w.realPlay += realDt;
     this.storms.update(realDt, this.clock.season, this.clock.dayPhase, this.clock.gentleStorms);
     w.yps = Math.max(0.01, this.clock.yps * this.storms.ypsFactor);
@@ -248,53 +301,64 @@ export class Ecology {
     const t0 = nowMs();
     const deadline = t0 + budgetMs;
     const w = this.w;
+    if (this.initGen) {
+      if (!runUntil(this.initGen, deadline)) return nowMs() - t0;
+      this.initGen = null;
+    }
     if (this.derive.pending > 0) this.derive.apply(this.cols, w.f, this.sink);
-    // The whole-sea job runs first once the land has settled.
-    if (!this.jobGen && !this.jobDone && this.zonePending && (this.refreshDue || w.real - this.lastChange >= SETTLE || w.real - this.pendingSince >= MAX_WAIT)) {
-      this.zonePending = false;
-      this.refreshDue = false;
-      this.pendingSince = -1;
-      this.jobGen = this.job.run(w);
+    this.maybeStartJob();
+    // A job started by a change of the land goes first (places are recognised within seconds);
+    // a periodic refresh shares the tick with the years.
+    if (this.jobGen && !this.job.ready) {
+      const yearsDue = w.firstLand && (this.sweep.inProgress || this.boundaryGen !== null || w.step + 1 <= this.target);
+      const until = !this.jobUrgent && yearsDue ? Math.min(deadline, t0 + budgetMs * JOB_SHARE) : deadline;
+      if (runUntil(this.jobGen, until)) this.jobGen = null;
     }
-    if (this.jobGen) {
-      while (nowMs() < deadline) {
-        if (this.jobGen.next().done) {
-          this.jobGen = null;
-          this.jobDone = true;
-          break;
-        }
+    while (nowMs() < deadline) {
+      if (this.boundaryGen) {
+        if (!runUntil(this.boundaryGen, deadline)) break;
+        this.boundaryGen = null;
+        continue;
       }
-      if (this.jobGen) return nowMs() - t0;
-    }
-    if (this.jobDone && !this.sweep.inProgress) this.commit(false);
-    // Then the years.
-    while (w.firstLand && (this.sweep.inProgress || w.step + 1 <= this.target) && nowMs() < deadline) {
-      if (!this.sweep.inProgress) {
-        if (this.jobDone) this.commit(false);
-        this.sweep.begin();
+      if (this.commitGen) {
+        if (!runUntil(this.commitGen, deadline)) break;
+        this.commitGen = null;
+        this.afterCommit();
+        continue;
       }
-      if (this.sweep.some(deadline, nowMs)) this.stepBoundary();
+      if (this.sweep.inProgress) {
+        if (this.sweep.some(deadline, nowMs)) this.boundaryGen = this.boundary();
+        continue;
+      }
+      // Between steps: install a finished zone job first.
+      if (!this.jobGen && this.job.ready) {
+        this.commitGen = this.job.commit(w, this.sweep, this.director, false, this.places, this.shoreSink);
+        continue;
+      }
+      if (!w.firstLand || w.step + 1 > this.target) break;
+      this.sweep.begin();
     }
-    this.book.tick(w.play);
+    // Spare time goes to a refresh still running.
+    if (this.jobGen && !this.job.ready && runUntil(this.jobGen, deadline)) this.jobGen = null;
+    this.book.tick(w.realPlay, w.year);
     return nowMs() - t0;
   }
 
-  /** Patch rectangle (inclusive) changed since the last call, for the eco stream. */
+  /** Patch rectangle (inclusive) changed since it was last taken, for the eco stream; one neighbourhood at a time. */
   takeDirty(): [number, number, number, number] | null {
-    this.collectDirty();
-    const d = this.dirty;
-    this.dirty = null;
-    return d;
+    this.ensureInit();
+    return this.w.dirt.take();
   }
 
-  /** The changed rectangle without taking it. */
+  /** Everything changed and not yet taken, as one rectangle (or null). */
   isDirtyRect(): [number, number, number, number] | null {
-    this.collectDirty();
-    return this.dirty;
+    this.ensureInit();
+    return this.w.dirt.bounds();
   }
 
   /** Pack a patch rectangle for the page (see protocol.ts 'eco' message). */
   packEco(x0: number, z0: number, wd: number, ht: number, out: EcoPack): void {
+    this.ensureInit();
     const f = this.w.f;
     const t = this.w.t;
     let o = 0;
@@ -342,12 +406,14 @@ export class Ecology {
 
   /** Life summary when it changed since the last call (else null). */
   takeLife(): LifeInfo | null {
+    this.ensureInit();
     if (!this.lifeDirty) return null;
     this.lifeDirty = false;
     return this.life();
   }
 
   takeJournal(out: JournalEntry[]): void {
+    this.ensureInit();
     const pend = this.book.pending;
     for (let i = 0; i < pend.length; i++) out.push(pend[i]);
     pend.length = 0;
@@ -355,6 +421,7 @@ export class Ecology {
 
   /** The whole journal (after load, the page is sent everything). */
   journalAll(): JournalEntry[] {
+    this.ensureInit();
     return this.book.entries.slice();
   }
 
@@ -370,6 +437,7 @@ export class Ecology {
   }
 
   inspect(x: number, z: number): InspectInfo {
+    this.ensureInit();
     const w = this.w;
     const f = w.f;
     const p = patchAt(x, z);
@@ -400,6 +468,7 @@ export class Ecology {
   }
 
   renameIsland(id: number, name: string): void {
+    this.ensureInit();
     const rec = this.w.islands.recs.get(id);
     const clean = name.replace(/\s+/g, ' ').trim().slice(0, 40);
     if (!rec || clean === '') return;
@@ -440,8 +509,8 @@ export class Ecology {
   }
 
   serialize(): EcoSave {
+    this.ensureInit();
     const w = this.w;
-    this.book.flushHeld(w.play);
     const keys = this.species.map((s) => s.key);
     const pops: [number, string, number][] = [];
     for (let slot = 0; slot < w.islands.count; slot++) {
@@ -450,10 +519,13 @@ export class Ecology {
         if (v > 0) pops.push([w.islands.ids[slot], keys[s], v]);
       }
     }
-    const state: StateV2 = {
+    const saveEntry = <T extends { species?: number }>(e: T): Saved<T> => {
+      const { species, ...rest } = e;
+      return species !== undefined ? { ...rest, species: keys[species] } : rest;
+    };
+    const state: StateV3 = {
       keys,
       step: w.step,
-      play: w.play,
       realPlay: w.realPlay,
       target: this.target,
       firstLand: w.firstLand,
@@ -462,7 +534,8 @@ export class Ecology {
       labeller: this.job.labeller.save(),
       pops,
       species: this.arrivals.save(keys),
-      journal: this.book.entries.map((e) => ({ ...e, species: e.species !== undefined ? keys[e.species] : undefined })),
+      journal: this.book.entries.map(saveEntry),
+      held: this.book.held.map((h) => ({ e: saveEntry(h.e), want: h.want, until: Number.isFinite(h.until) ? h.until : null })),
       journalNext: this.book.nextId,
       lastCard: this.book.lastCard,
       lastVisitCard: this.book.lastVisitCard,
@@ -476,14 +549,15 @@ export class Ecology {
   }
 
   /**
-   * Restore from a save. Call after the PatchGrid persistent arrays have been loaded: plant
-   * species bytes are remapped by key if the catalogue changed, then every derived field is
-   * rebuilt from the ground.
+   * Restore from a save, on a freshly made Ecology, after the PatchGrid persistent arrays have
+   * been loaded: plant species bytes are remapped by key if the catalogue changed, then every
+   * derived field is built from the ground (once: the constructor's own build is skipped).
    */
   restore(s: EcoSave): void {
     const w = this.w;
-    const st = s.state as StateV2;
+    const st = s.state as StateV3;
     if (s.version !== SAVE_VERSION || !st || !Array.isArray(st.keys)) throw new Error('This save was made by a different version of the life simulation.');
+    this.initGen = null;
     const t = w.t;
     // Species ids may have moved between versions: remap the plant layers by key.
     const remap = st.keys.map((k) => t.id(k));
@@ -501,7 +575,6 @@ export class Ecology {
       }
     }
     w.step = st.step;
-    w.play = st.play;
     w.realPlay = st.realPlay;
     w.firstLand = st.firstLand;
     w.rng = new Rng(0);
@@ -514,12 +587,9 @@ export class Ecology {
     this.arrivals.load(st.species, (k) => t.id(k));
     this.arrivals.lastNewPlay = st.lastNewPlay;
     this.lastRefresh = st.lastRefresh;
-    this.book.entries = st.journal.map((e) => {
-      const sp = e.species !== undefined ? t.id(e.species) : -1;
-      const out: JournalEntry = { ...e, species: sp >= 0 ? sp : undefined } as JournalEntry;
-      if (out.species === undefined) delete out.species;
-      return out;
-    });
+    const idOf = (k: string): number => t.id(k);
+    this.book.entries = st.journal.map((e) => withSpecies(e, idOf));
+    this.book.held = st.held.map((h) => ({ e: withSpecies(h.e, idOf), want: h.want, until: h.until ?? Infinity }));
     this.book.pending = [];
     this.book.nextId = st.journalNext;
     this.book.lastCard = st.lastCard;
@@ -528,8 +598,8 @@ export class Ecology {
     this.director.load(st.director);
     this.places = [];
     this.arrivals.events.length = 0;
-    // Rebuild the derived world from the ground (silently: nothing here is news).
-    this.rebuildAll(false);
+    // Build the derived world from the ground (silently: nothing here is news).
+    drain(this.rebuild(false));
     // Populations go onto the rebuilt island slots.
     for (const [id, key, v] of st.pops) {
       const slot = w.islands.slotOf[id];
@@ -544,11 +614,11 @@ export class Ecology {
     computeGates(w);
     this.fauna.placeColonies();
     this.lifeDirty = true;
-    this.dirty = [0, 0, NP - 1, NP - 1];
   }
 
   /** Run `years` of ecology synchronously in one-year steps (checks, e2e, tuning). */
   debugAdvance(years: number): void {
+    this.ensureInit();
     const w = this.w;
     const steps = Math.max(0, Math.round(years / ECO_STEP_YEARS));
     for (let i = 0; i < steps; i++) {
@@ -557,62 +627,88 @@ export class Ecology {
       w.yps = this.clock.yps;
       if (!this.sweep.inProgress) this.sweep.begin();
       this.sweep.some(Infinity, nowMs);
-      this.stepBoundary();
-      this.book.tick(w.play);
+      // The step's share of play time passes, as it would at this pace.
+      w.realPlay += ECO_STEP_YEARS / Math.max(0.01, w.yps);
+      drain(this.boundary());
+      this.book.tick(w.realPlay, w.year);
     }
     this.target = Math.max(this.target, w.step);
   }
 
   /** Start a storm warning now. */
   debugStormNow(): void {
+    this.ensureInit();
     this.storms.startNow();
   }
 
   /** Finish any pending ground work at once (checks and debugAdvance). */
   flushJobs(): void {
+    this.ensureInit();
     const w = this.w;
     if (this.derive.pending > 0) this.derive.apply(this.cols, w.f, this.sink);
-    if (this.zonePending && !this.jobGen) {
-      this.zonePending = false;
-      this.refreshDue = false;
-      this.pendingSince = -1;
-      this.jobGen = this.job.run(w);
+    if (this.boundaryGen) {
+      drain(this.boundaryGen);
+      this.boundaryGen = null;
     }
+    if (this.zonePending && !this.jobGen && !this.job.ready && !this.commitGen) this.startJob(false);
     if (this.jobGen) {
-      while (!this.jobGen.next().done);
+      drain(this.jobGen);
       this.jobGen = null;
-      this.jobDone = true;
     }
-    if (this.jobDone) {
+    if (this.commitGen || this.job.ready) {
       if (this.sweep.inProgress) {
         this.sweep.some(Infinity, nowMs);
-        this.stepBoundary();
+        drain(this.boundary());
       }
-      this.commit(false);
+      if (!this.commitGen) this.commitGen = this.job.commit(w, this.sweep, this.director, false, this.places, this.shoreSink);
+      drain(this.commitGen);
+      this.commitGen = null;
+      this.afterCommit();
     }
   }
 
   /** Internals for checks, the simulator and Look (read-only use, please). */
   get debug(): { w: EcoWorld; arrivals: Arrivals; fauna: Fauna; director: Director; book: JournalBook; sweep: Sweep; job: ZoneJob; storms: Storms } {
+    this.ensureInit();
     return { w: this.w, arrivals: this.arrivals, fauna: this.fauna, director: this.director, book: this.book, sweep: this.sweep, job: this.job, storms: this.storms };
   }
 
   // ---------- internals ----------
 
+  /** Finish the first build now if it has not run yet (anything that reads the world needs it). */
+  private ensureInit(): void {
+    if (!this.initGen) return;
+    const g = this.initGen;
+    this.initGen = null;
+    drain(g);
+  }
+
+  /** The first build of a new world. */
+  private *init(): Generator<void, void, void> {
+    yield* this.rebuild(true);
+    // Land already there (a scripted world): it counts as first land, at year 0.
+    const f = this.w.f;
+    for (let p = 0; p < NPATCH; p++) {
+      if (f.h[p] > 0.2) {
+        this.landed(patchX(p), patchZ(p));
+        break;
+      }
+    }
+  }
+
   private landed(x: number, z: number): void {
     const w = this.w;
     if (w.firstLand) return;
     w.firstLand = true;
-    this.target = 0;
+    this.target = w.step;
     this.director.onFirstLand(x, z);
     this.lifeDirty = true;
   }
 
-  /** Re-derive every patch and run the zone job to completion (fresh world or load). */
-  private rebuildAll(fresh: boolean): void {
+  /** Derive every patch, run the zone job and install it, and count what lives where (fresh world or load). */
+  private *rebuild(fresh: boolean): Generator<void, void, void> {
     const w = this.w;
-    this.derive.markAll();
-    this.derive.apply(this.cols, w.f, null);
+    yield* this.derive.all(this.cols, w.f);
     if (fresh) {
       const f = w.f;
       for (let p = 0; p < NPATCH; p++) {
@@ -623,70 +719,96 @@ export class Ecology {
         f.wthr[p] = f.bot[p] !== Substrate.Sand && f.h[p] <= 0 ? 0.6 : 0;
       }
     }
+    yield;
     this.jobGen = null;
-    const gen = this.job.run(w);
-    while (!gen.next().done);
-    this.jobDone = true;
+    this.commitGen = null;
     this.zonePending = false;
     this.pendingSince = -1;
-    this.commit(true);
+    yield* this.job.run(w);
+    yield* this.job.commit(w, this.sweep, this.director, true, this.places, this.shoreSink);
     // Count what lives where (without growing anything), so the first step has a picture.
     this.sweep.census();
-    const tmp = w.cur;
-    w.cur = w.next;
-    w.next = tmp;
+    w.cur.copyFrom(w.run);
     this.updatePresentPlants();
     computeGates(w);
     this.sweep.pools.build(w);
+    this.fauna.sitesDue = true;
+    this.lifeDirty = true;
+    w.dirt.mark(0, 0, NP - 1, NP - 1, false);
   }
 
-  private commit(silent: boolean): void {
+  /** Start the zone job when the land has settled, it has waited long enough, or a refresh is due. */
+  private maybeStartJob(): void {
     const w = this.w;
-    this.jobDone = false;
-    const ev = this.job.commit(w, this.sweep, this.director, silent, (cols, isles, n) => {
-      this.shoreCols = cols;
-      this.shoreIsles = isles;
-      this.shoreN = n;
-      this.storms.shoreCols = cols;
-      this.storms.shoreN = n;
-    });
-    for (const e of ev) this.places.push(e);
+    if (this.jobGen || this.job.ready || this.commitGen || !this.zonePending) return;
+    if (this.refreshDue || w.real - this.lastChange >= SETTLE || w.real - this.pendingSince >= MAX_WAIT) this.startJob(!this.refreshDue);
+  }
+
+  private startJob(urgent: boolean): void {
+    this.zonePending = false;
+    this.refreshDue = false;
+    this.pendingSince = -1;
+    this.jobUrgent = urgent;
+    this.jobGen = this.job.run(this.w);
+  }
+
+  /** After the zone job's results are in: island needs, seed pools, colony sites. */
+  private afterCommit(): void {
+    const w = this.w;
     computeGates(w);
     this.sweep.pools.build(w);
+    this.fauna.sitesDue = true;
     this.lifeDirty = true;
   }
 
-  private stepBoundary(): void {
+  /** Between two steps: hand on the tallies, then animals, arrivals, stories and the coast, in slices. */
+  private *boundary(): Generator<void, void, void> {
     const w = this.w;
-    const tmp = w.cur;
-    w.cur = w.next;
-    w.next = tmp;
+    const t = w.t;
+    w.cur.copyFrom(w.run);
     w.step++;
-    w.play += ECO_STEP_YEARS / Math.max(0.01, w.yps);
     this.updatePresentPlants();
     computeGates(w);
+    yield;
     this.fauna.step(ECO_STEP_YEARS);
-    this.arrivals.step(ECO_STEP_YEARS);
-    if (w.play - this.book.lastCard >= 90) this.arrivals.lull();
-    const t = w.t;
+    yield;
+    yield* this.arrivals.step(ECO_STEP_YEARS);
+    if (w.realPlay - this.book.lastCard >= LULL) this.arrivals.lull();
     let found = 0;
-    let birds = 0;
+    let nesters = 0;
     let voiced = 0;
+    let night = 0;
+    let plants = 0;
     for (let s = 0; s < t.n; s++) {
       if (!this.arrivals.sp[s].found) continue;
       found++;
       if (!this.arrivals.living(s)) continue;
-      if (t.isBird[s]) birds++;
+      if (t.isPlant[s]) plants++;
+      if (t.nester[s]) nesters++;
       if (t.voiced[s]) voiced++;
+      if (t.nightSinger[s]) night++;
     }
-    const colonies = this.fauna.colonies.map((c, i) => ({ island: this.fauna.colonyIslands[i], x: c.x, z: c.z, n: c.n }));
-    this.director.stepChecks(found, t.n, birds, voiced, w.play - this.arrivals.lastNewPlay, this.arrivals.nearMissReasons(), this.arrivals.lowReachWaiting(), colonies);
+    const facts = this.facts;
+    facts.found = found;
+    facts.total = t.n;
+    facts.nesters = nesters;
+    facts.voiced = voiced;
+    facts.nightSingers = night;
+    facts.plants = plants;
+    facts.sinceNew = w.realPlay - this.arrivals.lastNewPlay;
+    facts.colonies = this.fauna.colonies;
+    facts.colonyIslands = this.fauna.colonyIslands;
+    this.director.stepChecks(facts);
     if (this.director.checkEnding(found, t.n)) this.whales();
-    if (w.step % COAST_EVERY === 0) this.coast(COAST_EVERY * ECO_STEP_YEARS);
+    yield;
+    if (w.step % COAST_EVERY === 0) {
+      this.coast(COAST_EVERY * ECO_STEP_YEARS);
+      yield;
+    }
     this.sweep.pools.build(w);
     this.lifeDirty = true;
-    if (w.play - this.lastRefresh >= REFRESH) {
-      this.lastRefresh = w.play;
+    if (w.realPlay - this.lastRefresh >= REFRESH) {
+      this.lastRefresh = w.realPlay;
       this.zonePending = true;
       this.refreshDue = true;
     }
@@ -743,15 +865,16 @@ export class Ecology {
     // White sand from living reefs, per shore column of each island.
     let sandy = false;
     if (this.reefSand.length < this.shoreN) this.reefSand = new Float32Array(this.shoreN);
-    const supply = new Map<number, number>();
+    if (this.supply.length < w.islands.count) this.supply = new Float32Array(w.islands.count + 8);
     for (let slot = 0; slot < w.islands.count; slot++) {
       let g = 0;
       for (let s = 0; s < t.n; s++) if (t.givesSand[s] > 0 && w.present[slot * t.n + s]) g += t.givesSand[s];
       const coral = Math.min(1, w.cur.coral[slot] / 50);
-      if (g > 0 && coral > 0) supply.set(w.islands.ids[slot], 0.0015 * Math.min(1, g) * coral);
+      this.supply[slot] = g > 0 && coral > 0 ? 0.0015 * Math.min(1, g) * coral : 0;
     }
     for (let i = 0; i < this.shoreN; i++) {
-      const v = supply.get(this.shoreIsles[i]) ?? 0;
+      const slot = w.islands.slotOf[this.shoreIsles[i]];
+      const v = slot >= 0 ? this.supply[slot] : 0;
       this.reefSand[i] = v;
       if (v > 0) sandy = true;
     }
@@ -778,37 +901,12 @@ export class Ecology {
         }
       }
     }
-    this.inGeo = true;
+    this.drift.on = true;
     try {
       this.geo.coastYears(dt, this.shoreCols, this.shoreN, sandy ? this.reefSand : null);
       if (n > 0) this.geo.growReef(this.reefCols, this.reefAmt, n);
     } finally {
-      this.inGeo = false;
-    }
-  }
-
-  private collectDirty(): void {
-    const s = this.sweep;
-    if (s.dx1 < s.dx0) return;
-    this.markDirty(s.dx0, s.dz0, s.dx1, s.dz1);
-    s.dx0 = NP;
-    s.dz0 = NP;
-    s.dx1 = -1;
-    s.dz1 = -1;
-  }
-
-  private markDirty(x0: number, z0: number, x1: number, z1: number): void {
-    x0 = Math.max(0, x0);
-    z0 = Math.max(0, z0);
-    x1 = Math.min(NP - 1, x1);
-    z1 = Math.min(NP - 1, z1);
-    if (!this.dirty) this.dirty = [x0, z0, x1, z1];
-    else {
-      const d = this.dirty;
-      d[0] = Math.min(d[0], x0);
-      d[1] = Math.min(d[1], z0);
-      d[2] = Math.max(d[2], x1);
-      d[3] = Math.max(d[3], z1);
+      this.drift.on = false;
     }
   }
 

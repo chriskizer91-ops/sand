@@ -3,8 +3,9 @@
  * catalogue, the committed islands, the per-island tallies from the last finished sweep,
  * and the clocks.
  *
- * Tallies are double-buffered: the sweep in progress counts into `next`, everyone else reads
- * `cur` (the last finished step), so the order in which patches are visited never matters.
+ * Tallies are double-buffered: the sweep keeps `run` up to date as it goes, everyone else
+ * reads `cur`, a copy taken when the last step finished, so the order in which patches are
+ * visited never matters.
  */
 import { HABITAT_COUNT, Substrate } from '../content/speciesTypes';
 import type { Columns } from '../engine/columns';
@@ -12,6 +13,7 @@ import type { GeoForEco } from '../engine/geo/geo';
 import { Rng } from '../engine/noise';
 import type { ReasonCode } from './needs';
 import { REASONS, habitatReason, isBuildableReason, substrateReason, type SpeciesTable } from './catalog';
+import { Dirt } from './dirt';
 import { EcoFields, Flag, L_CANOPY, LAYERS } from './fields';
 import type { IslandRec } from './islands';
 import { band, trapezoid } from './maths';
@@ -21,24 +23,38 @@ import type { Features } from './places';
 /** Perch samples kept per island for bird-carried arrivals. */
 export const PERCH_N = 24;
 
+/**
+ * Per-island sums of what lives where: habitat patches, plant cover per species, land, forest
+ * and so on, plus a few zone totals. Float64, because the sweep keeps one running copy up to
+ * date by adding and taking away each patch's share as it changes.
+ */
 export class Tally {
   slots = 0;
   readonly nS: number;
-  hab = new Float32Array(0);
-  cover = new Float32Array(0);
-  land = new Float32Array(0);
+  hab: Float64Array = new Float64Array(0);
+  cover: Float64Array = new Float64Array(0);
+  land: Float64Array = new Float64Array(0);
   /** Land that is not molten (where animals can be). */
-  cool = new Float32Array(0);
-  forest = new Float32Array(0);
-  shrubs = new Float32Array(0);
-  herbs = new Float32Array(0);
-  coral = new Float32Array(0);
-  perch = new Int32Array(0);
-  perchSeen = new Int32Array(0);
+  cool: Float64Array = new Float64Array(0);
+  /** Patches under closed tree canopy (cover 0.5 or more). */
+  forest: Float64Array = new Float64Array(0);
+  /** Forest on real soil (0.1 m or more): what counts for first forest, the Age of Forests and the ending. */
+  realForest: Float64Array = new Float64Array(0);
+  /** Patches with a full-grown tree (the first-tree stamp). */
+  trees: Float64Array = new Float64Array(0);
+  shrubs: Float64Array = new Float64Array(0);
+  herbs: Float64Array = new Float64Array(0);
+  coral: Float64Array = new Float64Array(0);
+  /** Cliff patches seabirds can nest on: sea cliffs, sea stacks and islets (not crater walls). */
+  seaCliff: Float64Array = new Float64Array(0);
+  perch: Int32Array = new Int32Array(0);
+  perchSeen: Int32Array = new Int32Array(0);
   /** Zone totals. */
   shrubTotal = 0;
   herbTotal = 0;
   forestTotal = 0;
+  realForestTotal = 0;
+  treeTotal = 0;
   coralTotal = 0;
   seagrassTotal = 0;
   cloudForest = 0;
@@ -55,14 +71,18 @@ export class Tally {
     const cap = Math.max(8, n);
     const nS = this.nS;
     const HC = HABITAT_COUNT;
-    const hab = new Float32Array(cap * HC);
-    const cover = new Float32Array(cap * nS);
-    const land = new Float32Array(cap);
-    const cool = new Float32Array(cap);
-    const forest = new Float32Array(cap);
-    const shrubs = new Float32Array(cap);
-    const herbs = new Float32Array(cap);
-    const coral = new Float32Array(cap);
+    const hab = new Float64Array(cap * HC);
+    const cover = new Float64Array(cap * nS);
+    const per = (): Float64Array => new Float64Array(cap);
+    const land = per();
+    const cool = per();
+    const forest = per();
+    const realForest = per();
+    const trees = per();
+    const shrubs = per();
+    const herbs = per();
+    const coral = per();
+    const seaCliff = per();
     const perch = new Int32Array(cap * PERCH_N);
     const perchSeen = new Int32Array(cap);
     for (let o = 0; o < oldIds.length && o < this.slots; o++) {
@@ -74,9 +94,12 @@ export class Tally {
       land[ns] = this.land[o];
       cool[ns] = this.cool[o];
       forest[ns] = this.forest[o];
+      realForest[ns] = this.realForest[o];
+      trees[ns] = this.trees[o];
       shrubs[ns] = this.shrubs[o];
       herbs[ns] = this.herbs[o];
       coral[ns] = this.coral[o];
+      seaCliff[ns] = this.seaCliff[o];
       perchSeen[ns] = this.perchSeen[o];
     }
     this.slots = cap;
@@ -85,29 +108,64 @@ export class Tally {
     this.land = land;
     this.cool = cool;
     this.forest = forest;
+    this.realForest = realForest;
+    this.trees = trees;
     this.shrubs = shrubs;
     this.herbs = herbs;
     this.coral = coral;
+    this.seaCliff = seaCliff;
     this.perch = perch;
     this.perchSeen = perchSeen;
   }
 
+  /** Start counting afresh (perch samples are refilled by the same count). */
   clear(): void {
     this.hab.fill(0);
     this.cover.fill(0);
     this.land.fill(0);
     this.cool.fill(0);
     this.forest.fill(0);
+    this.realForest.fill(0);
+    this.trees.fill(0);
     this.shrubs.fill(0);
     this.herbs.fill(0);
     this.coral.fill(0);
+    this.seaCliff.fill(0);
     this.perchSeen.fill(0);
     this.shrubTotal = 0;
     this.herbTotal = 0;
     this.forestTotal = 0;
+    this.realForestTotal = 0;
+    this.treeTotal = 0;
     this.coralTotal = 0;
     this.seagrassTotal = 0;
     this.cloudForest = 0;
+  }
+
+  /** Become a copy of `o` (same island slots). */
+  copyFrom(o: Tally): void {
+    if (this.slots !== o.slots) this.remap([], new Int16Array(1).fill(-1), o.slots);
+    this.hab.set(o.hab);
+    this.cover.set(o.cover);
+    this.land.set(o.land);
+    this.cool.set(o.cool);
+    this.forest.set(o.forest);
+    this.realForest.set(o.realForest);
+    this.trees.set(o.trees);
+    this.shrubs.set(o.shrubs);
+    this.herbs.set(o.herbs);
+    this.coral.set(o.coral);
+    this.seaCliff.set(o.seaCliff);
+    this.perch.set(o.perch);
+    this.perchSeen.set(o.perchSeen);
+    this.shrubTotal = o.shrubTotal;
+    this.herbTotal = o.herbTotal;
+    this.forestTotal = o.forestTotal;
+    this.realForestTotal = o.realForestTotal;
+    this.treeTotal = o.treeTotal;
+    this.coralTotal = o.coralTotal;
+    this.seagrassTotal = o.seagrassTotal;
+    this.cloudForest = o.cloudForest;
   }
 }
 
@@ -119,12 +177,12 @@ export class IslandState {
   /** Slot -> island id. */
   ids: number[] = [];
   /** Per slot: land patches, shore patches (land within 8 m of sea), nearby shallow sea. */
-  landStart = new Int32Array(1);
-  land = new Int32Array(0);
-  shoreStart = new Int32Array(1);
-  shore = new Int32Array(0);
-  seaStart = new Int32Array(1);
-  sea = new Int32Array(0);
+  landStart: Int32Array = new Int32Array(1);
+  land: Int32Array = new Int32Array(0);
+  shoreStart: Int32Array = new Int32Array(1);
+  shore: Int32Array = new Int32Array(0);
+  seaStart: Int32Array = new Int32Array(1);
+  sea: Int32Array = new Int32Array(0);
   /** Per slot: places recognised now (bit per PLACE_KINDS index). */
   placesNow = new Uint32Array(0);
 
@@ -225,14 +283,15 @@ export class Suit {
       }
     }
     // ---------- soil ----------
-    const smin = t.soilMin[s];
-    if (smin > 0) {
+    // EcoNeeds.soil is [minimum, comfortable]: none below the minimum, a struggling 0.35 at it,
+    // rising to 1 at "comfortable". A minimum of 0 (beach she-oak: [0, 0.1]) still has a
+    // comfortable depth, so on bare rock it only manages a third of its cover.
+    const sok = t.soilOk[s];
+    if (sok > 0) {
+      const smin = t.soilMin[s];
       const so = f.soil[p];
       if (so < smin) x = 0;
-      else {
-        const ok = t.soilOk[s];
-        x = so >= ok ? 1 : 0.35 + (0.65 * (so - smin)) / (ok - smin);
-      }
+      else x = so >= sok ? 1 : 0.35 + (0.65 * (so - smin)) / (sok - smin);
       if (explain) {
         fx[k] = x;
         fr[k++] = so < 0.3 * smin ? 'no-soil' : 'thin-soil';
@@ -331,16 +390,22 @@ export class EcoWorld {
   readonly t: SpeciesTable;
   readonly suit: Suit;
   readonly islands = new IslandState();
+  /** What the page has not been sent yet. */
+  readonly dirt = new Dirt();
+  /** Tallies as of the last finished step (read by everyone). */
   cur: Tally;
-  next: Tally;
+  /** Running tallies, kept up to date by the sweep. */
+  run: Tally;
   rng: Rng;
   /** Completed one-year steps since first land (the visible year). */
   step = 0;
-  /** Play seconds: real seconds of unpaused play since first land, counted per completed step. */
-  play = 0;
   /** Real seconds since the ecology started (any state, for debounces). */
   real = 0;
-  /** Real seconds of unpaused play since first land (storm schedule). */
+  /**
+   * Play seconds: real seconds of unpaused play since first land. Storms, cards and the
+   * feedback guarantees run on this clock, so they keep their promises in real time even when
+   * a slow phone lets the years fall behind. (debugAdvance adds one step's worth per step.)
+   */
   realPlay = 0;
   firstLand = false;
   /** Years per real second right now (pace times storm slowdown). */
@@ -362,7 +427,7 @@ export class EcoWorld {
     this.t = t;
     this.suit = new Suit(this.f, t);
     this.cur = new Tally(t.n);
-    this.next = new Tally(t.n);
+    this.run = new Tally(t.n);
     this.rng = new Rng(seed ^ 0x51ed270b);
   }
 
@@ -429,6 +494,6 @@ export class EcoWorld {
     this.suit.gate = new Uint8Array(cap);
     this.suit.gateWhy = new Uint8Array(cap);
     this.cur.remap(oldIds, isl.slotOf, n);
-    this.next.remap(oldIds, isl.slotOf, n);
+    this.run.remap(oldIds, isl.slotOf, n);
   }
 }

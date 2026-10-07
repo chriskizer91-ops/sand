@@ -16,6 +16,7 @@
  * blown off course. The journal tells it once: "the storm of Year N".
  */
 import { DAY_SECONDS, type Season } from '../config';
+import type { Road } from '../content/speciesTypes';
 import type { StormState } from '../engine/protocol';
 import { RoadBit } from './catalog';
 import type { Arrivals } from './arrivals';
@@ -41,6 +42,11 @@ export interface StormSave {
   gentle: boolean;
 }
 
+/** Shared with the ecology: while set, terrain changes are the sea's own work, not the player's. */
+export interface DriftFlag {
+  on: boolean;
+}
+
 export class Storms {
   state: StormState = { phase: 'none', t: 0, level: 0, great: false };
   /** Real-play times of storms planned in this wet season. */
@@ -61,6 +67,7 @@ export class Storms {
     private sweep: Sweep,
     private arrivals: Arrivals,
     private director: Director,
+    private drift: DriftFlag,
   ) {}
 
   /** Years-per-second multiplier: the clock slows to 10% at the peak. */
@@ -92,7 +99,14 @@ export class Storms {
     } else if (s.phase === 'peak') {
       s.level = 1;
       const k = gentle ? 0.6 : 1;
-      w.geo.stormPulse(s.level * k, dt, this.shoreCols, this.shoreN);
+      // The surf reshapes the beaches: the sea's work (drift), never mistaken for the player's
+      // strokes (no undo snapshots, no life reset unless the sand really moves).
+      this.drift.on = true;
+      try {
+        w.geo.stormPulse(s.level * k, dt, this.shoreCols, this.shoreN);
+      } finally {
+        this.drift.on = false;
+      }
       // Three pulses of damage at 10, 30 and 50 s.
       while (this.pulses < 3 && s.t >= 10 + 20 * this.pulses) {
         this.damage(this.pulses);
@@ -243,6 +257,8 @@ export class Storms {
       }
     }
     let castaway = -1;
+    let castRoad: Road | null = null;
+    let castIsland = 0;
     let raft = 0;
     if (slot >= 0) {
       const great = this.state.great;
@@ -250,19 +266,30 @@ export class Storms {
       if (rng.next() < (great ? 0.6 : 0.35)) {
         raft = 1;
         castaway = this.cast(slot, RoadBit.raft, 'raft');
+        if (castaway >= 0) {
+          castRoad = 'raft';
+          castIsland = isl.ids[slot];
+        }
       }
       // Birds and insects blown off course.
       const vagrants = 1 + Math.floor(rng.next() * (great ? 3 : 2));
       for (let v = 0; v < vagrants; v++) {
         const target = Math.floor(rng.next() * isl.count);
-        const got = this.cast(isl.rec(target).area >= 400 ? target : slot, RoadBit.storm, 'storm');
-        if (castaway < 0) castaway = got;
+        const to = isl.rec(target).area >= 400 ? target : slot;
+        const got = this.cast(to, RoadBit.storm, 'storm');
+        if (castaway < 0 && got >= 0) {
+          castaway = got;
+          castRoad = 'storm';
+          castIsland = isl.ids[to];
+        }
       }
     }
     const rec = slot >= 0 ? isl.rec(slot) : null;
     this.director.onStorm(
-      { fallen: this.fallen, great: this.state.great ? 1 : 0, raft, gentle: this.gentle ? 1 : 0 },
+      { fallen: this.fallen, great: this.state.great ? 1 : 0, raft },
       castaway,
+      castRoad,
+      castIsland || (rec ? rec.id : 0),
       rec ? rec.centroid[0] : 0,
       rec ? rec.centroid[1] : 0,
     );

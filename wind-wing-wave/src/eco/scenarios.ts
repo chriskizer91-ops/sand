@@ -39,9 +39,11 @@ export function cone(cols: Columns, x: number, z: number, r: number, peak: numbe
       if (u > 1.6) continue;
       const c = i + k * NX;
       let h = coneHeight(u, peak);
-      if (o.cliffs && dx > 0 && u > 0.55 && u < 1.05) {
-        // Windward sea cliffs: a shelf that drops straight into the sea.
-        const shelf = Math.max(h, 16 * smooth(1.05, 0.92, u) * smooth(0.2, 0.6, dx / d));
+      if (o.cliffs && dx > 0 && u > 0.55 && u < 1.06) {
+        // Windward sea cliffs: a 16 m shelf that drops straight into the sea within about 4 m,
+        // so the ground within a patch or two of the water stands well above 8 m.
+        const drop = Math.max(0.02, 4 / r);
+        const shelf = 16 * smooth(1.04, 1.04 - drop, u) * smooth(0.2, 0.6, dx / d);
         h = Math.max(h, shelf);
       }
       if (o.crater) {
@@ -164,14 +166,41 @@ export function chain(cols: Columns): void {
   cone(cols, 330, -240, 22, 18, { cliffs: true });
 }
 
-/** A minimal stand-in for geology: reefs grow as limestone; storms and coasts do nothing. */
+/**
+ * A minimal stand-in for geology: reefs grow as limestone, and storm surf pulls a little sand
+ * off the beaches (so the storm path through the ecology is exercised); calm-years coasts do
+ * nothing.
+ */
 export class ScriptGeo implements GeoForEco {
   level = 0;
   constructor(private cols: Columns) {}
   setStorm(level: number): void {
     this.level = level;
   }
-  stormPulse(): void {}
+  /** Surf takes up to 1 cm of sand a second at full storm from shore columns near the waterline. */
+  stormPulse(level: number, dt: number, shore: Int32Array, n: number): void {
+    const C = this.cols;
+    const take = 0.01 * level * dt;
+    if (take <= 0) return;
+    let i0 = NX;
+    let k0 = NZ;
+    let i1 = -1;
+    let k1 = -1;
+    for (let j = 0; j < n; j++) {
+      const c = shore[j];
+      const top = C.rock[c] + C.sed[c];
+      if (C.sed[c] <= 0 || top < -1.5 || top > 2.5) continue;
+      C.touch(c);
+      C.sed[c] = Math.max(0, C.sed[c] - take);
+      const i = c % NX;
+      const k = (c / NX) | 0;
+      if (i < i0) i0 = i;
+      if (i > i1) i1 = i;
+      if (k < k0) k0 = k;
+      if (k > k1) k1 = k;
+    }
+    if (i1 >= i0) C.markChanged(i0, k0, i1, k1, ChangeFlag.Geom | ChangeFlag.Look);
+  }
   coastYears(): void {}
   growReef(cols: Int32Array, amounts: Float32Array, n: number): void {
     if (n === 0) return;

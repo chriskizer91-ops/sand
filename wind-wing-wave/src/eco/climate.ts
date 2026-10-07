@@ -13,7 +13,7 @@
  */
 import { NP, PATCH_M } from '../config';
 import { Substrate } from '../content/speciesTypes';
-import { Flag, NPATCH, type EcoFields } from './fields';
+import { Flag, NPATCH, type EcoFields, type ZoneFields } from './fields';
 import { clamp01, smooth } from './maths';
 
 export const CLOUD_BASE = 60;
@@ -21,13 +21,15 @@ export const CLOUD_TOP = 120;
 const DIST_CAP = 400;
 /** Sea patches further than this from land belong to no island. */
 export const NEAR_REACH = 160;
+/** Rows of patches per slice of the sliced passes below (a slice stays well under a millisecond). */
+const BAND = 32;
 
 /**
  * Chamfer distances on the patch grid (two passes, O(n)):
  * land patches get the distance to the sea, sea patches the distance to land and the
- * nearest island's id (from `isl`).
+ * nearest island's id (from `isl`). Yields between bands of rows.
  */
-export function coastDistances(f: EcoFields, isl: Uint16Array, nearOut: Uint16Array, dLand: Float32Array): void {
+export function* coastDistances(f: ZoneFields, isl: Uint16Array, nearOut: Uint16Array, dLand: Float32Array): Generator<void, void, void> {
   const h = f.h;
   const ds = f.coast;
   const D1 = PATCH_M;
@@ -50,6 +52,7 @@ export function coastDistances(f: EcoFields, isl: Uint16Array, nearOut: Uint16Ar
         if (pi < NP - 1) relax(ds, dLand, nearOut, p, p - NP + 1, D2);
       }
     }
+    if (pk % BAND === BAND - 1) yield;
   }
   for (let pk = NP - 1; pk >= 0; pk--) {
     for (let pi = NP - 1; pi >= 0; pi--) {
@@ -61,6 +64,7 @@ export function coastDistances(f: EcoFields, isl: Uint16Array, nearOut: Uint16Ar
         if (pi > 0) relax(ds, dLand, nearOut, p, p + NP - 1, D2);
       }
     }
+    if (pk % BAND === 0) yield;
   }
   for (let p = 0; p < NPATCH; p++) {
     if (isl[p] !== 0) continue;
@@ -80,8 +84,8 @@ function relax(ds: Float32Array, dl: Float32Array, near: Uint16Array, p: number,
   }
 }
 
-/** Row march: rain, fog and salt spray (writes f.rain, f.fog, f.salt). */
-export function windMarch(f: EcoFields, isl: Uint16Array): void {
+/** Row march: rain, fog and salt spray (writes f.rain, f.fog, f.salt). Yields between bands of rows. */
+export function* windMarch(f: ZoneFields, isl: Uint16Array): Generator<void, void, void> {
   const h = f.h;
   const rain = f.rain;
   const fog = f.fog;
@@ -131,16 +135,17 @@ export function windMarch(f: EcoFields, isl: Uint16Array): void {
       salt[p] = s;
       s *= decaySalt;
     }
+    if (pk % BAND === BAND - 1) yield;
   }
 }
 
 /** Soften the march's streaks (a 3x3 blur of rain and fog over land) and add shore spray. */
-export function smoothClimate(f: EcoFields, isl: Uint16Array): void {
+export function* smoothClimate(f: ZoneFields, isl: Uint16Array): Generator<void, void, void> {
   const h = f.h;
   const salt = f.salt;
-  blurLand(f.rain, isl, h);
-  blurLand(f.rain, isl, h);
-  blurLand(f.fog, isl, h);
+  yield* blurLand(f.rain, isl, h);
+  yield* blurLand(f.rain, isl, h);
+  yield* blurLand(f.fog, isl, h);
   // Salt: the windward march plus a little spray on every shore.
   for (let p = 0; p < NPATCH; p++) {
     if (isl[p] === 0 && h[p] <= 0) continue;
@@ -150,9 +155,10 @@ export function smoothClimate(f: EcoFields, isl: Uint16Array): void {
 }
 
 const tmp = new Float32Array(NPATCH);
-function blurLand(a: Float32Array, isl: Uint16Array, h: Float32Array): void {
+function* blurLand(a: Float32Array, isl: Uint16Array, h: Float32Array): Generator<void, void, void> {
   tmp.set(a);
   for (let pk = 1; pk < NP - 1; pk++) {
+    if (pk % BAND === 0) yield;
     for (let pi = 1; pi < NP - 1; pi++) {
       const p = pi + pk * NP;
       if (isl[p] === 0 && h[p] <= 0) continue;
@@ -175,9 +181,10 @@ function blurLand(a: Float32Array, isl: Uint16Array, h: Float32Array): void {
  * Windward-ness: half the local face (ground rising toward the west faces the wind), half
  * where the patch sits on its island (the east side takes the wind).
  */
-export function windwardness(f: EcoFields, isl: Uint16Array, centroidX: (id: number) => number, radius: (id: number) => number): void {
+export function* windwardness(f: ZoneFields, isl: Uint16Array, centroidX: (id: number) => number, radius: (id: number) => number): Generator<void, void, void> {
   const h = f.h;
   for (let pk = 0; pk < NP; pk++) {
+    if (pk % (BAND * 2) === BAND * 2 - 1) yield;
     for (let pi = 0; pi < NP; pi++) {
       const p = pi + pk * NP;
       const id = isl[p];

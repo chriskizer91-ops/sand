@@ -89,32 +89,62 @@ describe('catalogue', () => {
 });
 
 describe('journal pacing', () => {
-  it('rations cards: one per gap, visits one a minute, firsts always', () => {
+  it('rations cards: ordinary stories one per gap, visits one a minute and only into a quiet moment', () => {
     const b = new JournalBook();
     b.openedAt = -1000;
-    expect(b.add({ year: 1, kind: 'arrival' }, 'normal', 0)?.headline).toBe(true);
-    expect(b.add({ year: 2, kind: 'arrival' }, 'normal', 10)?.headline).toBe(false);
-    expect(b.add({ year: 3, kind: 'first', first: 'first-tree' }, 'normal', 12)?.headline).toBe(true);
-    expect(b.add({ year: 4, kind: 'visit' }, 'visit', 30)?.headline).toBe(true);
-    expect(b.add({ year: 5, kind: 'visit' }, 'visit', 80)?.headline).toBe(false);
-    expect(b.add({ year: 6, kind: 'visit' }, 'visit', 100)?.headline).toBe(true);
+    expect(b.add({ year: 1, kind: 'arrival' }, 'normal', 0, 1)?.headline).toBe(true);
+    expect(b.add({ year: 2, kind: 'arrival' }, 'normal', 10, 2)?.headline).toBe(false);
+    // A visit right after another card stays in the journal.
+    expect(b.add({ year: 3, kind: 'visit' }, 'visit', 20, 3)?.headline).toBe(false);
+    expect(b.add({ year: 4, kind: 'visit' }, 'visit', 40, 4)?.headline).toBe(true);
+    expect(b.add({ year: 5, kind: 'visit' }, 'visit', 90, 5)?.headline).toBe(false);
+    expect(b.add({ year: 6, kind: 'visit' }, 'visit', 101, 6)?.headline).toBe(true);
   });
-  it('holds a first arrival for a gap instead of losing its card', () => {
+  it('stamps always get their card, at least 5 s apart, written in order with the year they are shown', () => {
     const b = new JournalBook();
     b.openedAt = -1000;
-    b.add({ year: 1, kind: 'arrival' }, 'normal', 0);
-    expect(b.add({ year: 2, kind: 'arrival', species: 3 }, 'first', 5)).toBeNull();
-    b.tick(20);
+    expect(b.add({ year: 10, kind: 'first', first: 'first-tree' }, 'normal', 0, 10)?.headline).toBe(true);
+    expect(b.add({ year: 11, kind: 'age', age: 'green' }, 'always', 2, 11)).toBeNull();
+    b.tick(4, 14);
     expect(b.entries.length).toBe(1);
-    b.tick(36);
+    b.tick(5, 15);
     expect(b.entries.length).toBe(2);
     expect(b.entries[1].headline).toBe(true);
+    expect(b.entries[1].year).toBe(15);
   });
-  it('every first arrival is a card in the opening minutes', () => {
+  it('a visitor coming back always gets a card, waiting for a quiet moment', () => {
+    const b = new JournalBook();
+    b.openedAt = -1000;
+    b.add({ year: 1, kind: 'arrival' }, 'normal', 0, 1);
+    expect(b.add({ year: 2, kind: 'return', species: 3 }, 'return', 10, 2)).toBeNull();
+    b.tick(30, 30);
+    expect(b.entries.length).toBe(1);
+    b.tick(35, 35);
+    expect(b.entries[1].kind).toBe('return');
+    expect(b.entries[1].headline).toBe(true);
+  });
+  it('holds a first arrival for a gap, and writes it journal-only if none comes', () => {
+    const b = new JournalBook();
+    b.openedAt = -1000;
+    b.add({ year: 1, kind: 'arrival' }, 'normal', 0, 1);
+    expect(b.add({ year: 2, kind: 'arrival', species: 3 }, 'first', 5, 2)).toBeNull();
+    b.tick(20, 20);
+    expect(b.entries.length).toBe(1);
+    b.tick(36, 36);
+    expect(b.entries[1].headline).toBe(true);
+    b.add({ year: 40, kind: 'storm' }, 'always', 40, 40);
+    b.add({ year: 41, kind: 'arrival', species: 4 }, 'first', 41, 41);
+    b.tick(60, 60);
+    b.tick(82, 82);
+    expect(b.entries[b.entries.length - 1].headline).toBe(false);
+  });
+  it('every first arrival is a card in the opening minutes, 5 s apart', () => {
     const b = new JournalBook();
     b.openedAt = 0;
-    expect(b.add({ year: 1, kind: 'arrival' }, 'first', 1)?.headline).toBe(true);
-    expect(b.add({ year: 2, kind: 'arrival' }, 'first', 2)?.headline).toBe(true);
+    expect(b.add({ year: 1, kind: 'arrival' }, 'first', 1, 1)?.headline).toBe(true);
+    expect(b.add({ year: 2, kind: 'arrival' }, 'first', 2, 2)).toBeNull();
+    b.tick(6, 6);
+    expect(b.entries[1].headline).toBe(true);
   });
 });
 
@@ -202,6 +232,7 @@ describe('ponds', () => {
     const hydro = new Hydro();
     const job = hydro.run(f, isl, 0, () => 30);
     while (!job.next().done);
+    hydro.commit();
     return { hydro, f };
   };
   it('a rock bowl in the rain holds a pond', () => {
@@ -235,7 +266,7 @@ describe('ecology facade', () => {
     expect(eco.undoMerge('eco.isl', 2, 5)).toBe(5);
   });
   it('packs eco bytes for the page', () => {
-    eco.debugAdvance(300);
+    eco.debugAdvance(800);
     const n = 48 * 48;
     const out = { a: new Uint8Array(n * 4), b: new Uint8Array(n * 4), c: new Uint8Array(n * 4), plants: new Uint8Array(n * 6), habitat: new Uint8Array(n) };
     eco.packEco(104, 104, 48, 48, out);

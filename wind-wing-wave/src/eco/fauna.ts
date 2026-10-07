@@ -11,21 +11,27 @@
  * - no single step removes more than ~15% of an island's species;
  * - "lost" is only told after a long absence from every island, in kind words.
  *
- * Seabird colonies sit on sea cliffs, or anywhere open on an islet; their guano whitens the
- * rock and feeds the soil.
+ * Seabird colonies sit where each kind nests: cliff nesters on sea cliffs, sea stacks and
+ * islets (never on a crater wall inland), tree nesters in the trees, burrowers in the dunes, and
+ * anywhere open on an islet. Their guano whitens the rock and feeds the soil.
  */
 import { HABITAT_COUNT, Habitat } from '../content/speciesTypes';
 import type { ColonyInfo } from '../engine/protocol';
 import type { ReasonCode } from './needs';
-import { PLACE_KINDS, REASONS, habitatReason, placeReason, reasonIndex, requireReason } from './catalog';
+import { REASONS, habitatReason, placeReason, reasonIndex, requireReason } from './catalog';
 import { NP } from '../config';
-import { habBit, patchAt, patchX, patchZ } from './fields';
+import { Flag, habBit, patchAt, patchX, patchZ } from './fields';
 import { ISLET_AREA, type IslandRec } from './islands';
-import { growRate, logistic, relax } from './maths';
+import { logistic, relax } from './maths';
 import type { EcoWorld } from './world';
 
 const K_SEA = Habitat.OpenSea;
-const NEST_GROUND = habBit(Habitat.Cliff) | habBit(Habitat.RockShore) | habBit(Habitat.BareRock) | habBit(Habitat.Beach) | habBit(Habitat.Grass) | habBit(Habitat.Crust) | habBit(Habitat.Dune);
+const CLIFF_BIT = habBit(Habitat.Cliff);
+const NEST_GROUND = CLIFF_BIT | habBit(Habitat.RockShore) | habBit(Habitat.BareRock) | habBit(Habitat.Beach) | habBit(Habitat.Grass) | habBit(Habitat.Crust) | habBit(Habitat.Dune);
+/** Cliffs a seabird can nest on: at the sea, on a stack or on an islet. */
+const SEA_CLIFF_FLAGS = Flag.SeaCliff | Flag.Stack | Flag.Islet;
+/** Colony sites are re-chosen this often (steps), and whenever the islands change. */
+const SITE_EVERY = 8;
 
 /** Edge-to-edge distance between two islands' boxes (m). */
 export function islandGap(a: IslandRec, b: IslandRec): number {
@@ -87,26 +93,39 @@ export class Fauna {
   colonies: ColonyInfo[] = [];
   /** The island of each colony (same order as `colonies`). */
   colonyIslands: number[] = [];
-  /** Guano discs painted last step (x, z, r), cleared before repainting. */
+  /** Guano discs painted last time (x, z, r), cleared before repainting. */
   private painted: number[] = [];
+  /** Nest patch per (island id, species), kept while it still suits so colonies stay put. */
+  private sites = new Map<number, number>();
+  /** Choose the colony sites again at the next step (the islands changed). */
+  sitesDue = true;
   reason: ReasonCode | null = null;
   /** Species that died out on an island this step (slot * nS + s). */
   readonly lostNow: number[] = [];
 
   constructor(private w: EcoWorld) {}
 
-  /** Habitat patches available to animal s on island slot. */
+  /**
+   * Habitat patches available to animal s on island slot. A seabird that nests on cliffs only
+   * counts cliffs at the sea (and on stacks and islets): a crater wall inland is no use to it.
+   */
   habitatCount(s: number, slot: number): number {
     const w = this.w;
     const t = w.t;
     const T = w.cur;
     const hm = t.habMask[s];
     const base = slot * HABITAT_COUNT;
+    const seabird = t.isSeabird[s] === 1;
     let count = 0;
     if (hm === 0) count = t.marineAnimal[s] ? T.hab[base + K_SEA] : T.cool[slot];
-    else for (let h = 0; h < HABITAT_COUNT; h++) if (hm & (1 << h)) count += T.hab[base + h];
+    else {
+      for (let h = 0; h < HABITAT_COUNT; h++) {
+        if (!(hm & (1 << h))) continue;
+        count += seabird && h === Habitat.Cliff ? T.seaCliff[slot] : T.hab[base + h];
+      }
+    }
     // On an islet, seabirds nest on any open ground.
-    if (t.isSeabird[s] && w.islands.rec(slot).area < ISLET_AREA) {
+    if (seabird && w.islands.rec(slot).area < ISLET_AREA) {
       for (let h = 0; h < HABITAT_COUNT; h++) if (NEST_GROUND & (1 << h) && !(hm & (1 << h))) count += T.hab[base + h];
     }
     return count;
@@ -156,7 +175,7 @@ export class Fauna {
         if (P <= 0) continue;
         const K = this.K(s, slot);
         let next: number;
-        if (K >= P) next = logistic(P, K, growRate(t.grow[s]), dt);
+        if (K >= P) next = logistic(P, K, t.gr[s], dt);
         else next = relax(P, K, this.rescued(s, slot) ? 24 : 10, dt);
         if (next < 0.004 && K < 0.01) {
           if (lossBudget > 0) {
@@ -171,7 +190,7 @@ export class Fauna {
         w.pop[i] = next;
       }
     }
-    this.placeColonies();
+    if (this.sitesDue || w.step % SITE_EVERY === 0) this.placeColonies();
   }
 
   /** Does a nearby island still hold this species (slows losses). */
@@ -186,51 +205,99 @@ export class Fauna {
     return false;
   }
 
-  /** Seabird colonies: one site per island, raster guano onto the land around it. */
+  /** Seabird colonies: each kind at its own nest site on each island, with guano painted round it. */
   placeColonies(): void {
     const w = this.w;
     const t = w.t;
     const isl = w.islands;
     const nS = t.n;
+    this.sitesDue = false;
     // Clear the old rasters.
     for (let i = 0; i < this.painted.length; i += 3) this.raster(this.painted[i], this.painted[i + 1], this.painted[i + 2], 0, true);
     this.painted.length = 0;
     this.colonies = [];
     this.colonyIslands = [];
-    const kCliff = PLACE_KINDS.indexOf('sea-cliff');
-    const kStack = PLACE_KINDS.indexOf('sea-stack');
     for (let slot = 0; slot < isl.count; slot++) {
       const rec = isl.rec(slot);
-      let site: [number, number] | null = null;
-      let guano = 0;
       let biggest = -1;
       let biggestN = 0;
       for (let s = 0; s < nS; s++) {
         if (!t.isSeabird[s]) continue;
         const P = w.pop[slot * nS + s];
         if (P < 0.02) continue;
-        if (!site) {
-          site =
-            rec.area < ISLET_AREA
-              ? [rec.peak[0], rec.peak[2]]
-              : (w.features.spot(rec.id, kCliff) ?? w.features.spot(rec.id, kStack) ?? [rec.peak[0], rec.peak[2]]);
-        }
-        const r = Math.min(60, 10 + 30 * Math.sqrt(P));
-        this.colonies.push({ species: s, x: site[0], z: site[1], r, n: Math.min(1, P) });
+        const site = this.site(slot, s);
+        if (site < 0) continue;
+        const x = patchX(site);
+        const z = patchZ(site);
+        this.colonies.push({ species: s, x, z, r: Math.min(60, 10 + 30 * Math.sqrt(P)), n: Math.min(1, P) });
         this.colonyIslands.push(rec.id);
-        guano += t.givesGuano[s] * P;
         if (P > biggestN) {
           biggestN = P;
           biggest = s;
         }
+        const guano = Math.min(1, t.givesGuano[s] * P);
+        if (guano > 0) {
+          const r = 12 + 25 * guano;
+          this.raster(x, z, r, guano, false);
+          this.painted.push(x, z, r);
+        }
       }
       rec.colonySp = biggest;
-      if (site && guano > 0) {
-        const r = 12 + 25 * Math.min(1, guano);
-        this.raster(site[0], site[1], r, Math.min(1, guano), false);
-        this.painted.push(site[0], site[1], r);
-      }
     }
+  }
+
+  /**
+   * Where species s nests on island slot: the nesting patch nearest the middle of all its
+   * nesting patches (so the colony sits among them), kept from last time while it still suits.
+   * Only an islet with no open ground left falls back to its top.
+   */
+  private site(slot: number, s: number): number {
+    const w = this.w;
+    const f = w.f;
+    const isl = w.islands;
+    const rec = isl.rec(slot);
+    const islet = rec.area < ISLET_AREA;
+    const hm = w.t.habMask[s];
+    const want = (hm === 0 ? NEST_GROUND : hm) | (islet ? NEST_GROUND : 0);
+    const nests = (p: number): boolean => {
+      const m = f.lifeMask[p] & want;
+      if (m === 0) return false;
+      // A cliff alone is a nest site only at the sea, on a stack or on an islet.
+      return m !== CLIFF_BIT || (f.flags[p] & SEA_CLIFF_FLAGS) !== 0;
+    };
+    const key = rec.id * 1024 + s;
+    const old = this.sites.get(key);
+    if (old !== undefined && f.isl[old] === rec.id && nests(old)) return old;
+    let sx = 0;
+    let sz = 0;
+    let n = 0;
+    const a = isl.landStart[slot];
+    const b = isl.landStart[slot + 1];
+    for (let i = a; i < b; i++) {
+      const p = isl.land[i];
+      if (!nests(p)) continue;
+      sx += p % NP;
+      sz += (p / NP) | 0;
+      n++;
+    }
+    let best = -1;
+    if (n > 0) {
+      const cx = sx / n;
+      const cz = sz / n;
+      let bestD = Infinity;
+      for (let i = a; i < b; i++) {
+        const p = isl.land[i];
+        if (!nests(p)) continue;
+        const d = (p % NP - cx) ** 2 + (((p / NP) | 0) - cz) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = p;
+        }
+      }
+    } else if (islet) best = patchAt(rec.peak[0], rec.peak[2]);
+    if (best >= 0) this.sites.set(key, best);
+    else this.sites.delete(key);
+    return best;
   }
 
   /** Paint (or clear) guano input in a disc on land. */

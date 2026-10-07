@@ -13,13 +13,15 @@
  */
 import { NP, PATCH_M } from '../config';
 import { Substrate } from '../content/speciesTypes';
-import { Flag, NPATCH, patchX, patchZ, type EcoFields } from './fields';
+import { Flag, NPATCH, patchX, patchZ, type ZoneFields } from './fields';
 
 /** Rain-patches upstream that make a stream. */
 const STREAM_FLOW = 60;
 const EVAP = 0.4;
 /** A basin holds water when its catchment brings at least this share of what it loses. */
 const HOLD = 0.35;
+/** Work between yields: heap pops in the flood, patches elsewhere. */
+const SLICE = 12000;
 
 export interface PondRec {
   id: number;
@@ -100,11 +102,16 @@ export class Hydro {
   private parent = new Int32Array(NPATCH);
   private order = new Int32Array(NPATCH);
   private seen = new Uint8Array(NPATCH);
+  /** Basin index per patch: the committed map, and the one the running job fills. */
   private basinOf = new Int32Array(NPATCH);
+  private basinNext = new Int32Array(NPATCH);
   private queue = new Int32Array(NPATCH);
   private heap = new MinHeap(NPATCH + 8);
+  /** Committed ponds and basins (the job builds the next ones, made current by commit()). */
   ponds: PondRec[] = [];
   basins: BasinRec[] = [];
+  private pondsNext: PondRec[] = [];
+  private basinsNext: BasinRec[] = [];
 
   /** The basin a patch lies in (for Look), or null. */
   basinAt(p: number): BasinRec | null {
@@ -112,11 +119,23 @@ export class Hydro {
     return b >= 0 ? (this.basins[b] ?? null) : null;
   }
 
+  /** Make the last finished run's ponds and basins current (with the rest of the zone job). */
+  commit(): void {
+    const b = this.basinOf;
+    this.basinOf = this.basinNext;
+    this.basinNext = b;
+    this.ponds = this.pondsNext;
+    this.basins = this.basinsNext;
+    this.pondsNext = [];
+    this.basinsNext = [];
+  }
+
   /**
-   * Recompute ponds, streams, basins and marsh into f.flags / f.pondLvl / f.pondId / f.flow.
-   * `isl` is the (staged) island map; `year` dates fresh lava; `peakOf` gives an island's peak.
+   * Recompute ponds, streams, basins and marsh into f.flags / f.pondLvl / f.pondId / f.flow
+   * (the zone job's staged copies). `isl` is the (staged) island map; `year` dates fresh lava;
+   * `peakOf` gives an island's peak.
    */
-  *run(f: EcoFields, isl: Uint16Array, year: number, peakOf: (id: number) => number): Generator<void, void, void> {
+  *run(f: ZoneFields, isl: Uint16Array, year: number, peakOf: (id: number) => number): Generator<void, void, void> {
     const h = f.h;
     const filled = this.filled;
     const parent = this.parent;
@@ -153,8 +172,10 @@ export class Hydro {
         }
       }
     }
+    yield;
     let nOrder = 0;
     while (heap.n > 0) {
+      if (nOrder % SLICE === SLICE - 1) yield;
       const p = heap.pop();
       const L = heap.top;
       order[nOrder++] = p;
@@ -198,17 +219,24 @@ export class Hydro {
     }
     yield;
     // ---------- basins ----------
-    const basinOf = this.basinOf;
+    const basinOf = this.basinNext;
     basinOf.fill(-1);
-    this.ponds = [];
-    this.basins = [];
+    const ponds: PondRec[] = [];
+    const basins: BasinRec[] = [];
+    this.pondsNext = ponds;
+    this.basinsNext = basins;
     const q = this.queue;
     let pondCount = 0;
+    let work = 0;
     for (let p0 = 0; p0 < NPATCH; p0++) {
+      if (++work >= SLICE) {
+        work = 0;
+        yield;
+      }
       if (basinOf[p0] !== -1 || seen[p0] === 0) continue;
       if (!(isl[p0] !== 0 || h[p0] > 0) || filled[p0] - h[p0] < 0.25) continue;
       // Flood the connected hollow.
-      const bi = this.basins.length;
+      const bi = basins.length;
       let head = 0;
       let tail = 0;
       q[tail++] = p0;
@@ -235,6 +263,7 @@ export class Hydro {
         if (pk < NP - 1) visit(p + NP);
       }
       const n = tail;
+      work += n;
       // Floor leakiness from the lower half of the hollow.
       const mid = floor + 0.5 * (spill - floor);
       let perm = 0;
@@ -287,7 +316,7 @@ export class Hydro {
         cz: sz / n,
         dry: holds ? null : sandN * 2 >= pn ? 'sand' : youngN * 2 >= pn ? 'young-lava' : 'little-rain',
       };
-      this.basins.push(rec);
+      basins.push(rec);
       if (rock) for (let i = 0; i < n; i++) f.flags[q[i]] |= Flag.Basin;
       if (!holds || level - floor < 0.3) continue;
       // Salty if it sits by the sea on a low, dry island.
@@ -317,11 +346,12 @@ export class Hydro {
       if (pondN === 0) continue;
       rec.filled = true;
       const half = PATCH_M / 2;
-      this.ponds.push({ id, island, level, x0: x0 - half, z0: z0 - half, x1: x1 + half, z1: z1 + half, salt, patches: pondN, cx: rec.cx, cz: rec.cz });
+      ponds.push({ id, island, level, x0: x0 - half, z0: z0 - half, x1: x1 + half, z1: z1 + half, salt, patches: pondN, cx: rec.cx, cz: rec.cz });
     }
     yield;
     // ---------- streams and marsh ----------
     for (let pk = 1; pk < NP - 1; pk++) {
+      if ((pk & 63) === 0) yield;
       for (let pi = 1; pi < NP - 1; pi++) {
         const p = pi + pk * NP;
         if (!(isl[p] !== 0 || h[p] > 0)) continue;

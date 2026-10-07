@@ -17,6 +17,7 @@
 import { AnimalModel, Habitat, PlantModel, type PlaceKind, type Road, type SpeciesDef } from '../content/speciesTypes';
 import type { EcoNeeds, ReasonCode } from './needs';
 import { L_CANOPY, L_GROUND, L_HERB, L_SHRUB } from './fields';
+import { growRate } from './maths';
 
 /** Every PlaceKind, in a fixed order (bit index = position). */
 export const PLACE_KINDS: readonly PlaceKind[] = [
@@ -45,7 +46,12 @@ const SUB_BOTTOM = SUB_BASALT | SUB_STONE | SUB_LIME | SUB_SAND;
 /** Ground-layer tint channel (packed into cover A/C for the ground shader). */
 export const TintCh = { None: 0, Lichen: 1, Moss: 2, Grass: 3, Algae: 4 } as const;
 
-const SONG_VOICES = new Set(['trill', 'whistle', 'chirp', 'coo', 'hoot', 'peep']);
+/** Voices that count as song when a perching land bird makes them (not honks, quacks or squawks). */
+const SONG_VOICES = new Set(['trill', 'whistle', 'chirp', 'coo', 'hoot', 'peep', 'kee']);
+/** Voices of the night chorus: crickets, geckos and frogs. */
+const NIGHT_CHORUS = new Set(['cricket', 'gecko', 'frog-coqui', 'frog-croak']);
+/** Birds that nest and raise young on the islands (not migrant shorebirds and waders passing through). */
+const NESTING = new Set(['colony', 'soar', 'flit', 'paddle', 'graze']);
 
 /** How well a tree stands up to storm wind, by model (1 = never falls). */
 function firmness(model: number | undefined): number {
@@ -115,6 +121,8 @@ export class SpeciesTable {
   readonly predator: Uint8Array;
   readonly nearIsland: Float32Array;
   readonly grow: Float32Array;
+  /** Logistic growth rate per year (5% to 95% of capacity in `grow` years). */
+  readonly gr: Float32Array;
   readonly life: Float32Array;
   readonly spread: Float32Array;
   readonly rate: Float32Array;
@@ -144,6 +152,11 @@ export class SpeciesTable {
   readonly isMangrove: Uint8Array;
   readonly hasFlower: Uint8Array;
   readonly isBird: Uint8Array;
+  /** Birds that nest here (first-nest stamp): colonies, frigatebirds, perching birds, ducks, megapodes. */
+  readonly nester: Uint8Array;
+  readonly isFern: Uint8Array;
+  /** Night singers (crickets, geckos, frogs): the night chorus. */
+  readonly nightSinger: Uint8Array;
   readonly isSeabird: Uint8Array;
   readonly isTurtle: Uint8Array;
   readonly isWhale: Uint8Array;
@@ -192,6 +205,7 @@ export class SpeciesTable {
     this.predator = U();
     this.nearIsland = F();
     this.grow = F();
+    this.gr = F();
     this.life = F();
     this.spread = F();
     this.rate = F();
@@ -218,6 +232,9 @@ export class SpeciesTable {
     this.isMangrove = U();
     this.hasFlower = U();
     this.isBird = U();
+    this.nester = U();
+    this.isFern = U();
+    this.nightSinger = U();
     this.isSeabird = U();
     this.isTurtle = U();
     this.isWhale = U();
@@ -288,6 +305,7 @@ export class SpeciesTable {
       this.predator[s] = e.predator ? 1 : 0;
       this.nearIsland[s] = e.nearIsland ?? 0;
       this.grow[s] = Math.max(1, e.grow);
+      this.gr[s] = growRate(this.grow[s]);
       this.life[s] = e.life ?? Math.max(20, e.grow * 3);
       this.spread[s] = e.spread ?? (plant ? 1 : 0);
       this.rate[s] = Math.max(0, e.rate);
@@ -319,14 +337,17 @@ export class SpeciesTable {
       this.isMangrove[s] = model === PlantModel.Mangrove ? 1 : 0;
       this.isTree[s] = plant && L === L_CANOPY && !this.isMangrove[s] && !d.marine ? 1 : 0;
       this.hasFlower[s] = plant && (d.plant?.flower !== undefined || (g.nectar ?? 0) > 0) ? 1 : 0;
+      this.isFern[s] = plant && (model === PlantModel.Fern || model === PlantModel.TreeFern) ? 1 : 0;
       const a = d.animal;
       this.isBird[s] = !plant && d.guide === 'birds' ? 1 : 0;
+      this.nester[s] = this.isBird[s] && a && NESTING.has(a.behaviour) ? 1 : 0;
+      this.nightSinger[s] = !plant && d.voice && d.voice.when === 'night' && NIGHT_CHORUS.has(d.voice.kind) ? 1 : 0;
       this.isSeabird[s] = a?.behaviour === 'colony' ? 1 : 0;
       this.isTurtle[s] = a?.behaviour === 'nest-beach' ? 1 : 0;
       this.isWhale[s] = a?.model === AnimalModel.Whale ? 1 : 0;
       this.isDolphin[s] = a?.model === AnimalModel.Dolphin ? 1 : 0;
       this.voiced[s] = d.voice ? 1 : 0;
-      this.isSongbird[s] = this.isBird[s] && d.voice && SONG_VOICES.has(d.voice.kind) ? 1 : 0;
+      this.isSongbird[s] = this.isBird[s] && a?.behaviour === 'flit' && d.voice && SONG_VOICES.has(d.voice.kind) ? 1 : 0;
       this.marineAnimal[s] = !plant && (d.marine || d.guide === 'sea') ? 1 : 0;
     }
     this.reqStart[n] = reqs.length;
@@ -406,6 +427,14 @@ export function habitatReason(t: SpeciesTable, s: number): ReasonCode {
   const m = t.habMask[s];
   for (let h = 0; h < 32; h++) if (m & (1 << h)) return HABITAT_REASON[h] ?? t.mainNeed[s];
   return t.mainNeed[s];
+}
+
+/** Does a newly recognised place answer the reason a visitor gave for leaving? */
+export function placeAnswers(kind: PlaceKind, r: ReasonCode): boolean {
+  if (PLACE_REASON[kind] === r) return true;
+  if (r === 'no-fresh-water') return kind === 'stream';
+  if (r === 'no-shelter') return kind === 'lagoon' || kind === 'sound' || kind === 'seagrass';
+  return false;
 }
 
 export function placeReason(t: SpeciesTable, s: number, missing: number): ReasonCode {

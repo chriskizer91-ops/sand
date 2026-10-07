@@ -26,10 +26,10 @@ export interface ResetSink {
   readonly year: number;
   /** Before changing persistent state because of the player's stroke (undo snapshot). */
   touch(p: number): void;
-  /** Life burned under lava (for the journal: forest share, cover). */
-  burned(p: number, canopy: number, total: number): void;
-  /** Any reset of a patch's life (wakes it and its neighbours). */
-  reset(p: number): void;
+  /** Life is about to burn under lava at p (called before it is cleared, for the journal). */
+  burned(p: number): void;
+  /** Any reset of a patch's life (wakes it and its neighbours). `urgent`: the player did it. */
+  reset(p: number, urgent: boolean): void;
 }
 
 const ROCK_SUB = [Substrate.Basalt, Substrate.Stone, Substrate.Limestone];
@@ -58,19 +58,25 @@ export class LocalDerive {
     }
   }
 
-  markAll(): void {
+  /**
+   * Derive every patch from scratch (a fresh world or a loaded save), in slices: fields are
+   * recomputed but no change is judged and no live state is touched.
+   */
+  *all(cols: Columns, f: EcoFields): Generator<void, void, void> {
     this.n = 0;
+    this.dirty.fill(0);
     for (let p = 0; p < NPATCH; p++) {
-      this.dirty[p] = Dirty.Geom;
-      this.queue[this.n++] = p;
+      this.columnsToPatch(cols, f, p);
+      if ((p & 16383) === 16383) yield;
+    }
+    for (let p = 0; p < NPATCH; p++) {
+      this.slopeAt(f, p);
+      if ((p & 32767) === 32767) yield;
     }
   }
 
-  /**
-   * Re-derive every queued patch. Without a sink, fields are recomputed but no change is
-   * judged and no live state is touched (a fresh world or a loaded save).
-   */
-  apply(cols: Columns, f: EcoFields, sink: ResetSink | null): number {
+  /** Re-derive every queued patch, and judge what each change did to its life. */
+  apply(cols: Columns, f: EcoFields, sink: ResetSink): number {
     const n = this.n;
     if (n === 0) return 0;
     const q = this.queue;
@@ -87,7 +93,7 @@ export class LocalDerive {
     }
     for (let i = 0; i < n; i++) {
       const p = q[i];
-      if (sink) this.judge(f, p, this.dirty[p], sink);
+      this.judge(f, p, this.dirty[p], sink);
       this.dirty[p] = 0;
     }
     this.n = 0;
@@ -173,7 +179,7 @@ export class LocalDerive {
         sink.touch(p);
         let total = 0;
         for (let L = 0; L < LAYERS; L++) total += f.cov[o + L];
-        if (total > 0) sink.burned(p, f.cov[o + L_CANOPY], total);
+        if (total > 0) sink.burned(p);
         this.clear(f, p, 0, LAYERS - 1);
         f.soil[p] = 0;
         f.fert[p] = 0.1;
@@ -184,7 +190,7 @@ export class LocalDerive {
         f.born[p] = year;
         f.refSub[p] = Substrate.HotLava;
         // refH stays at the pre-lava height until it cools (to measure how thick it is).
-        sink.reset(p);
+        sink.reset(p, true);
       }
       return;
     }
@@ -200,7 +206,7 @@ export class LocalDerive {
       f.wthr[p] = 0;
       f.fert[p] = 0.15;
       this.clear(f, p, 0, LAYERS - 1);
-      sink.reset(p);
+      sink.reset(p, true);
       return;
     }
     if (why & Dirty.Burn) {
@@ -208,14 +214,14 @@ export class LocalDerive {
       sink.touch(p);
       let total = 0;
       for (let L = 0; L < LAYERS; L++) total += f.cov[o + L];
-      if (total > 0) sink.burned(p, f.cov[o + L_CANOPY], total);
+      if (total > 0) sink.burned(p);
       this.clear(f, p, 0, LAYERS - 1);
       f.soil[p] = 0;
       f.char[p] = 1;
       f.born[p] = year;
       f.refH[p] = h;
       f.refSub[p] = bot;
-      sink.reset(p);
+      sink.reset(p, true);
       return;
     }
     const dh = h - f.refH[p];
@@ -223,7 +229,7 @@ export class LocalDerive {
       // The sea's own slow work: follow it, and only big changes disturb the low plants.
       if (dh > 0.8 || dh < -0.8) {
         this.clear(f, p, 0, L_HERB);
-        sink.reset(p);
+        sink.reset(p, false);
       }
       f.refH[p] = h;
       f.refSub[p] = bot;
@@ -238,7 +244,7 @@ export class LocalDerive {
       f.born[p] = year;
       f.refH[p] = h;
       f.refSub[p] = bot;
-      sink.reset(p);
+      sink.reset(p, true);
       return;
     }
     if (dh > 0.5) {
@@ -246,14 +252,14 @@ export class LocalDerive {
       this.bury(f, p, dh);
       f.born[p] = year;
       f.refH[p] = h;
-      sink.reset(p);
+      sink.reset(p, true);
     } else if (dh < -0.5) {
       sink.touch(p);
       this.scour(f, p, -dh);
       f.wthr[p] = 0;
       f.born[p] = year;
       f.refH[p] = h;
-      sink.reset(p);
+      sink.reset(p, true);
     }
   }
 

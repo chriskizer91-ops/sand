@@ -13,7 +13,7 @@
  * the next step boundary, so one eco step never sees two different island maps.
  */
 import { NP, PATCH_M } from '../config';
-import { NPATCH, patchX, patchZ, type EcoFields } from './fields';
+import { NPATCH, patchX, patchZ, type ZoneFields } from './fields';
 
 export const ANNOUNCE_AREA = 400;
 /** Below this area a land component is a rock, not shown on the chart. */
@@ -76,7 +76,17 @@ export class IslandLabeller {
   nextId = 1;
   private absorbed: Absorbed[] = [];
 
-  label(f: EcoFields, prev: Uint16Array, recs: Map<number, IslandRec>, out: Uint16Array, year: number, sandKindAt: (p: number) => number): IslandLabelResult {
+  /** Label in one go (tests and tools). */
+  label(f: ZoneFields, prev: Uint16Array, recs: Map<number, IslandRec>, out: Uint16Array, year: number, sandKindAt: (p: number) => number): IslandLabelResult {
+    const gen = this.labelSliced(f, prev, recs, out, year, sandKindAt);
+    for (;;) {
+      const r = gen.next();
+      if (r.done) return r.value;
+    }
+  }
+
+  /** Label, yielding between slices of work (the zone job). */
+  *labelSliced(f: ZoneFields, prev: Uint16Array, recs: Map<number, IslandRec>, out: Uint16Array, year: number, sandKindAt: (p: number) => number): Generator<void, IslandLabelResult, void> {
     const h = f.h;
     const comp = this.comp;
     comp.fill(0);
@@ -98,7 +108,12 @@ export class IslandLabeller {
     }
     const comps: Comp[] = [{ n: 0, sx: 0, sz: 0, peakH: 0, peakP: 0, x0: 0, z0: 0, x1: 0, z1: 0, sandN: 0, sandK: 0, shore: 0 }];
     const isLand = (p: number): boolean => h[p] > 0.5 || (h[p] > 0 && prev[p] !== 0);
+    let work = 0;
     for (let p0 = 0; p0 < NPATCH; p0++) {
+      if (++work >= 16384) {
+        work = 0;
+        yield;
+      }
       if (comp[p0] !== 0 || !isLand(p0)) continue;
       const id = comps.length;
       const c: Comp = { n: 0, sx: 0, sz: 0, peakH: -1e9, peakP: p0, x0: 1e9, z0: 1e9, x1: -1e9, z1: -1e9, sandN: 0, sandK: 0, shore: 0 };
@@ -165,7 +180,9 @@ export class IslandLabeller {
         }
         c.shore += seaSides;
       }
+      work += tail;
     }
+    yield;
 
     // ---------- overlap with the previous labelling ----------
     const overlap = new Map<number, number>(); // comp * 65536 + oldId -> patches
@@ -236,6 +253,7 @@ export class IslandLabeller {
       if (!oldTaken.has(id) && rec.announced) events.push({ kind: 'lost', id, otherName: rec.name });
     }
 
+    yield;
     // ---------- write the staged map and records ----------
     for (let p = 0; p < NPATCH; p++) out[p] = comp[p] === 0 ? 0 : compId[comp[p]];
     for (let c = 1; c < comps.length; c++) {
