@@ -13,6 +13,7 @@ import { FIXED, Part, PlantBuilder, blob, dome, fan, sideOf, tube } from '../src
 import { WorldFields } from '../src/render/fields';
 import { createWorldUniforms, type FrameCtx, type PageSystem, type Quality, type SystemDeps } from '../src/render/shared';
 import {
+  DEAD,
   DeathKind,
   HIDE_MARGIN,
   LAYER_SLOT,
@@ -337,6 +338,8 @@ describe('plant placement', () => {
     expect(spotWanted(0.49, t, true)).toBe(true);
     expect(spotWanted(t - HIDE_MARGIN + 0.001, t, true)).toBe(true);
     expect(spotWanted(t - HIDE_MARGIN - 0.001, t, true)).toBe(false);
+    // No cover at all hides every plant, however low its threshold.
+    expect(spotWanted(0, 0.04, true)).toBe(false);
   });
 
   it('places the same plants in the same places from the same data', () => {
@@ -480,7 +483,7 @@ describe('plant placement', () => {
     setLayer(b.fields, P, 2, PlantModel.Grass, 0);
     evaluate(b.field, conditions(2));
     expect(b.field.deadN).toBe(3);
-    for (let i = 0; i < 3; i++) expect(b.field.dead[i * 12 + 7] % 16).toBe(DeathKind.Burial);
+    for (let i = 0; i < 3; i++) expect(b.field.dead[i * DEAD + 7] % 16).toBe(DeathKind.Burial);
 
     const c = world(5);
     setLayer(c.fields, P, 2, PlantModel.Grass, 1);
@@ -742,7 +745,7 @@ describe('instance packing', () => {
  * The vegetation system on a flat 5 m island with a forest of broadleaf trees, sea-grape shrubs
  * and ferns over the 64 m tile at the world origin, watched by a camera.
  */
-function running(trees = true) {
+function running(trees = true, q: Partial<Quality> = {}) {
   const fields = new WorldFields();
   fields.surf.fill(5);
   const p0 = 128 + 128 * NP;
@@ -756,7 +759,7 @@ function running(trees = true) {
   }
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(55, 0.5, 0.5, 5000);
-  const quality: Quality = { setting: 'auto', phone: true, tier: 1, density: 1, shadows: true };
+  const quality: Quality = { setting: 'auto', phone: true, tier: 1, density: 1, shadows: true, ...q };
   const deps = {
     renderer: { domElement: { height: 800 } } as unknown as THREE.WebGLRenderer,
     scene,
@@ -800,7 +803,14 @@ function running(trees = true) {
         n: m.geometry.instanceCount,
         life: m.geometry.getAttribute('iLife') as THREE.InterleavedBufferAttribute,
       }));
-  return { sys, scene, camera, fields, look, frames, jump, now, meshes };
+  /** The life data of every patch in the 16 m block under (x, z) changed (to nothing). */
+  const clearBlock = (x: number, z: number) => {
+    const bx = Math.floor((x - ORIGIN_X) / 16) * 4;
+    const bz = Math.floor((z - ORIGIN_Z) / 16) * 4;
+    for (let pz = bz; pz < bz + 4; pz++) for (let px = bx; px < bx + 4; px++) for (let L = 0; L < 3; L++) setLayer(fields, px + pz * NP, L, PlantModel.Fern, 0);
+    fields.onEco.forEach((fn) => fn(bx, bz, 4, 4));
+  };
+  return { sys, scene, camera, fields, look, frames, jump, now, meshes, clearBlock };
 }
 
 const tris0 = (m: PlantModel) => triangles(buildPlant(m, 0));
@@ -871,6 +881,62 @@ describe('the vegetation system', () => {
     const trees = r.meshes().find((m) => !m.anim && m.tris === tris0(PlantModel.Broadleaf))!;
     expect(changed.length).toBeGreaterThan(0);
     expect(changed.map((m) => m.mesh)).not.toContain(trees.mesh);
+  });
+
+  it('plays a death with the model the plant was drawn with, and none for plants that were not drawn', () => {
+    // A small budget: the nearest block at full detail, the next few as simple models, so blocks
+    // within 60 m of the camera draw trees and shrubs at LOD1 and no ferns at all.
+    const r = running(true, { density: 0.2, shadows: false });
+    r.look(30);
+    r.frames(3);
+    const simple = r.meshes().find((m) => !m.anim && m.tris === tris1(PlantModel.Broadleaf) && m.n > 0)!;
+    expect(simple).toBeTruthy();
+    // The simple tree nearest the camera, within 60 m: every plant in its block dies.
+    const pos = simple.mesh.geometry.getAttribute('iPos') as THREE.InterleavedBufferAttribute;
+    let best = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < simple.n; i++) {
+      const d = Math.hypot(pos.getX(i) - r.camera.position.x, pos.getY(i) - r.camera.position.y, pos.getZ(i) - r.camera.position.z);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    expect(bestD).toBeLessThan(TIER_RANGE[0]);
+    r.clearBlock(pos.getX(best), pos.getZ(best));
+    r.frames(0.4);
+    const now = r.now();
+    const dying = (tris: number) => r.meshes().filter((m) => m.anim && m.tris === tris).reduce((a, m) => {
+      let k = 0;
+      for (let i = 0; i < m.n; i++) if (m.life.getY(i) <= now && now - m.life.getY(i) < 1) k++;
+      return a + k;
+    }, 0);
+    // The block's trees fall as the simple trees they were; its ferns were never drawn.
+    expect(dying(tris1(PlantModel.Broadleaf))).toBeGreaterThan(0);
+    expect(dying(tris0(PlantModel.Broadleaf))).toBe(0);
+    expect(dying(tris0(PlantModel.Fern))).toBe(0);
+  });
+
+  it('keeps each block in the same place in the buffers wherever the camera stands', () => {
+    // Without shadows every block goes in a fixed order, so a camera on the other side of the
+    // forest (every distance changed) leaves the plants it still draws in the same order.
+    const r = running(true, { shadows: false });
+    const order = () => {
+      const m = r.meshes().find((x) => !x.anim && x.tris === tris1(PlantModel.Broadleaf))!;
+      const pos = m.mesh.geometry.getAttribute('iPos') as THREE.InterleavedBufferAttribute;
+      return Array.from({ length: m.n }, (_, i) => `${pos.getX(i).toFixed(2)},${pos.getZ(i).toFixed(2)}`);
+    };
+    r.look(120, 60);
+    r.frames(3);
+    const a = order();
+    r.camera.position.set(32, 65, 32 - 120);
+    r.camera.lookAt(32, 5, 32);
+    r.camera.updateMatrixWorld();
+    r.frames(3);
+    const b = order();
+    const common = new Set(a.filter((k) => b.includes(k)));
+    expect(common.size).toBeGreaterThan(50);
+    expect(a.filter((k) => common.has(k))).toEqual(b.filter((k) => common.has(k)));
   });
 
   it('pops new trees out at mid range, where watch mode looks from', () => {

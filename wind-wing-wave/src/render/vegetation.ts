@@ -25,7 +25,8 @@
  * 3. INSTANCES. Plants are drawn as instances of one model per archetype and level. Each instance
  *    is three vec4s: position + packed yaw/scale, life (birth, death, death kind, seed + dryness)
  *    and five packed species colours. Buffers are rewritten at most four times a second, only
- *    when the selection or the plants changed, and only the part of each buffer that changed is
+ *    when the selection or the plants changed, blocks in a fixed order (so a moving camera only
+ *    shifts a buffer where blocks come and go), and only the part of each buffer that changed is
  *    uploaded.
  *
  * 4. ANIMATION (vertex shader). The bulk meshes only sway and fade. A plant that pops (at most
@@ -123,8 +124,13 @@ const NEVER = 1e7;
 
 /** Floats per record in a tile's plant list: x, y, z, yawScale, seedDry, spot, species, layer. */
 const REC = 8;
-/** Floats per dying plant: x, y, z, yawScale, seedDry, birth, death, kind, species, layer, model, variant. */
-const DEAD = 12;
+/**
+ * Floats per dying plant: x, y, z, yawScale, seedDry, birth, death, kind, species, layer, model,
+ * variant, and the detail level it was drawn at when it died (3 until the system fills it in).
+ */
+export const DEAD = 13;
+/** Where in a dying plant's floats its drawn level goes (see VegetationSystem.update). */
+export const DEAD_LEVEL = 12;
 /** Floats per instance: iPos (4), iLife (4), iCol (4). */
 const INST = 12;
 /** Bytes remembered per patch to tell whether its plants need working out again (see PlantField.sameKey). */
@@ -159,9 +165,12 @@ export function spotThreshold(p: number, slot: number): number {
   return 0.04 + (0.92 * (i + spotHash(p, slot, 0))) / LAYER_SPOTS[L];
 }
 
-/** Should a spot show a plant? Shown plants keep showing until cover drops HIDE_MARGIN below. */
+/**
+ * Should a spot show a plant? Shown plants keep showing until cover drops HIDE_MARGIN below
+ * (but no cover at all means no plants, however low the threshold).
+ */
 export function spotWanted(cover: number, threshold: number, shown: boolean): boolean {
-  return shown ? cover >= threshold - HIDE_MARGIN : cover >= threshold;
+  return shown ? cover > 0 && cover >= threshold - HIDE_MARGIN : cover >= threshold;
 }
 
 /** World x of a spot (somewhere inside its 4 m patch, away from the edges). */
@@ -947,6 +956,7 @@ export class PlantField {
     // The same variant the living plant drew (it read its seed back from a float32 record).
     const sd = this.dead[o + 4];
     this.dead[o + 11] = variantOf(arch, sd - Math.floor(sd));
+    this.dead[o + DEAD_LEVEL] = 3;
     this.deadN++;
     this.events.push({ kind, x, y, z, h: arch.height * scale, dir: c.windAngle });
   }
@@ -1048,6 +1058,7 @@ uniform vec3 uCamPos;
 uniform float uNow;
 uniform vec4 uArch;   // height (m), unfurl style, dry-season response, underwater surge
 uniform vec4 uArch2;  // share in flower, storm fall style, far fade-out distance (0 = none)
+uniform vec4 uArch3;  // body centre height and radius at scale 1 (m), for the near-camera shrink
 #ifndef PLANT_DEPTH
 varying vec3 vEmit;
 #endif
@@ -1190,6 +1201,12 @@ void plantVertex(out vec3 wp, out vec3 wn, out vec3 col, out vec3 emit) {
   // Far blobs thin out smoothly toward the edge of their range (no hard tile edge).
   if (uArch2.z > 0.0) vis *= 1.0 - smoothstep(uArch2.z - 80.0, uArch2.z, distance(iPos.xyz, uCamPos));
 #endif
+#ifndef PLANT_DEPTH
+  // A plant the camera is inside or right against shrinks out of the way (no discard), so a crown
+  // never fills the screen when the camera flies low over a forest. Its shadow stays.
+  float br = uArch3.y * sc;
+  vis *= smoothstep(br * 0.7, br + 2.5, distance(iPos.xyz + vec3(0.0, uArch3.x * sc, 0.0), uCamPos));
+#endif
   float s = sc * vis;
   vec3 wpos = vegRotY(p * s, cy, sy);
   wn = vegRotY(n, cy, sy);
@@ -1267,15 +1284,30 @@ void plantVertex(out vec3 wp, out vec3 wn, out vec3 col, out vec3 emit) {
 
 type Variant = 'bulk' | 'anim';
 
+/** An archetype's shader constants (see uArch, uArch2, uArch3 in PLANT_GLSL). */
+interface ArchUniforms {
+  arch: THREE.Vector4;
+  arch2: THREE.Vector4;
+  arch3: THREE.Vector4;
+}
+
+/** The body of a model as a sphere for the near-camera shrink: centre height and radius (m). */
+function bodyOf(g: THREE.BufferGeometry): THREE.Vector4 {
+  const box = new THREE.Box3().setFromBufferAttribute(g.getAttribute('position') as THREE.BufferAttribute);
+  const r = Math.max(box.max.x - box.min.x, box.max.z - box.min.z, (box.max.y - box.min.y) * 0.8) / 2;
+  return new THREE.Vector4((box.min.y + box.max.y) / 2, r, 0, 0);
+}
+
 /** The plant material (Lambert, vertex colours) with the plant vertex code; `side` per model (see plantKit sideOf). */
-function plantMaterial(u: WorldUniforms, now: THREE.IUniform<number>, arch: THREE.Vector4, arch2: THREE.Vector4, variant: Variant, side: THREE.Side): THREE.MeshLambertMaterial {
+function plantMaterial(u: WorldUniforms, now: THREE.IUniform<number>, arch: ArchUniforms, variant: Variant, side: THREE.Side): THREE.MeshLambertMaterial {
   const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side });
   if (variant === 'anim') mat.defines = { PLANT_ANIM: '' };
   mat.onBeforeCompile = (shader) => {
     addWorldUniforms(shader, u);
     shader.uniforms.uNow = now;
-    shader.uniforms.uArch = { value: arch };
-    shader.uniforms.uArch2 = { value: arch2 };
+    shader.uniforms.uArch = { value: arch.arch };
+    shader.uniforms.uArch2 = { value: arch.arch2 };
+    shader.uniforms.uArch3 = { value: arch.arch3 };
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${PLANT_GLSL}`)
       .replace('#include <uv_vertex>', '#include <uv_vertex>\nvec3 vegP; vec3 vegN; vec3 vegC; vec3 vegE;\nplantVertex(vegP, vegN, vegC, vegE);')
@@ -1294,14 +1326,15 @@ function plantMaterial(u: WorldUniforms, now: THREE.IUniform<number>, arch: THRE
  * The matching shadow material: the same sway, pop and fall, so shadows move with the plant.
  * (three draws it with the back faces of front-sided plants, and both faces of the others.)
  */
-function plantDepthMaterial(u: WorldUniforms, now: THREE.IUniform<number>, arch: THREE.Vector4, arch2: THREE.Vector4, variant: Variant): THREE.MeshDepthMaterial {
+function plantDepthMaterial(u: WorldUniforms, now: THREE.IUniform<number>, arch: ArchUniforms, variant: Variant): THREE.MeshDepthMaterial {
   const mat = new THREE.MeshDepthMaterial();
   mat.defines = variant === 'anim' ? { PLANT_ANIM: '', PLANT_DEPTH: '' } : { PLANT_DEPTH: '' };
   mat.onBeforeCompile = (shader) => {
     addWorldUniforms(shader, u);
     shader.uniforms.uNow = now;
-    shader.uniforms.uArch = { value: arch };
-    shader.uniforms.uArch2 = { value: arch2 };
+    shader.uniforms.uArch = { value: arch.arch };
+    shader.uniforms.uArch2 = { value: arch.arch2 };
+    shader.uniforms.uArch3 = { value: arch.arch3 };
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${PLANT_GLSL}`)
       .replace('#include <begin_vertex>', 'vec3 vegP; vec3 vegN; vec3 vegC; vec3 vegE;\nplantVertex(vegP, vegN, vegC, vegE);\nvec3 transformed = vegP;');
@@ -1320,16 +1353,15 @@ class ArchMaterials {
   constructor(
     private readonly u: WorldUniforms,
     private readonly now: THREE.IUniform<number>,
-    private readonly arch: THREE.Vector4,
-    private readonly arch2: THREE.Vector4,
+    private readonly arch: ArchUniforms,
   ) {}
 
   main(variant: Variant, side: THREE.Side): THREE.Material {
-    return this.get(`${variant}-${side}`, () => plantMaterial(this.u, this.now, this.arch, this.arch2, variant, side));
+    return this.get(`${variant}-${side}`, () => plantMaterial(this.u, this.now, this.arch, variant, side));
   }
 
   depth(variant: Variant, side: THREE.Side): THREE.Material {
-    return this.get(`depth-${variant}-${side}`, () => plantDepthMaterial(this.u, this.now, this.arch, this.arch2, variant));
+    return this.get(`depth-${variant}-${side}`, () => plantDepthMaterial(this.u, this.now, this.arch, variant));
   }
 
   private get(key: string, make: () => THREE.Material): THREE.Material {
@@ -1587,6 +1619,14 @@ function blockOfSpot(s: number): number {
   return (((p % NP) / BLOCK_P) | 0) + (((p / NP / BLOCK_P) | 0) * NB);
 }
 
+/** The 16 m block (global id) under a world position (clamped to the world). */
+function blockAt(x: number, z: number): number {
+  const size = BLOCK_P * PATCH_M;
+  const bx = Math.min(NB - 1, Math.max(0, Math.floor((x - ORIGIN_X) / size)));
+  const bz = Math.min(NB - 1, Math.max(0, Math.floor((z - ORIGIN_Z) / size)));
+  return bx + bz * NB;
+}
+
 interface Slots {
   /** [lod 0|1][model][variant] */
   bulk: Slot[][][];
@@ -1608,7 +1648,11 @@ export function createVegetation(deps: SystemDeps): PageSystem {
       slots.anim[lod][a.model] = [];
     }
     if (a.model === PlantModel.Tint) continue;
-    const mats = new ArchMaterials(u, now, new THREE.Vector4(a.height, a.unfurl, a.dry, a.surge ? 1 : 0), new THREE.Vector4(a.bloom, a.storm, 0, 0));
+    const mats = new ArchMaterials(u, now, {
+      arch: new THREE.Vector4(a.height, a.unfurl, a.dry, a.surge ? 1 : 0),
+      arch2: new THREE.Vector4(a.bloom, a.storm, 0, 0),
+      arch3: bodyOf(models.lod0[a.model][0]),
+    });
     for (let v = 0; v < a.variants; v++) {
       for (let lod = 0; lod < 2; lod++) {
         const g = (lod === 0 ? models.lod0 : models.lod1)[a.model][v];
@@ -1623,7 +1667,8 @@ export function createVegetation(deps: SystemDeps): PageSystem {
       }
     }
   }
-  const farMats = new ArchMaterials(u, now, new THREE.Vector4(1, 0, 0.25, 0), new THREE.Vector4(1, StormFall.Topple, TIER_RANGE[2], 0));
+  // Far blobs are only drawn far away: no near-camera shrink (a zero body).
+  const farMats = new ArchMaterials(u, now, { arch: new THREE.Vector4(1, 0, 0.25, 0), arch2: new THREE.Vector4(1, StormFall.Topple, TIER_RANGE[2], 0), arch3: new THREE.Vector4() });
   for (const g of models.far) {
     const slot = new Slot(g, farMats.main('bulk', sideOf(g)), null, scene, 'bulk');
     slots.far.push(slot);
@@ -1675,6 +1720,8 @@ class VegetationSystem implements PageSystem {
   /** The level a block showed before its last change, and when that change happened (vegetation clock). */
   private readonly fromLod = new Uint8Array(NB * NB).fill(3);
   private readonly switchAt = new Float32Array(NB * NB).fill(-1e6);
+  /** This build, the block still draws its old level shrinking away (see build). */
+  private readonly fading = new Uint8Array(NB * NB);
   /** Per block: level, plus 4 when it casts shadows; a change means the buffers need rewriting. */
   private readonly state = new Uint8Array(NB * NB).fill(3);
   private readonly prevState = new Uint8Array(NB * NB).fill(3);
@@ -1686,6 +1733,8 @@ class VegetationSystem implements PageSystem {
   private readonly order = new Int32Array(NB * NB);
   private candN = 0;
   private readonly picker = new LodPicker();
+  /** The caps for the current quality (worked out again at each selection: the player may change graphics). */
+  private caps: VegCaps;
   private readonly frustum = new THREE.Frustum();
   private readonly projView = new THREE.Matrix4();
   private readonly sphere = new THREE.Sphere();
@@ -1708,6 +1757,7 @@ class VegetationSystem implements PageSystem {
     this.renderer = deps.renderer;
     this.u = deps.u;
     this.quality = deps.quality;
+    this.caps = capsFor(this.quality);
     const programs = new Set<string>();
     for (const s of slots.all) {
       if (programs.has(s.program)) continue;
@@ -1788,10 +1838,15 @@ class VegetationSystem implements PageSystem {
     const w = this.u.uWind.value;
     c.windAngle = Math.hypot(w.x, w.y) > 1e-4 ? Math.atan2(w.y, w.x) : Math.PI;
     const deadline = performance.now() + EVAL_BUDGET_MS;
+    const dead0 = this.field.deadN;
     for (let tile = this.field.nextDirty(); tile >= 0; tile = this.field.nextDirty()) {
       this.field.evaluate(tile, c, deadline);
       if (performance.now() > deadline) break;
     }
+    // Plants that just died play their death with the model they were drawn with: the level their
+    // block shows now, before the next selection re-levels the block (it may have just emptied).
+    const dd = this.field.dead;
+    for (let i = dead0; i < this.field.deadN; i++) dd[i * DEAD + DEAD_LEVEL] = this.shown[blockAt(dd[i * DEAD], dd[i * DEAD + 2])];
     if (this.field.version !== this.seenVersion) {
       this.seenVersion = this.field.version;
       this.needSelect = true;
@@ -1873,7 +1928,7 @@ class VegetationSystem implements PageSystem {
     this.keys.subarray(0, n).sort();
     for (let i = 0; i < n; i++) this.order[i] = this.cand[this.keys[i] % 8192];
     this.lod.fill(3);
-    const caps = capsFor(this.quality);
+    const caps = (this.caps = capsFor(this.quality));
     this.picker.assign(this.order, n, this.bTier, fd.bCnt, fd.bTri, this.bDist, this.shown, caps, this.lod);
     // What a build depends on per block: its level, and whether it casts shadows (full detail,
     // close, nearest first until the shadow triangle cap). A level change starts a cross-fade.
@@ -1994,64 +2049,107 @@ class VegetationSystem implements PageSystem {
     ev.length = 0;
   }
 
-  /** Write every drawn plant into the instance buffers and upload what changed. */
+  /**
+   * Write every drawn plant into the instance buffers and upload what changed. The write order
+   * keeps the buffers as still as possible: shadow casters first, nearest first (the shadow pass
+   * draws a prefix of each buffer), then the dying plants close enough to cast shadows, then every
+   * other block in a fixed order (tile by tile, not by distance), so a camera that moves or turns
+   * only shifts a buffer where blocks come into or leave the view, and a still view uploads only
+   * the plants that changed; the other dying plants go last.
+   */
   private build(now: number): void {
     const fd = this.field;
-    const { bulk, anim, far, all } = this.slots;
     this.schedulePops(now);
-    for (const s of all) s.begin();
-    const cols = this.table.colours;
-    let animEnd = Infinity;
-    let fadeTris = capsFor(this.quality).tris * LOD_FADE_SHARE;
+    for (const s of this.slots.all) s.begin();
+    // Which blocks still draw their old level shrinking away: nearest first, within the fade budget.
+    let fadeTris = this.caps.tris * LOD_FADE_SHARE;
     for (let i = 0; i < this.candN; i++) {
       const gb = this.order[i];
-      const lod = this.lod[gb];
-      const shadow = (this.state[gb] & 4) !== 0;
-      const since = this.switchAt[gb];
-      // The block's plants at its level; a block that just changed level grows them in...
-      if (lod <= 2) animEnd = Math.min(animEnd, this.writeBlock(gb, lod, lod, since, NEVER, shadow, now));
-      // ...while its old level shrinks away (and pops already playing there finish), within the fade budget.
       const from = this.fromLod[gb];
-      if (from <= 2 && from !== lod && now - since < LOD_LEAVE) {
-        const cost = fd.bTri[gb * 3 + from];
-        if (cost > fadeTris) continue;
-        fadeTris -= cost;
-        const shrunk = since + LOD_HOLD + FADE_TIME;
-        animEnd = Math.min(animEnd, this.writeBlock(gb, from, lod, -Infinity, since + LOD_HOLD, false, now), now < shrunk ? shrunk : Infinity);
-      }
+      this.fading[gb] = 0;
+      if (from > 2 || from === this.lod[gb] || now - this.switchAt[gb] >= LOD_LEAVE) continue;
+      const cost = fd.bTri[gb * 3 + from];
+      if (cost > fadeTris) continue;
+      fadeTris -= cost;
+      this.fading[gb] = 1;
     }
-    // Dying plants: the full death close up, a quick shrink further away.
+    let end = Infinity;
+    for (let i = 0; i < this.candN; i++) {
+      const gb = this.order[i];
+      if (this.state[gb] & 4) end = Math.min(end, this.writeLevels(gb, now));
+    }
+    end = Math.min(end, this.writeDead(now, 0, SHADOW_RANGE));
+    for (let i = 0; i < this.candN; i++) {
+      const gb = this.cand[i];
+      if (!(this.state[gb] & 4)) end = Math.min(end, this.writeLevels(gb, now));
+    }
+    end = Math.min(end, this.writeDead(now, SHADOW_RANGE, Infinity));
+    for (const s of this.slots.all) s.commit();
+    this.nextAnimEnd = end;
+  }
+
+  /**
+   * One block's plants at its level (a block that just changed level grows them in) and, while
+   * it cross-fades, its old level shrinking away (pops already playing there finish). Returns
+   * when the next animation here ends.
+   */
+  private writeLevels(gb: number, now: number): number {
+    const lod = this.lod[gb];
+    const since = this.switchAt[gb];
+    let end = Infinity;
+    if (lod <= 2) end = this.writeBlock(gb, lod, lod, since, NEVER, (this.state[gb] & 4) !== 0, now);
+    if (this.fading[gb]) {
+      const shrunk = since + LOD_HOLD + FADE_TIME;
+      end = Math.min(end, this.writeBlock(gb, this.fromLod[gb], lod, -Infinity, since + LOD_HOLD, false, now), now < shrunk ? shrunk : Infinity);
+    }
+    return end;
+  }
+
+  /**
+   * Dying plants between `d0` and `d1` metres from the camera, drawn at the level they were drawn
+   * at when they died (so nothing swaps models as it dies, and plants that were not drawn don't
+   * appear just to die): the full death animation close up, a quick shrink further away. Returns
+   * when the next of them ends.
+   */
+  private writeDead(now: number, d0: number, d1: number): number {
+    const fd = this.field;
+    const { bulk, anim, far } = this.slots;
+    const cols = this.table.colours;
     const cam = this.camera.position;
     const d = fd.dead;
+    let end = Infinity;
     for (let i = 0; i < fd.deadN; i++) {
       const o = i * DEAD;
       const dx = d[o] - cam.x;
       const dy = d[o + 1] - cam.y;
       const dz = d[o + 2] - cam.z;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < d0 || dist >= d1) continue;
       const model = d[o + 10];
       const v = d[o + 11];
-      const kind = d[o + 7];
+      const L = d[o + 9];
+      const death = d[o + 6];
       const co = d[o + 8] * 4;
-      if (dist < NEAR_RANGE) {
-        const a = anim[0][model][v];
-        a.write(d[o], d[o + 1], d[o + 2], d[o + 3], d[o + 5], d[o + 6], kind, d[o + 4], cols, co);
-        if (dist < SHADOW_RANGE) a.near = a.n;
-        animEnd = Math.min(animEnd, d[o + 6] + deathSpan(kind % 16, model));
-      } else if (now - d[o + 6] < FADE_TIME) {
-        const L = d[o + 9];
-        const arch = ARCHETYPES[model];
-        if (dist < TIER_RANGE[1] && L < 2) {
-          bulk[1][model][v].write(d[o], d[o + 1], d[o + 2], d[o + 3], d[o + 5], d[o + 6], 0, d[o + 4], cols, co);
-        } else if (dist < TIER_RANGE[2] && L === 0) {
-          const ys = d[o + 3];
-          far[arch.far].write(d[o], d[o + 1] - 0.4, d[o + 2], packYawScale((ys - Math.floor(ys)) * Math.PI * 2, (Math.floor(ys) / 128) * arch.height), d[o + 5], d[o + 6], 0, d[o + 4], cols, co);
+      const lvl = d[o + DEAD_LEVEL];
+      if (lvl <= 1 && drawnAt(L, lvl)) {
+        if (dist < NEAR_RANGE) {
+          const kind = d[o + 7];
+          const a = anim[lvl][model][v];
+          a.write(d[o], d[o + 1], d[o + 2], d[o + 3], d[o + 5], death, kind, d[o + 4], cols, co);
+          if (dist < SHADOW_RANGE && lvl === 0) a.near = a.n;
+          end = Math.min(end, death + deathSpan(kind % 16, model));
+        } else if (now - death < FADE_TIME) {
+          bulk[lvl][model][v].write(d[o], d[o + 1], d[o + 2], d[o + 3], d[o + 5], death, 0, d[o + 4], cols, co);
+          end = Math.min(end, death + FADE_TIME);
         }
-        animEnd = Math.min(animEnd, d[o + 6] + FADE_TIME);
+      } else if (lvl === 2 && L === 0 && now - death < FADE_TIME) {
+        const arch = ARCHETYPES[model];
+        const ys = d[o + 3];
+        far[arch.far].write(d[o], d[o + 1] - 0.4, d[o + 2], packYawScale((ys - Math.floor(ys)) * Math.PI * 2, (Math.floor(ys) / 128) * arch.height), d[o + 5], death, 0, d[o + 4], cols, co);
+        end = Math.min(end, death + FADE_TIME);
       }
     }
-    for (const s of all) s.commit();
-    this.nextAnimEnd = animEnd;
+    return end;
   }
 
   /**
