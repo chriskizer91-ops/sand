@@ -9,10 +9,12 @@
  * - Size follows the zoom: giant maker's hands from high above, sensible close up.
  * - Place: above the brush, lifted up the screen and a little toward the camera, so they
  *   never cover the brush ring; the material falls from the gap between the palms.
- * - Poses (blended smoothly): holding (cupped, palms up), pouring (tilted, the gap between
- *   the hands opens and the fingers part), rock (fingers open to let boulders drop),
- *   smoothing (palms down, circling), scooping (deep cup, dipping).
- * - Hidden for Look and in watch mode; they fade rather than pop.
+ * - Poses (blended smoothly): holding (cupped, palms up), pouring (the cup opens: the palms
+ *   part and turn up toward you, wrists apart, so the material runs out between them; seen
+ *   from behind, a cup tipped away read as a crown of fingers), rock (fingers open to let
+ *   boulders drop), smoothing (palms down, circling), scooping (deep cup, dipping).
+ * - Hidden for Look and in watch mode; they fade rather than pop. On a touch screen there is
+ *   no hovering pointer, so they bow out a moment after the finger lifts.
  *
  * This file also holds the small pieces the ocean and effects share with the hands: the
  * engine's live stroke (PourTracker) and where the hands are this frame (readHands).
@@ -65,6 +67,8 @@ export class PourTracker {
 
 /** Hand length (wrist to fingertip, m) per metre of camera distance. */
 export const HAND_PER_DIST = 0.11;
+/** On a touch screen the hands linger this long (s) after a stroke, then fade. */
+export const TOUCH_LINGER = 1;
 
 /** What the hands are doing this frame. */
 export interface HandsState {
@@ -258,17 +262,19 @@ export interface HandPose {
   gap: number;
   /** Fingertips tipped down (radians). */
   pitch: number;
+  /** Toe-in (radians): each hand turns about its fingertips so the wrists part and the tips meet, making a spout. */
+  yaw: number;
 }
 
 const POSES: Record<'hold' | 'pour' | 'drop' | 'smooth' | 'scoop', HandPose> = {
-  hold: { curl: 0.35, spread: 0, roll: 0.4, flip: 0, gap: 0.0, pitch: 0.0 },
-  pour: { curl: 0.28, spread: 0.35, roll: 0.45, flip: 0, gap: 0.08, pitch: 0.25 },
-  drop: { curl: 0.08, spread: 0.8, roll: -0.12, flip: 0, gap: 0.22, pitch: 0.2 },
-  smooth: { curl: 0.15, spread: 0.3, roll: -0.15, flip: 1, gap: 0.34, pitch: 0.0 },
-  scoop: { curl: 0.8, spread: 0.05, roll: 0.36, flip: 0, gap: 0.0, pitch: 0.35 },
+  hold: { curl: 0.35, spread: 0, roll: 0.4, flip: 0, gap: 0.0, pitch: 0.0, yaw: 0 },
+  pour: { curl: 0.3, spread: 0.05, roll: 0.32, flip: 0, gap: 0.13, pitch: 0, yaw: 0.15 },
+  drop: { curl: 0.08, spread: 0.8, roll: -0.12, flip: 0, gap: 0.22, pitch: 0.2, yaw: 0 },
+  smooth: { curl: 0.15, spread: 0.3, roll: -0.15, flip: 1, gap: 0.34, pitch: 0.0, yaw: 0 },
+  scoop: { curl: 0.8, spread: 0.05, roll: 0.36, flip: 0, gap: 0.0, pitch: 0.35, yaw: 0 },
 };
 
-const POSE_KEYS = ['curl', 'spread', 'roll', 'flip', 'gap', 'pitch'] as const;
+const POSE_KEYS = ['curl', 'spread', 'roll', 'flip', 'gap', 'pitch', 'yaw'] as const;
 
 /** The pose for a tool, holding or stroking. */
 export function poseFor(tool: ToolId, stroking: boolean): HandPose {
@@ -279,22 +285,32 @@ export function poseFor(tool: ToolId, stroking: boolean): HandPose {
 }
 
 /** Rotations of the pose being written (set by poseHands, used by putVertex). */
-const turn = { cf: 1, sf: 0, cr: 1, sr: 0, gap: 0, v: 0 };
+const turn = { cf: 1, sf: 0, cr: 1, sr: 0, cy: 1, sy: 0, gap: 0, v: 0 };
+/** Where along the hand (z, hand lengths) the toe-in turns about: around the fingertips. */
+const YAW_PIVOT_Z = 0.45;
 
 /** Write one vertex of the right hand and its mirror image (the left hand). */
 function putVertex(pos: Float32Array, nrm: Float32Array, x: number, y: number, z: number, nx: number, ny: number, nz: number): void {
-  // Turn the hand over about its middle, then roll it about its pinky edge, then open the gap.
-  const { cf, sf, cr, sr } = turn;
+  // Turn the hand over about its middle, roll it about its pinky edge, toe it in about its
+  // fingertips (the tips swing toward the middle), then open the gap.
+  const { cf, sf, cr, sr, cy, sy } = turn;
   let px = HAND_MID_X + (x - HAND_MID_X) * cf - y * sf;
   let py = (x - HAND_MID_X) * sf + y * cf;
   let qx = nx * cf - ny * sf;
   let qy = nx * sf + ny * cf;
   const rx = px * cr - py * sr;
   py = px * sr + py * cr;
-  px = rx + turn.gap * 0.5;
+  px = rx;
   const rnx = qx * cr - qy * sr;
   qy = qx * sr + qy * cr;
   qx = rnx;
+  const dz = z - YAW_PIVOT_Z;
+  const yx = px * cy - dz * sy;
+  z = YAW_PIVOT_Z + px * sy + dz * cy;
+  px = yx + turn.gap * 0.5;
+  const ynx = qx * cy - nz * sy;
+  nz = qx * sy + nz * cy;
+  qx = ynx;
   const o = turn.v * 3;
   const m = HAND_VERTS * 3;
   pos[o] = px;
@@ -321,6 +337,8 @@ export function poseHands(p: HandPose, pos: Float32Array, nrm: Float32Array): vo
   turn.sf = Math.sin(p.flip * Math.PI);
   turn.cr = Math.cos(p.roll);
   turn.sr = Math.sin(p.roll);
+  turn.cy = Math.cos(p.yaw);
+  turn.sy = Math.sin(p.yaw);
   turn.gap = p.gap;
   turn.v = 0;
   // Palm: a squashed ellipsoid whose top dips into a shallow dish (the hollow of the hand).
@@ -499,7 +517,8 @@ void main() {
   float warm = uWarm * (0.3 + 0.7 * below) * (0.85 + 0.15 * sin(uTime * 2.618));
   col += uWarmColor * warm;
   col += vec3(1.0, 0.97, 0.9) * rim * 0.35;
-  float alpha = uOpacity * (0.7 + 0.25 * rim + 0.2 * warm);
+  // See-through sand-gold, firmer at the rim, so the hands never hide what they pour.
+  float alpha = uOpacity * (0.5 + 0.35 * rim + 0.15 * warm);
   gl_FragColor = vec4(col, clamp(alpha, 0.0, 1.0));
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -605,6 +624,8 @@ export function createHands(deps: SystemDeps): PageSystem {
 
   const pour = new PourTracker();
   const state = createHandsState();
+  /** Seconds since the hands last poured (for the touch-screen fade). */
+  let sinceStroke = Infinity;
   const pose: HandPose = { ...POSES.hold };
   let posed = false;
   // Last place the hands were seen, so they can fade out where they were.
@@ -621,10 +642,13 @@ export function createHands(deps: SystemDeps): PageSystem {
     update(f: FrameCtx) {
       pour.advance(f.dt);
       readHands(f, pour, state);
-      // Fade in and out (about a quarter of a second).
-      const targetOpacity = state.shown ? 1 : 0;
+      // Fade in and out (about a quarter of a second). On touch, the brush stays where the finger
+      // lifted, so the hands leave a moment after the stroke instead of hovering there.
+      sinceStroke = state.pouring ? 0 : sinceStroke + f.dt;
+      const show = state.shown && !(f.isTouch && sinceStroke > TOUCH_LINGER);
+      const targetOpacity = show ? 1 : 0;
       opacity.value += (targetOpacity - opacity.value) * (1 - Math.exp(-f.dt * 10));
-      if (opacity.value < 0.01 && !state.shown) {
+      if (opacity.value < 0.01 && !show) {
         opacity.value = 0;
         mesh.visible = prepass.visible = pile.visible = false;
         pileSize = 0;

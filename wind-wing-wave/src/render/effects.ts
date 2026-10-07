@@ -13,9 +13,15 @@
  *
  * Everything is pooled in typed arrays and drawn as instances (one draw call per kind that
  * is on screen, none when idle), with fog like the land and nothing allocated per frame.
- * Puffs never grow past a share of the screen and fade when the camera is close, so a
- * steaming shore can't fill the view. Motions near the brush are scaled with the zoom, so
- * a pour takes the same calm second whether you are close up or high above.
+ *
+ * Soft puffs are the costliest thing on a phone screen (every pixel of every puff is shaded
+ * and blended), so they are kept on a short leash (ARCHITECTURE 7: transparent overdraw):
+ *   - a puff's radius on screen never passes PUFF_MAX_SCREEN of the screen height;
+ *   - puffs that would be much bigger than that are close to the camera, and fade away;
+ *   - a new puff is only made while all the live puffs, at their full grown size, cover less
+ *     than PUFF_BUDGET screens in total, so a steaming shore can never fill the view.
+ * Motions near the brush are scaled with the zoom, so a pour takes the same calm second
+ * whether you are close up or high above.
  */
 import * as THREE from 'three';
 import { SEA_LEVEL } from '../config';
@@ -36,7 +42,7 @@ const SIZE1 = 9;
 const ALPHA = 10;
 const SEED = 11;
 const RGB = 12; // r, g, b
-const EXTRA = 15; // warmth (steam), passed to the shader
+const EXTRA = 15; // passed to the shader: warmth (steam), additive (glow)
 const GRAV = 16; // downward acceleration (m/s^2)
 const RELAX = 17; // how fast velocity relaxes toward (wind drift, rise) (1/s)
 const RISE = 18; // upward speed it relaxes toward (m/s)
@@ -171,6 +177,16 @@ function markRange(attr: THREE.InstancedBufferAttribute, n: number): void {
   attr.needsUpdate = true;
 }
 
+// ---------- puff budget ----------
+
+/** A puff's radius on screen is clamped to this share of the screen height. */
+export const PUFF_MAX_SCREEN = 0.09;
+/** Puffs that would be PUFF_FADE0..PUFF_FADE1 times the clamp (they are close to the camera) fade out. */
+const PUFF_FADE0 = 1.5;
+const PUFF_FADE1 = 3;
+/** Soft puffs may cover at most this many screens in total, counted at their full grown size. */
+export const PUFF_BUDGET = { phone: 1.5, laptop: 2 } as const;
+
 // ---------- shaders ----------
 
 /** Fog amount like three's own fog chunk, for shaders that apply it their own way. */
@@ -188,7 +204,11 @@ float ww_fogAmount() {
 }
 `;
 
-/** Camera-facing quads, clamped to a share of the screen and faded close to the camera. */
+/**
+ * Camera-facing quads. Their radius on screen is clamped to uMaxPx pixels (the CPU budget in
+ * puffCover uses the same clamp); ones that would be far bigger than that are close to the
+ * camera and fade out, and quads that have faded to nothing are dropped before any pixel is shaded.
+ */
 const BILLBOARD_VERTEX = /* glsl */ `
 attribute vec4 iPos;
 attribute vec4 iCol;
@@ -204,14 +224,21 @@ varying vec4 vMisc;
 void main() {
   vec4 mvPosition = viewMatrix * vec4(iPos.xyz, 1.0);
   float dist = max(-mvPosition.z, 0.001);
+  float px = iPos.w * uPxScale / dist;
+  vCol = iCol;
+  vCol.a *= smoothstep(iPos.w * uNearFade, iPos.w * uNearFade * 3.0 + 1.0, dist);
+  vCol.a *= 1.0 - smoothstep(uMaxPx * ${PUFF_FADE0.toFixed(2)}, uMaxPx * ${PUFF_FADE1.toFixed(2)}, px);
+  if (vCol.a < 0.004) {
+    // Invisible: put the corner outside the view so the quad covers no pixels at all.
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
   float size = min(iPos.w, uMaxPx * dist / uPxScale);
   float a = iMisc.x * 6.2832 + iMisc.y * (iMisc.x - 0.5) * 2.0;
   float ca = cos(a);
   float sa = sin(a);
   mvPosition.xy += vec2(position.x * ca - position.y * sa, position.x * sa + position.y * ca) * size;
   vUv = position.xy;
-  vCol = iCol;
-  vCol.a *= smoothstep(iPos.w * uNearFade, iPos.w * uNearFade * 3.0 + 1.0, dist);
   vMisc = iMisc;
   gl_Position = projectionMatrix * mvPosition;
   #include <fog_vertex>
@@ -248,7 +275,12 @@ void main() {
 }
 `;
 
-/** Sparks and glints: additive glowing dots that fade into the fog (rather than turning fog-coloured). */
+/**
+ * Sparks and glints: glowing dots that fade into the fog (rather than turning fog-coloured).
+ * Drawn premultiplied, so one material does both kinds: vMisc.z = 0 is a lava spark painted
+ * over what is behind it (a hot orange that stays orange even over bright water), 1 is a glint
+ * added on as light (the smoothing shimmer).
+ */
 const GLOW_FRAGMENT = /* glsl */ `
 varying vec2 vUv;
 varying vec4 vCol;
@@ -259,12 +291,16 @@ ${FOG_AMOUNT_GLSL}
 void main() {
   float r2 = dot(vUv, vUv);
   if (r2 > 1.0) discard;
+  float add = vMisc.z;
   float a = (1.0 - r2) * (1.0 - r2);
-  vec3 col = vCol.rgb + vec3(1.0, 0.95, 0.8) * (1.0 - smoothstep(0.0, 0.2, r2)) * 0.7;
-  gl_FragColor = vec4(col, a * vCol.a);
+  // A hotter core: the spark's own colour brightened, or a near-white glint.
+  float core = 1.0 - smoothstep(0.0, 0.25, r2);
+  vec3 col = mix(vCol.rgb * (1.0 + 0.6 * core), vCol.rgb + vec3(1.0, 0.95, 0.8) * core * 0.7, add);
+  gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
-  gl_FragColor.a *= 1.0 - ww_fogAmount();
+  float k = a * vCol.a * (1.0 - ww_fogAmount());
+  gl_FragColor = vec4(gl_FragColor.rgb * k, k * (1.0 - add));
 }
 `;
 
@@ -391,7 +427,8 @@ function makeRibbonGeometry(): THREE.BufferGeometry {
 
 /** A lumpy boulder: an icosahedron (80 triangles) pushed in and out, in stone greys. */
 function makeBoulderGeometry(): THREE.InstancedBufferGeometry {
-  const ico = new THREE.IcosahedronGeometry(1, 1).toNonIndexed();
+  // Polyhedra come without an index (three vertices per face), so every face keeps its own flat normal: a faceted stone.
+  const ico = new THREE.IcosahedronGeometry(1, 1);
   const pos = ico.getAttribute('position') as THREE.BufferAttribute;
   const col = new Float32Array(pos.count * 3);
   const light = new THREE.Color(0xb3ada3);
@@ -428,6 +465,10 @@ const MAX_BOULDERS = 48;
 const FALL_T = 0.7;
 /** Steam puffs spawned per second by one fully-hot contact. */
 const STEAM_RATE = 14;
+/** A steam puff grows to this many times its starting size over its life. */
+const STEAM_GROW = 2.2;
+/** Other soft puffs (dust, splashes) grow to this many times their starting size. */
+const PUFF_GROW = 2.2;
 /** Wind drift speed (m/s) at full wind strength. */
 const WIND_SPEED = 5;
 /** Spawn streams (each keeps its own fractional debt). */
@@ -441,12 +482,17 @@ const STREAM_SCOOP = 5;
 // ---------- the system ----------
 
 export function createEffects(deps: SystemDeps): PageSystem {
-  const { scene, fields, u, renderer, quality } = deps;
+  const { scene, fields, u, renderer, quality, camera } = deps;
   const steamCap = quality.phone ? 100 : 220;
+  const puffBudget = quality.phone ? PUFF_BUDGET.phone : PUFF_BUDGET.laptop;
 
+  /** Pixels per metre at one metre from the camera, and the puff radius clamp (pixels). */
   const pxScale = { value: 800 };
   const maxPx = { value: 300 };
   const sunView = { value: new THREE.Vector3(0, 1, 0) };
+  const drawSize = new THREE.Vector2(1, 1);
+  /** Screens the live soft puffs will cover at their full size (recounted each frame, grown by each spawn). */
+  let softCover = 0;
 
   // Pools. Grains that land sometimes kick up a little puff of their own colour (or a splash on the sea).
   const soft = new Particles(steamCap + 40);
@@ -456,8 +502,8 @@ export function createEffects(deps: SystemDeps): PageSystem {
     const x = pool.s[o + PX];
     const z = pool.s[o + PX + 2];
     const size = pool.s[o + SIZE0] * 5;
-    if (fields.heightAt(x, z) < SEA_LEVEL - 0.05) puff(x, SEA_LEVEL, z, size, 0.9, 0.96, 1.0, 0, 0.8);
-    else puff(x, pool.s[o + FLOOR], z, size, pool.s[o + RGB], pool.s[o + RGB + 1], pool.s[o + RGB + 2], 0, 0.8);
+    if (fields.heightAt(x, z) < SEA_LEVEL - 0.05) puff(x, SEA_LEVEL, z, size, 0.9, 0.96, 1.0, 0.8);
+    else puff(x, pool.s[o + FLOOR], z, size, pool.s[o + RGB], pool.s[o + RGB + 1], pool.s[o + RGB + 2], 0.8);
   });
 
   const billboard = (fragmentShader: string, extra: Partial<THREE.ShaderMaterialParameters>, nearFade: number) =>
@@ -484,7 +530,16 @@ export function createEffects(deps: SystemDeps): PageSystem {
     return m;
   };
   const softMesh = meshFor(soft, billboard(SOFT_FRAGMENT, { transparent: true, depthWrite: false, name: 'fx-soft' }, 1.2), 3);
-  const glowMesh = meshFor(glow, billboard(GLOW_FRAGMENT, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, name: 'fx-glow' }, 0), 4);
+  // Premultiplied "over" blending: alpha 1 paints over, alpha 0 adds light (see GLOW_FRAGMENT).
+  const glowBlend: Partial<THREE.ShaderMaterialParameters> = {
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.CustomBlending,
+    blendSrc: THREE.OneFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    name: 'fx-glow',
+  };
+  const glowMesh = meshFor(glow, billboard(GLOW_FRAGMENT, glowBlend, 0), 4);
   const grainMesh = meshFor(grains, billboard(GRAIN_FRAGMENT, { name: 'fx-grains' }, 0), 0);
 
   // The pour ribbon.
@@ -566,22 +621,62 @@ vec3 ww_rotate(vec3 v) {
   const tmpColor = new THREE.Color();
   const sandA = new THREE.Color();
   const sandB = new THREE.Color();
-  const drawSize = new THREE.Vector2();
+
+  // ---- the puff budget ----
+
+  /**
+   * Share of the screen a puff quad of world radius `radius` at (x, y, z) covers, clamped the
+   * way the billboard shader clamps it (0 behind the camera). It is clipped to the screen plus
+   * a margin, so puffs just off the edge, which may drift into view, are counted too.
+   */
+  function puffCover(x: number, y: number, z: number, radius: number): number {
+    const e = camera.matrixWorldInverse.elements;
+    const dist = -(e[2] * x + e[6] * y + e[10] * z + e[14]);
+    if (dist <= camera.near) return 0;
+    const k = pxScale.value / dist;
+    const r = Math.min(radius * k, maxPx.value);
+    const cx = (e[0] * x + e[4] * y + e[8] * z + e[12]) * k;
+    const cy = (e[1] * x + e[5] * y + e[9] * z + e[13]) * k;
+    const hw = drawSize.x * 0.7;
+    const hh = drawSize.y * 0.7;
+    const w = Math.min(cx + r, hw) - Math.max(cx - r, -hw);
+    const h = Math.min(cy + r, hh) - Math.max(cy - r, -hh);
+    return w > 0 && h > 0 ? (w * h) / (drawSize.x * drawSize.y) : 0;
+  }
+
+  /** Count what the live puffs will cover at their full size (once a frame, before anything spawns). */
+  function recountCover(): void {
+    const s = soft.s;
+    let c = 0;
+    for (let i = 0; i < soft.n; i++) {
+      const o = i * STRIDE;
+      c += puffCover(s[o + PX], s[o + PX + 1], s[o + PX + 2], s[o + SIZE1]);
+    }
+    softCover = c;
+  }
+
+  /** Room for one more puff growing to `finalSize` at (x, y, z)? If so it is counted in. */
+  function puffRoom(x: number, y: number, z: number, finalSize: number): boolean {
+    const c = puffCover(x, y, z, finalSize);
+    if (softCover + c > puffBudget) return false;
+    softCover += c;
+    return true;
+  }
 
   // ---- spawners ----
 
-  /** A soft puff of steam (warmth > 0), dust or splash. */
-  function puff(x: number, y: number, z: number, size: number, r: number, g: number, b: number, warmth: number, life = 1.4): void {
+  /** A soft puff of dust or splash (it grows by PUFF_GROW). */
+  function puff(x: number, y: number, z: number, size: number, r: number, g: number, b: number, life = 1.4): void {
+    if (!puffRoom(x, y, z, size * PUFF_GROW)) return;
     const o = soft.spawn(x, y, z, 0, 0, 0, life);
     if (o < 0) return;
     const s = soft.s;
     s[o + SIZE0] = size;
-    s[o + SIZE1] = size * 2.2;
+    s[o + SIZE1] = size * PUFF_GROW;
     s[o + ALPHA] = 0.75;
     s[o + RGB] = r;
     s[o + RGB + 1] = g;
     s[o + RGB + 2] = b;
-    s[o + EXTRA] = warmth;
     s[o + RELAX] = 2.5;
     s[o + RISE] = 0.3;
     s[o + DRIFT] = 0.4;
@@ -589,25 +684,21 @@ vec3 ww_rotate(vec3 v) {
     s[o + FADEOUT] = 0.25;
   }
 
-  /** One steam puff at a lava contact, about `base` metres across (one in six is a big plume puff). */
+  /** One steam puff at a lava contact, about `base` metres in radius (one in six is a bigger plume puff). */
   function steamPuff(x: number, z: number, level: number, base: number): void {
     if (soft.n >= steamCap) return;
     const big = Math.random() < 0.17;
-    const size = base * (0.7 + 0.6 * Math.random()) * (big ? 2 : 1);
+    const size = base * (0.7 + 0.6 * Math.random()) * (big ? 1.6 : 1);
+    const px = x + (Math.random() - 0.5) * base * 1.5;
+    const py = SEA_LEVEL + 0.2 + size * 0.3;
+    const pz = z + (Math.random() - 0.5) * base * 1.5;
+    if (!puffRoom(px, py, pz, size * STEAM_GROW)) return;
     // Bursts up and out of the water, then settles into a steady 1.5 m/s rise, drifting downwind.
-    const o = soft.spawn(
-      x + (Math.random() - 0.5) * base * 1.5,
-      SEA_LEVEL + 0.2 + size * 0.3,
-      z + (Math.random() - 0.5) * base * 1.5,
-      (Math.random() - 0.5) * 1.6,
-      2.6 + Math.random(),
-      (Math.random() - 0.5) * 1.6,
-      3.4 + Math.random() * 1.2,
-    );
+    const o = soft.spawn(px, py, pz, (Math.random() - 0.5) * 1.6, 2.6 + Math.random(), (Math.random() - 0.5) * 1.6, 3.4 + Math.random() * 1.2);
     if (o < 0) return;
     const s = soft.s;
     s[o + SIZE0] = size;
-    s[o + SIZE1] = size * 3;
+    s[o + SIZE1] = size * STEAM_GROW;
     s[o + ALPHA] = 0.3 + 0.25 * level;
     s[o + RGB] = 0.93;
     s[o + RGB + 1] = 0.95;
@@ -620,8 +711,8 @@ vec3 ww_rotate(vec3 v) {
     s[o + FADEOUT] = 0.3;
   }
 
-  /** A glowing dot: a lava spark (falls) or a glint (floats). */
-  function spark(x: number, y: number, z: number, vx: number, vy: number, vz: number, size: number, grav: number, r: number, g: number, b: number, life: number, floor: number): void {
+  /** A glowing dot: a lava spark (falls, painted over) or a glint (floats, added as light). */
+  function spark(x: number, y: number, z: number, vx: number, vy: number, vz: number, size: number, grav: number, r: number, g: number, b: number, life: number, floor: number, additive: boolean): void {
     const o = glow.spawn(x, y, z, vx, vy, vz, life);
     if (o < 0) return;
     const s = glow.s;
@@ -630,6 +721,7 @@ vec3 ww_rotate(vec3 v) {
     s[o + RGB] = r;
     s[o + RGB + 1] = g;
     s[o + RGB + 2] = b;
+    s[o + EXTRA] = additive ? 1 : 0;
     s[o + GRAV] = grav;
     s[o + RELAX] = 0.4;
     s[o + FLOOR] = floor;
@@ -726,7 +818,7 @@ vec3 ww_rotate(vec3 v) {
       b[o + 2] += b[o + 5] * dt;
       b[o + 9] += b[o + 10] * dt;
       if (wasDry && b[o + 1] < SEA_LEVEL) {
-        puff(b[o], SEA_LEVEL + size * 0.3, b[o + 2], size * 1.6, 0.9, 0.96, 1.0, 0, 1.1);
+        puff(b[o], SEA_LEVEL + size * 0.3, b[o + 2], size * 1.6, 0.9, 0.96, 1.0, 1.1);
         for (let d = 0; d < 3; d++) {
           grain(b[o], SEA_LEVEL, b[o + 2], (Math.random() - 0.5) * size * 4, size * (3 + Math.random() * 3), (Math.random() - 0.5) * size * 4, size * 0.12, grav * 0.6, 0.85, 0.95, 1.0, SEA_LEVEL - 0.1, 2);
         }
@@ -748,7 +840,7 @@ vec3 ww_rotate(vec3 v) {
           const gc = groundColor(b[o], b[o + 2]);
           const lighten = 0.35;
           for (let d = 0; d < 3; d++) {
-            puff(b[o] + (Math.random() - 0.5) * size, ground + size * 0.3, b[o + 2] + (Math.random() - 0.5) * size, size * 0.9, gc.r + (1 - gc.r) * lighten, gc.g + (1 - gc.g) * lighten, gc.b + (1 - gc.b) * lighten, 0, 1.3);
+            puff(b[o] + (Math.random() - 0.5) * size, ground + size * 0.3, b[o + 2] + (Math.random() - 0.5) * size, size * 0.9, gc.r + (1 - gc.r) * lighten, gc.g + (1 - gc.g) * lighten, gc.b + (1 - gc.b) * lighten, 1.3);
           }
           for (let d = 0; d < 3; d++) {
             grain(b[o], ground + size * 0.3, b[o + 2], (Math.random() - 0.5) * size * 5, size * (2 + Math.random() * 2), (Math.random() - 0.5) * size * 5, size * 0.1, grav * 0.7, 0.55, 0.53, 0.5, ground - 0.2, 1.5);
@@ -821,9 +913,9 @@ vec3 ww_rotate(vec3 v) {
       for (let i = due(STREAM_SPARKS, 40, dt); i > 0; i--) {
         const a = Math.random() * Math.PI * 2;
         const sp = Math.sqrt(2 * zoomG * r * (0.1 + 0.25 * Math.random()));
-        spark(lx + Math.cos(a) * r * 0.1, ly + 0.1, lz + Math.sin(a) * r * 0.1, Math.cos(a) * sp * 0.45, sp, Math.sin(a) * sp * 0.45, r * (0.03 + 0.03 * Math.random()), zoomG, 1.0, 0.45 + 0.3 * Math.random(), 0.12, 0.9 + Math.random() * 0.5, ly - 0.2);
+        spark(lx + Math.cos(a) * r * 0.1, ly + 0.1, lz + Math.sin(a) * r * 0.1, Math.cos(a) * sp * 0.45, sp, Math.sin(a) * sp * 0.45, r * (0.03 + 0.03 * Math.random()), zoomG, 1.0, 0.3 + 0.25 * Math.random(), 0.06, 0.9 + Math.random() * 0.5, ly - 0.2, false);
       }
-      if (inWater) for (let i = due(STREAM_STEAM, 10, dt); i > 0; i--) steamPuff(lx, lz, 1, Math.max(2, r * 0.45));
+      if (inWater) for (let i = due(STREAM_STEAM, 10, dt); i > 0; i--) steamPuff(lx, lz, 1, Math.max(1, r * 0.3));
     } else if (tool === 'sand') {
       // New sand takes on the local sand's colour, golden where there is none.
       const c = fields.colIndex(hs.x, hs.z);
@@ -853,13 +945,13 @@ vec3 ww_rotate(vec3 v) {
         const x = hs.x + Math.cos(a) * d;
         const z = hs.z + Math.sin(a) * d;
         const y = Math.max(fields.heightAt(x, z), SEA_LEVEL) + 0.05 * r;
-        spark(x, y, z, 0, 0.06 * r, 0, r * (0.025 + 0.02 * Math.random()), 0, 1.0, 0.93, 0.75, 0.8, -Infinity);
+        spark(x, y, z, 0, 0.06 * r, 0, r * (0.025 + 0.02 * Math.random()), 0, 1.0, 0.93, 0.75, 0.8, -Infinity, true);
       }
     } else if (tool === 'scoop') {
       // A puff of dust (or a splash) and a few flung bits, a few times a second.
       for (let i = due(STREAM_SCOOP, 3.5, dt); i > 0; i--) {
         const gc = inWater ? tmpColor.setRGB(0.88, 0.95, 1.0) : groundColor(lx, lz);
-        puff(lx + (Math.random() - 0.5) * r * 0.5, ly + r * 0.08, lz + (Math.random() - 0.5) * r * 0.5, r * 0.25, gc.r, gc.g, gc.b, 0, 1.2);
+        puff(lx + (Math.random() - 0.5) * r * 0.5, ly + r * 0.08, lz + (Math.random() - 0.5) * r * 0.5, r * 0.25, gc.r, gc.g, gc.b, 1.2);
         for (let k = 0; k < 4; k++) {
           const a = Math.random() * Math.PI * 2;
           const sp = Math.sqrt(2 * zoomG * r * 0.15);
@@ -903,6 +995,14 @@ vec3 ww_rotate(vec3 v) {
       const windX = u.uWind.value.x * WIND_SPEED;
       const windZ = u.uWind.value.y * WIND_SPEED;
 
+      // The screen as this frame will draw it: the puff clamp, and the budget's starting count.
+      camera.updateMatrixWorld();
+      renderer.getDrawingBufferSize(drawSize);
+      pxScale.value = drawSize.y / (2 * Math.tan((camera.fov * Math.PI) / 360));
+      maxPx.value = drawSize.y * PUFF_MAX_SCREEN;
+      sunView.value.copy(u.uSunDir.value).transformDirection(camera.matrixWorldInverse);
+      recountCover();
+
       // Steam from the engine's lava-meets-sea contacts.
       for (let c = 0; c < nContacts; c++) {
         const o = c * 4;
@@ -910,7 +1010,7 @@ vec3 ww_rotate(vec3 v) {
         contacts[o + 3] += dt * STEAM_RATE * level;
         while (contacts[o + 3] >= 1) {
           contacts[o + 3] -= 1;
-          steamPuff(contacts[o], contacts[o + 1], level, 2 + 3 * level);
+          steamPuff(contacts[o], contacts[o + 1], level, 1 + 1.5 * level);
         }
         contacts[o + 2] = level * Math.exp(-dt / 0.5);
         if (contacts[o + 2] < 0.02) {
@@ -946,12 +1046,6 @@ vec3 ww_rotate(vec3 v) {
       softMesh.visible = soft.n > 0;
       glowMesh.visible = glow.n > 0;
       grainMesh.visible = grains.n > 0;
-
-      // Screen-size clamp and the sun as seen from the camera.
-      renderer.getDrawingBufferSize(drawSize);
-      pxScale.value = drawSize.y / (2 * Math.tan((f.camera.fov * Math.PI) / 360));
-      maxPx.value = drawSize.y * 0.28;
-      sunView.value.copy(u.uSunDir.value).transformDirection(f.camera.matrixWorldInverse);
     },
     dispose() {
       for (const m of [softMesh, glowMesh, grainMesh, ribbon, boulderMesh]) {

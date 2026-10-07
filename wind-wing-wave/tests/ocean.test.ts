@@ -2,19 +2,24 @@
  * The sea and its effects (WP-E2): the CPU sea surface must match what the ocean shader draws,
  * the swell must die away over new land, and the effect pools and hands must behave.
  */
-import { describe, expect, it } from 'vitest';
-import { SEA_LEVEL } from '../src/config';
-import { PARTICLE_LAYOUT, Particles } from '../src/render/effects';
-import { createHandsState, makeHandsGeometry, makePileGeometry, poseFor, poseHands, PourTracker, readHands } from '../src/render/hands';
-import { HotSpots, OCEAN_GRID, gridOffset, steamLevel } from '../src/render/ocean';
-import { wrapTime, type FrameCtx } from '../src/render/shared';
+import * as THREE from 'three';
+import { afterEach, describe, expect, it } from 'vitest';
+import { SEA_LEVEL, type ToolId } from '../src/config';
+import { PARTICLE_LAYOUT, PUFF_BUDGET, PUFF_MAX_SCREEN, Particles, createEffects } from '../src/render/effects';
+import { WorldFields } from '../src/render/fields';
+import { TOUCH_LINGER, createHands, createHandsState, makeHandsGeometry, makePileGeometry, poseFor, poseHands, PourTracker, readHands } from '../src/render/hands';
+import { HotSpots, OCEAN_GRID, createOcean, steamLevel } from '../src/render/ocean';
+import { createWorldUniforms, wrapTime, type FrameCtx, type Quality, type SystemDeps } from '../src/render/shared';
 import {
   CREST_VAR,
   Q_MAX,
+  SEA_GRID_EVEN,
   SEA_TIME_WRAP,
   SWASH_PERIOD,
   SWELL,
+  gridOffset,
   seaHeight,
+  setSeaGrid,
   swashLift,
   swellAmpScale,
   swellGLSL,
@@ -25,6 +30,9 @@ const NUM = '(-?\\d+(?:\\.\\d+)?(?:e-?\\d+)?)';
 
 /** One swell train as the shader's vertex code spells it, read back out of the generated GLSL. */
 interface GlslTrain {
+  /** Grid spacings over which the train fades out. */
+  fade0: number;
+  fade1: number;
   amp: number;
   crestVar: number;
   crestK: number;
@@ -55,6 +63,8 @@ function parseGlsl(): { trains: GlslTrain[]; ampFn: number[]; steepFn: number[];
   for (const m of vertex.matchAll(block)) {
     const v = m.slice(1).map(Number);
     trains.push({
+      fade0: v[0],
+      fade1: v[1],
       amp: v[2],
       crestVar: v[3],
       crestK: v[4],
@@ -80,7 +90,7 @@ function parseGlsl(): { trains: GlslTrain[]; ampFn: number[]; steepFn: number[];
     trains,
     ampFn: fn('float ww_swellAmp(float storm, float depth) {'),
     steepFn: fn('float ww_swellSteep(float depth) {'),
-    swash: fn('float ww_swash(vec2 p, float t, float storm, float depth) {'),
+    swash: fn('float ww_swash(vec2 p, float t, float storm, float depth, float spacing) {'),
     swashPhase: fn('float ww_swashPhase(vec2 p) {'),
     swashOmega: Number(omega?.[1]),
   };
@@ -91,8 +101,11 @@ const ss = (e0: number, e1: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 
-/** The shader's vertex displacement (at full grid detail), evaluated with the numbers read from the GLSL. */
-function shaderSurface(px: number, pz: number, t: number, storm: number, depth: number): [number, number, number] {
+/**
+ * The shader's vertex displacement, evaluated with the numbers read from the GLSL, for the grid
+ * vertex at (px, pz) whose spacing is `spacing` (0 = full detail).
+ */
+function shaderSurface(px: number, pz: number, t: number, storm: number, depth: number, spacing = 0): [number, number, number] {
   const { trains, ampFn, steepFn, swash, swashPhase, swashOmega } = parseGlsl();
   // ww_swellAmp: 1 + SHOAL_GAIN * (1 - ss(D0, D1)), damp ss(0, DAMP_D + DAMP_STORM * storm), (1 + STORM_GAIN * storm)
   const [, shoalGain, , shoalD0, shoalD1, , dampD, dampStorm, , stormGain] = ampFn;
@@ -104,18 +117,20 @@ function shaderSurface(px: number, pz: number, t: number, storm: number, depth: 
   let oy = 0;
   let oz = 0;
   for (const w of trains) {
-    const a = amp * w.amp * (1 + w.crestVar * Math.sin(w.crestK * (w.crestDir[0] * px + w.crestDir[1] * pz) + w.crestPhase));
+    const fade = 1 - ss(w.fade0, w.fade1, spacing);
+    const a = fade * amp * w.amp * (1 + w.crestVar * Math.sin(w.crestK * (w.crestDir[0] * px + w.crestDir[1] * pz) + w.crestPhase));
     const ph = w.k * (w.dir[0] * px + w.dir[1] * pz) - w.omega * tw + w.phase;
     const q = Math.min(w.steep * steepK, w.qMax / (w.n * w.kQ * a + 1e-6));
     ox += q * a * w.dir[0] * Math.cos(ph);
     oz += q * a * w.dir[1] * Math.cos(ph);
     oy += a * Math.sin(ph);
   }
-  // ww_swash: band 1 - ss(D0, D1), (AMP + STORM * storm) * (0.35 + 0.65 sin(omega t + phase(p)))
-  const [, swD0, swD1, swAmp, swStorm, swMean, swVar] = swash;
+  // ww_swash: band (1 - ss(D0, D1, depth)) (1 - ss(F0, F1, spacing)), (AMP + STORM * storm) * (0.35 + 0.65 sin(omega t + phase(p)))
+  const [, swD0, swD1, , swF0, swF1, swAmp, swStorm, swMean, swVar] = swash;
   const [a1, k1x, k1z, a2, k2z, k2x] = swashPhase;
   const th = swashOmega * tw + a1 * Math.sin(px * k1x + pz * k1z) + a2 * Math.sin(pz * k2z - px * k2x);
-  const lift = (1 - ss(swD0, swD1, depth)) * (swAmp + swStorm * storm) * (swMean + swVar * Math.sin(th));
+  const band = (1 - ss(swD0, swD1, depth)) * (1 - ss(swF0, swF1, spacing));
+  const lift = band * (swAmp + swStorm * storm) * (swMean + swVar * Math.sin(th));
   return [px + ox, SEA_LEVEL + oy + lift, pz + oz];
 }
 
@@ -180,6 +195,112 @@ describe('sea surface: CPU matches the shader', () => {
       expect(w.dx).toBeLessThan(-0.5);
       expect(w.amp).toBeLessThanOrEqual(0.3);
     }
+  });
+});
+
+/** A page-side test rig: deep sea everywhere, a camera, and the deps a system factory needs. */
+function rig(opts: { phone: boolean; width: number; height: number; tier?: 0 | 1 | 2 }) {
+  const scene = new THREE.Scene();
+  const fields = new WorldFields();
+  fields.surf.fill(-30);
+  const u = createWorldUniforms(fields);
+  const camera = new THREE.PerspectiveCamera(50, opts.width / opts.height, 1, 16000);
+  const renderer = { getDrawingBufferSize: (v: THREE.Vector2) => v.set(opts.width, opts.height) } as unknown as THREE.WebGLRenderer;
+  const quality: Quality = { setting: 'auto', phone: opts.phone, tier: opts.tier ?? (opts.phone ? 1 : 2), density: 1, shadows: false };
+  const deps: SystemDeps = {
+    renderer,
+    scene,
+    camera,
+    fields,
+    u,
+    quality,
+    species: [],
+    isTouch: opts.phone,
+    prefs: { fewerFlashes: false, sound: false, dayMode: 'cycle', vibration: false, volume: 1 },
+  };
+  const target = new THREE.Vector3();
+  const frame = {
+    t: 0,
+    dt: 1 / 45,
+    camera,
+    cam: { target, dist: 100, yaw: 0, pitch: 0.6 },
+    fields,
+    u,
+    quality,
+    day: { phase: 0.3, part: 'day', season: 'wet', seasonPhase: 0, day: 0, moon: 0.5 },
+    year: 0,
+    firstLand: true,
+    storm: { phase: 'none', t: 0, level: 0, great: false },
+    life: null,
+    tool: 'lava' as ToolId,
+    stroking: false,
+    watching: false,
+    brush: null,
+    isTouch: opts.phone,
+  } satisfies FrameCtx as FrameCtx;
+  /** Put the orbit camera at (x, z), `dist` away, as the game's orbit camera does. */
+  const look = (x: number, z: number, dist: number, yaw: number, pitch: number) => {
+    target.set(x, 0, z);
+    frame.cam.dist = dist;
+    frame.cam.yaw = yaw;
+    frame.cam.pitch = pitch;
+    camera.position.set(x + Math.sin(yaw) * Math.cos(pitch) * dist, Math.sin(pitch) * dist, z + Math.cos(yaw) * Math.cos(pitch) * dist);
+    camera.lookAt(target);
+    camera.updateMatrixWorld();
+  };
+  return { scene, fields, u, camera, deps, frame, look };
+}
+
+describe('sea surface: what is drawn far from the camera', () => {
+  afterEach(() => setSeaGrid(0, 0, 0, 1));
+
+  it('waveHeight follows the ocean grid: the same trains fade out where the grid grows coarse (low and high camera)', () => {
+    const r = rig({ phone: false, width: 1280, height: 760 });
+    const ocean = createOcean(r.deps);
+    const mesh = r.scene.getObjectByName('ocean') as THREE.Mesh;
+    const uGrid = (mesh.material as THREE.ShaderMaterial).uniforms.uGrid.value as THREE.Vector4;
+    const vertexStep = (i: number) => uGrid.z * Math.pow(uGrid.w, Math.max(Math.abs(i) - SEA_GRID_EVEN, 0));
+    for (const [dist, pitch] of [
+      [40, 0.5],
+      [600, 0.9],
+    ]) {
+      r.look(40, -20, dist, -0.6, pitch);
+      ocean.update(r.frame);
+      for (const storm of [0, 1]) {
+        r.u.uStorm.value = storm;
+        let worst = 0;
+        // Grid vertices from near the centre out past where the longest train fades.
+        for (let i = 0; i <= 60; i += 3) {
+          const j = Math.round(i * 0.6) - 5;
+          const px = uGrid.x + gridOffset(i, uGrid.z, uGrid.w);
+          const pz = uGrid.y + gridOffset(j, uGrid.z, uGrid.w);
+          const t = 30 + i * 7.3;
+          const [x, y, z] = shaderSurface(px, pz, t, storm, 30, Math.max(vertexStep(i), vertexStep(j)));
+          worst = Math.max(worst, Math.abs(ocean.waveHeight(x, z, t) - y));
+        }
+        expect(worst).toBeLessThan(0.003);
+      }
+    }
+    ocean.dispose?.();
+  });
+
+  it('a low camera sees a calm sea far off, and seaHeight agrees (no bobbing over flat-drawn water)', () => {
+    // Grid for a camera about 20 m up: 0.5 m centre step, growing outward.
+    setSeaGrid(0, 0, OCEAN_GRID.STEPS[0], OCEAN_GRID.RATIOS[0]);
+    const swing = (x: number) => {
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let t = 0; t < 7; t += 0.25) {
+        const h = seaHeight(x, 0, t, 1, 30);
+        lo = Math.min(lo, h);
+        hi = Math.max(hi, h);
+      }
+      return hi - lo;
+    };
+    expect(swing(5)).toBeGreaterThan(1);
+    expect(swing(400)).toBeLessThan(0.05);
+    setSeaGrid(0, 0, 0, 1);
+    expect(swing(400)).toBeGreaterThan(1);
   });
 });
 
@@ -289,6 +410,83 @@ describe('hot water', () => {
   });
 });
 
+describe('steam on a phone screen', () => {
+  /**
+   * Run 12 s of lava pouring into deep water (and, optionally, six engine steam contacts),
+   * then measure what the live puffs cover, clamped as the billboard shader clamps them.
+   */
+  function steamCover(phone: boolean, width: number, height: number, dist: number, contacts: number) {
+    const r = rig({ phone, width, height });
+    const fx = createEffects(r.deps);
+    r.look(232, -20, dist, 1.0, 0.5);
+    r.frame.tool = 'lava';
+    r.frame.stroking = true;
+    r.frame.brush = { x: 232, y: -30, z: -20, nx: 0, ny: 1, nz: 0, r: 8 };
+    const steam: number[] = [];
+    for (let c = 0; c < contacts; c++) steam.push(232 + (c - contacts / 2) * 10, -14, 1);
+    const tick = {
+      t: 'tick',
+      year: 0,
+      firstLand: true,
+      paused: false,
+      storm: { phase: 'none', t: 0, level: 0, great: false },
+      events: { steam, pour: null, lavaArea: 0, lavaGlow: [0, 0, 0, 0], sliding: 0, rockPlaced: 0, burned: 0, arrivals: [], places: [] },
+      undo: 0,
+      perf: { geoMs: 0, ecoMs: 0, packMs: 0, activeLava: 0, activeSand: 0, activePatches: 0, tickHz: 30 },
+    } as const;
+    let worst = 0;
+    let most = 0;
+    const mesh = () => r.scene.children.find((o) => (o as THREE.Mesh).material && ((o as THREE.Mesh).material as THREE.Material).name === 'fx-soft') as THREE.Mesh;
+    const soft = mesh();
+    const mat = soft.material as THREE.ShaderMaterial;
+    const v = new THREE.Vector3();
+    for (let i = 0; i < 45 * 12; i++) {
+      r.frame.t += r.frame.dt;
+      if (i % 2 === 0) fx.onEngine?.({ ...tick, events: { ...tick.events, steam: [...steam], arrivals: [], places: [], lavaGlow: [0, 0, 0, 0] } });
+      fx.update(r.frame);
+      // Coverage now, the way the GPU will draw it.
+      const geo = soft.geometry as THREE.InstancedBufferGeometry;
+      const p = geo.getAttribute('iPos').array as Float32Array;
+      const pxScale = mat.uniforms.uPxScale.value as number;
+      const maxPx = mat.uniforms.uMaxPx.value as number;
+      let cover = 0;
+      for (let k = 0; k < geo.instanceCount; k++) {
+        // Distance in front of the camera, and where the centre lands on screen (pixels from the middle).
+        v.set(p[k * 4], p[k * 4 + 1], p[k * 4 + 2]);
+        const d = -v.clone().applyMatrix4(r.camera.matrixWorldInverse).z;
+        if (d <= r.camera.near) continue;
+        v.project(r.camera);
+        const sx = (v.x * width) / 2;
+        const sy = (v.y * height) / 2;
+        const rad = Math.min((p[k * 4 + 3] * pxScale) / d, maxPx);
+        const w = Math.min(sx + rad, width / 2) - Math.max(sx - rad, -width / 2);
+        const h = Math.min(sy + rad, height / 2) - Math.max(sy - rad, -height / 2);
+        if (w > 0 && h > 0) cover += (w * h) / (width * height);
+      }
+      worst = Math.max(worst, cover);
+      most = Math.max(most, geo.instanceCount);
+      if (i === 45 * 6) expect(maxPx).toBeCloseTo(height * PUFF_MAX_SCREEN, 6);
+    }
+    fx.dispose?.();
+    return { worst, most };
+  }
+
+  it('stays within the overdraw budget at the signature moment, and still makes a plume', () => {
+    for (const dist of [40, 60, 100]) {
+      for (const contacts of [0, 6]) {
+        const phone = steamCover(true, 618, 1372, dist, contacts);
+        expect(phone.worst).toBeLessThanOrEqual(PUFF_BUDGET.phone);
+        expect(phone.most).toBeGreaterThan(8);
+        expect(phone.most).toBeLessThanOrEqual(100 + 40);
+      }
+    }
+    const laptop = steamCover(false, 2560, 1520, 60, 6);
+    expect(laptop.worst).toBeLessThanOrEqual(PUFF_BUDGET.laptop);
+    // From high above the plume can have many small puffs.
+    expect(steamCover(true, 618, 1372, 400, 6).most).toBeGreaterThan(40);
+  });
+});
+
 describe('effect pools', () => {
   it('keeps alive particles packed, respects the cap, and reports landings', () => {
     const landed: number[] = [];
@@ -330,6 +528,46 @@ describe('hands', () => {
       }
     }
     expect(makePileGeometry().getIndex()!.count / 3).toBeLessThanOrEqual(80);
+  });
+
+  it('pour by opening the cup: the palms part and stay facing up, and the hands never cross', () => {
+    const g = makeHandsGeometry();
+    const pos = g.getAttribute('position').array as Float32Array;
+    const nrm = g.getAttribute('normal').array as Float32Array;
+    const half = pos.length / 2;
+    /** Smallest x of the right hand (its side of the gap). */
+    const innerEdge = () => {
+      let m = Infinity;
+      for (let i = 0; i < half; i += 3) m = Math.min(m, pos[i]);
+      return m;
+    };
+    poseHands(poseFor('sand', false), pos, nrm);
+    const held = innerEdge();
+    for (const tool of ['sand', 'lava'] as const) {
+      poseHands(poseFor(tool, true), pos, nrm);
+      expect(innerEdge()).toBeGreaterThan(held + 0.03);
+      expect(innerEdge()).toBeGreaterThan(0);
+      // Vertex 0 is the middle of the palm: still turned up (toward a camera looking down), not tipped away.
+      expect(nrm[1]).toBeGreaterThan(0.8);
+    }
+  });
+
+  it('bow out shortly after a stroke on a touch screen, but keep hovering under a mouse', () => {
+    for (const touch of [true, false]) {
+      const r = rig({ phone: touch, width: 618, height: 1372 });
+      const hands = createHands(r.deps);
+      const mesh = r.scene.children.find((o) => ((o as THREE.Mesh).material as THREE.Material | undefined)?.name === 'hands') as THREE.Mesh;
+      r.look(0, 0, 60, 0, 0.7);
+      r.frame.isTouch = touch;
+      r.frame.brush = { x: 0, y: -30, z: 0, nx: 0, ny: 1, nz: 0, r: 4 };
+      r.frame.stroking = true;
+      for (let i = 0; i < 20; i++) hands.update(r.frame);
+      expect(mesh.visible).toBe(true);
+      r.frame.stroking = false;
+      for (let t = 0; t < TOUCH_LINGER + 1.5; t += r.frame.dt) hands.update(r.frame);
+      expect(mesh.visible).toBe(!touch);
+      hands.dispose?.();
+    }
   });
 
   it('hover clear of the brush, follow the live stroke, and hide for Look and watch mode', () => {

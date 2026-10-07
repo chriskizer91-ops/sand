@@ -18,6 +18,12 @@
  *
  * Time: the shader only sees time wrapped to an hour (shared.ts wrapTime). Every period
  * here divides 3600 s exactly, so the sea never jumps when the clock wraps.
+ *
+ * Detail: the ocean's grid is fine around the camera's target and coarse toward the horizon,
+ * and a wave train is faded out wherever the grid is too coarse to draw it without shimmering.
+ * The grid's shape lives here too, and the ocean reports where it put the grid each frame
+ * (setSeaGrid), so seaHeight fades exactly the same trains: a raft far out on a sea drawn
+ * smooth sits still, instead of bobbing over waves nobody can see.
  */
 import { SEA_LEVEL } from '../config';
 import { wrapTime } from './shared';
@@ -105,6 +111,65 @@ function smoothstep(e0: number, e1: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
+// ---------- the sea grid's level of detail ----------
+
+/** Evenly spaced grid steps each side of the sea grid's centre; beyond them each step grows by the grid's ratio. */
+export const SEA_GRID_EVEN = 20;
+/** A train fades out as the grid spacing grows from TRAIN_FADE0 to TRAIN_FADE1 of its wavelength. */
+export const TRAIN_FADE0 = 0.2;
+export const TRAIN_FADE1 = 0.4;
+/** The swash fades out as the grid spacing grows from SWASH_FADE0 to SWASH_FADE1 metres. */
+export const SWASH_FADE0 = 3;
+export const SWASH_FADE1 = 8;
+
+/** World offset of grid index i from the grid's centre (the CPU twin of ww_gridOffset). */
+export function gridOffset(i: number, step: number, ratio: number): number {
+  const a = Math.abs(i);
+  const o = a <= SEA_GRID_EVEN ? step * a : step * (SEA_GRID_EVEN + (Math.pow(ratio, a - SEA_GRID_EVEN) - 1) / (ratio - 1));
+  return Math.sign(i) * o;
+}
+
+/**
+ * Grid spacing at a distance `o` (m) from the grid's centre along one axis. At every vertex it
+ * equals the shader's ww_gridStep for that vertex (step x ratio^(index - SEA_GRID_EVEN)), and it
+ * runs smoothly in between.
+ */
+export function gridStepAt(o: number, step: number, ratio: number): number {
+  const a = Math.abs(o);
+  return a <= step * SEA_GRID_EVEN ? step : step + (a - step * SEA_GRID_EVEN) * (ratio - 1);
+}
+
+/** Where the ocean drew its grid this frame: centre, centre step and growth ratio (step 0 = full detail everywhere). */
+const seaGrid = { cx: 0, cz: 0, step: 0, ratio: 1 };
+
+/**
+ * The ocean calls this each frame with where it put its grid, so seaHeight drops the same wave
+ * trains the grid can't carry. Pass step 0 to get the full-detail sea everywhere (the default).
+ */
+export function setSeaGrid(cx: number, cz: number, step: number, ratio: number): void {
+  seaGrid.cx = cx;
+  seaGrid.cz = cz;
+  seaGrid.step = step;
+  seaGrid.ratio = ratio;
+}
+
+/** The sea grid's vertex spacing at a world point (0 when no grid has been reported). */
+export function seaGridSpacing(x: number, z: number): number {
+  const g = seaGrid;
+  if (g.step <= 0) return 0;
+  return Math.max(gridStepAt(x - g.cx, g.step, g.ratio), gridStepAt(z - g.cz, g.step, g.ratio));
+}
+
+/** How much of a train the grid draws at this vertex spacing (1 all of it, 0 none). */
+function trainFade(w: SwellTrain, spacing: number): number {
+  return 1 - smoothstep(w.length * TRAIN_FADE0, w.length * TRAIN_FADE1, spacing);
+}
+
+/** How much of the swash the grid draws at this vertex spacing. */
+function swashFade(spacing: number): number {
+  return 1 - smoothstep(SWASH_FADE0, SWASH_FADE1, spacing);
+}
+
 /** How much of the open-sea swell is left at a given storm level and water depth (m, >= 0). */
 export function swellAmpScale(storm: number, depth: number): number {
   const shoal = 1 + SHOAL_GAIN * (1 - smoothstep(SHOAL_D0, SHOAL_D1, depth));
@@ -132,16 +197,17 @@ export function swashLift(x: number, z: number, tw: number, storm: number, depth
 
 /**
  * Offset of the swell surface for the undisturbed point (px, pz): out[0..2] = dx, dy, dz.
- * tw is wrapped time; amp and steepK come from swellAmpScale and swellSteepScale.
+ * tw is wrapped time; amp and steepK come from swellAmpScale and swellSteepScale; spacing is
+ * the sea grid's vertex spacing there (0 for full detail).
  */
-export function swellOffset(px: number, pz: number, tw: number, amp: number, steepK: number, out: Float64Array): void {
+export function swellOffset(px: number, pz: number, tw: number, amp: number, steepK: number, spacing: number, out: Float64Array): void {
   let ox = 0;
   let oy = 0;
   let oz = 0;
   const n = SWELL.length;
   for (let i = 0; i < n; i++) {
     const w = SWELL[i];
-    const a = w.amp * amp * (1 + CREST_VAR * Math.sin(w.crestK * (w.dx * pz - w.dz * px) + w.crestPhase));
+    const a = trainFade(w, spacing) * w.amp * amp * (1 + CREST_VAR * Math.sin(w.crestK * (w.dx * pz - w.dz * px) + w.crestPhase));
     if (a <= 0) continue;
     const ph = w.k * (w.dx * px + w.dz * pz) - w.omega * tw + w.phase;
     const c = Math.cos(ph);
@@ -161,14 +227,13 @@ const INVERT_STEPS = 6;
 
 /**
  * Water surface height at world (x, z) and time t (seconds, unwrapped), for storm level 0..1
- * and local water depth (m, positive; small depths damp the swell).
+ * and local water depth (m, positive; small depths damp the swell): exactly the surface the
+ * ocean draws, including the trains its grid fades out far from the camera's target.
  *
  * Gerstner waves move the water sideways as well as up and down, so the surface above a
  * point belongs to a neighbouring undisturbed point. A few fixed-point steps find it (the
  * sideways sway is capped well under one, so this always converges), and the height there
- * is exactly what the ocean shader draws wherever its grid is fine enough to carry every
- * wave (all around the camera's target; far off, the grid smooths away the shortest
- * ripples, which are invisible at that distance anyway).
+ * is what the shader computes at that grid point.
  */
 export function seaHeight(x: number, z: number, t: number, storm: number, depth: number): number {
   const tw = wrapTime(t);
@@ -179,15 +244,15 @@ export function seaHeight(x: number, z: number, t: number, storm: number, depth:
   let pz = z;
   if (amp > 0) {
     for (let it = 0; it < INVERT_STEPS; it++) {
-      swellOffset(px, pz, tw, amp, steepK, scratch);
+      swellOffset(px, pz, tw, amp, steepK, seaGridSpacing(px, pz), scratch);
       px = x - scratch[0];
       pz = z - scratch[2];
     }
-    swellOffset(px, pz, tw, amp, steepK, scratch);
+    swellOffset(px, pz, tw, amp, steepK, seaGridSpacing(px, pz), scratch);
   } else {
     scratch[1] = 0;
   }
-  return SEA_LEVEL + scratch[1] + swashLift(px, pz, tw, storm, d);
+  return SEA_LEVEL + scratch[1] + swashLift(px, pz, tw, storm, d) * swashFade(seaGridSpacing(px, pz));
 }
 
 /** A GLSL float literal that reads back to the same number. */
@@ -200,11 +265,11 @@ function f(v: number): string {
  * GLSL for the same swell (generated from the constants above, so they can't drift apart):
  *   float ww_swellAmp(float storm, float depth)
  *   float ww_swellSteep(float depth)
- *   float ww_swashPhase(vec2 p), ww_swash(vec2 p, float t, float storm, float depth)
+ *   float ww_swashPhase(vec2 p), ww_swash(vec2 p, float t, float storm, float depth, float spacing)
  *   vec3  ww_swell(vec2 p, float t, float amp, float steepK, float spacing)        vertex offset
  *   vec3  ww_swellNormal(vec2 p, float t, float amp, float steepK, float footprint) surface normal
  * `spacing` is the sea grid's vertex spacing there and `footprint` the metres per pixel: each
- * train fades out where it can't be drawn without shimmering (the CPU uses spacing 0).
+ * train fades out where it can't be drawn without shimmering (seaHeight fades the same way).
  */
 export function swellGLSL(): string {
   const n = SWELL.length;
@@ -217,7 +282,7 @@ export function swellGLSL(): string {
   let nrm = '';
   for (const w of SWELL) {
     off += `
-  {${head(w, `(1.0 - smoothstep(${f(w.length * 0.2)}, ${f(w.length * 0.4)}, spacing))`)}
+  {${head(w, `(1.0 - smoothstep(${f(w.length * TRAIN_FADE0)}, ${f(w.length * TRAIN_FADE1)}, spacing))`)}
     o.xz += Q * A * vec2(${f(w.dx)}, ${f(w.dz)}) * cos(ph);
     o.y += A * sin(ph);
   }`;
@@ -242,8 +307,8 @@ const float WW_SWASH_OMEGA = ${f(SWASH_OMEGA)};
 float ww_swashPhase(vec2 p) {
   return 0.9 * sin(p.x * 0.031 + p.y * 0.017) + 0.7 * sin(p.y * 0.043 - p.x * 0.011);
 }
-float ww_swash(vec2 p, float t, float storm, float depth) {
-  float band = 1.0 - smoothstep(${f(SWASH_D0)}, ${f(SWASH_D1)}, depth);
+float ww_swash(vec2 p, float t, float storm, float depth, float spacing) {
+  float band = (1.0 - smoothstep(${f(SWASH_D0)}, ${f(SWASH_D1)}, depth)) * (1.0 - smoothstep(${f(SWASH_FADE0)}, ${f(SWASH_FADE1)}, spacing));
   float th = WW_SWASH_OMEGA * t + ww_swashPhase(p);
   return band * (${f(SWASH_AMP)} + ${f(SWASH_STORM)} * storm) * (0.35 + 0.65 * sin(th));
 }
