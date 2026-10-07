@@ -9,27 +9,32 @@
  *    shows a plant when its layer's cover reaches the threshold and hides only once cover falls
  *    0.05 below it, so plants never flicker and rising cover only ever ADDS plants. The plant is
  *    the layer's species; a new species in a layer means the old plants die and new ones pop.
- *    Spots are worked out per 64 m tile, only for tiles near the camera, only when that tile's
- *    life or ground data changed.
+ *    Work is done per 16 m block, only for blocks near the camera whose life or ground data
+ *    changed, and inside a block only for patches whose plant data actually changed (or all of
+ *    them when the ground moved), within a small time budget per frame.
  *
- * 2. TIERS. Each tile gets a detail tier from its nearest point to the camera: under 60 m every
- *    layer at full detail (LOD0), 60-180 m canopy and shrubs as simple models (LOD1), 180-500 m
- *    canopy only as far blobs (LOD2), beyond that nothing (the ground tint carries it). Hard caps
- *    (instances and triangles per tier, phone-sized) are filled nearest-first in 16 m blocks; a
- *    block that doesn't fit drops to the next tier, so a crowded forest keeps a bubble of full
- *    detail around the camera.
+ * 2. LEVELS OF DETAIL. Each 64 m tile gets a tier from its nearest point to the camera: under
+ *    60 m every layer at full detail (LOD0), 60-180 m canopy and shrubs as simple models (LOD1),
+ *    180-500 m canopy only as far blobs (LOD2), beyond that nothing (the ground tint carries it).
+ *    Within those limits each 16 m block gets its level from one shared, phone-sized triangle
+ *    pool, nearest first, with a little kept back for the mid and far canopy. A block already
+ *    showing a level keeps it until it is a few metres past the cut, so the edge doesn't flap as
+ *    the camera pans, and a block that does change level cross-fades: the new level grows in
+ *    while the old one shrinks away (no discard, so no popping models).
  *
- * 3. INSTANCES. Plants are drawn as instances of one model per archetype and tier. Each instance
+ * 3. INSTANCES. Plants are drawn as instances of one model per archetype and level. Each instance
  *    is three vec4s: position + packed yaw/scale, life (birth, death, death kind, seed + dryness)
- *    and five packed species colours. Buffers are rebuilt at most four times a second, only when
- *    the selection or the plants changed, into reused typed arrays.
+ *    and five packed species colours. Buffers are rewritten at most four times a second, only
+ *    when the selection or the plants changed, and only the part of each buffer that changed is
+ *    uploaded.
  *
  * 4. ANIMATION (vertex shader). The bulk meshes only sway and fade. A plant that pops (at most
- *    four a second, on screen, within 60 m: "watching trees pop up") or dies close by is also
- *    drawn on a small "animating" mesh whose shader runs the full sprout-unfurl-settle pop and
- *    the deaths (lava char and sink, storm topple leaving a log, palms losing fronds, wither,
- *    burial). Everything else fades in over 0.6 s. Nothing uses `discard` (Mali early-z):
- *    hidden things shrink to nothing instead.
+ *    four a second, on screen; full detail close by, and trees and shrubs out to 130 m, where
+ *    watch mode frames the island: "watching trees pop up") or dies close by is also drawn on a
+ *    small "animating" mesh whose shader runs the full sprout-unfurl-settle pop and the deaths
+ *    (lava char and sink, storm topple leaving a log, palms losing fronds, wither, burial).
+ *    Everything else fades in over 0.6 s. Nothing uses `discard` (Mali early-z): hidden things
+ *    shrink to nothing instead.
  */
 import * as THREE from 'three';
 import { NP, ORIGIN_X, ORIGIN_Z, PATCH_M, SEA_LEVEL } from '../config';
@@ -37,6 +42,7 @@ import { Habitat, PLANT_MODEL_COUNT, PlantModel, type SpeciesDef } from '../cont
 import { hash2 } from '../engine/noise';
 import { PLANT_BYTES, type FromEngine, type PondInfo, type StormState } from '../engine/protocol';
 import type { WorldFields } from './fields';
+import { sideOf } from './models/plantKit';
 import { ARCHETYPES, FAR_SHAPE_COUNT, StormFall, buildFarShape, buildPlant, triangles, type ArchetypeInfo, type FarShape } from './models/plants';
 import { addWorldUniforms, type FrameCtx, type PageSystem, type Quality, type SystemDeps, type WorldUniforms } from './shared';
 
@@ -61,24 +67,57 @@ const TRACK_RANGE = 540;
 const UNTRACK_RANGE = 600;
 /** Tier boundaries need this much extra distance before a tile moves out a tier (no flapping). */
 const TIER_HYSTERESIS = 6;
+/** A block already showing a level competes for it as if this many metres nearer (no flapping at the cut). */
+export const LOD_HYSTERESIS = 8;
+/** A block changing level: the new level grows in at once, the old one starts shrinking this much later (s). */
+const LOD_HOLD = 0.2;
 const POP_TIME = 1.5;
 const FADE_TIME = 0.6;
+/** How long a block's old level is still written after a change: until it has shrunk away and any pop there has played. */
+const LOD_LEAVE = Math.max(LOD_HOLD + FADE_TIME, POP_TIME);
+/**
+ * Old levels still shrinking away may cost at most this share of the plant triangle cap. When the
+ * camera jumps and many blocks change at once, the nearest cross-fade and the rest simply swap
+ * (the view is moving fast then), so a glide never doubles the plant draw.
+ */
+const LOD_FADE_SHARE = 0.25;
 const POPS_PER_SECOND = 4;
 const POP_BURST = 2;
 /** A birth waits at most this long for a pop slot before it simply fades in. */
 const POP_WAIT = 0.75;
-const POP_RANGE = 60;
+/**
+ * Plants pop within this distance (m): every layer at full detail, and trees and shrubs at LOD1
+ * beyond that, so watch mode (which frames activity from 60-120 m) shows pops, not fades.
+ */
+export const POP_RANGE = 130;
+/** Motes, death animations and shadows are only worth it this close (m). */
+const NEAR_RANGE = TIER_RANGE[0];
 const SHADOW_RANGE = 40;
 const REBUILD_INTERVAL = 0.25;
-/** Per-frame time for working out tiles (ms); at least one tile is always done. */
+/** Per-frame time for working out blocks (ms); at least one block is always done. */
 const EVAL_BUDGET_MS = 1.5;
-/** Storm-felled trunks (logs) and bare palm trunks lie this long (s) before settling into the ground. */
+/** Storm-felled trunks (logs) and bare palm trunks lie this long (s), then take LOG_SETTLE to go. */
 const LOG_LINGER = 40;
+const LOG_SETTLE = 3;
 /** Death kinds (the shader's iLife.z low bits). */
 export const DeathKind = { None: 0, Wither: 1, Lava: 2, Storm: 3, Burial: 4 } as const;
 export type DeathKind = (typeof DeathKind)[keyof typeof DeathKind];
-/** How long each death plays before the instance is dropped (s). */
-const DEATH_SPAN: readonly number[] = [0, 2.5, 3.1, LOG_LINGER + 3.2, 1.9];
+/** How long each death plays before the instance is dropped (s); storms depend on how the plant falls. */
+const DEATH_SPAN: readonly number[] = [0, 2.5, 3.1, LOG_LINGER + LOG_SETTLE + 0.2, 1.9];
+const FLATTEN_SPAN = 2.2;
+
+/** How long a death plays (s): flattened small plants are gone in two seconds, logs linger. */
+export function deathSpan(kind: number, model: number): number {
+  if (kind === DeathKind.Storm && ARCHETYPES[model].storm === StormFall.Flatten) return FLATTEN_SPAN;
+  return DEATH_SPAN[kind];
+}
+
+/**
+ * The pop's bottom-up reveal: a vertex of reveal order g opens over [g * SLOPE, g * SLOPE + WIDTH]
+ * of the pop's first REVEAL_TIME seconds (anything with g < 0 is there from the start). Shared by
+ * the shader and the tests.
+ */
+export const REVEAL = { time: 0.95, slope: 0.55, width: 0.3 } as const;
 /** "Not dying": a death time far in the future (the shader tests uNow >= death). */
 const NEVER = 1e7;
 
@@ -88,11 +127,21 @@ const REC = 8;
 const DEAD = 12;
 /** Floats per instance: iPos (4), iLife (4), iCol (4). */
 const INST = 12;
+/** Bytes remembered per patch to tell whether its plants need working out again (see PlantField.sameKey). */
+const KEY = 8;
+/** Block dirty flags: its life data changed; its ground (or a pond) changed. */
+const LIFE = 1;
+const GROUND = 2;
 
 // ---------- spot hashing (pure, deterministic) ----------
 
 function slotLayer(slot: number): 0 | 1 | 2 {
   return slot === 0 ? 0 : slot < 3 ? 1 : 2;
+}
+
+/** Is a layer drawn at a level? Canopy at every level, shrubs at LOD0 and LOD1, herbs at LOD0 only. */
+function drawnAt(layer: number, lod: number): boolean {
+  return layer + lod <= 2;
 }
 
 /** A 0..1 hash for spot (patch p, slot) and property k. */
@@ -163,56 +212,85 @@ export function packColours(cols: readonly [number, number, number, number, numb
   }
 }
 
-// ---------- caps ----------
+// ---------- caps and levels of detail ----------
 
 export interface VegCaps {
-  /** Instances per tier (LOD0, LOD1, LOD2). */
+  /** Most instances per level (LOD0, LOD1, LOD2). */
   count: [number, number, number];
-  /** Triangles per tier. */
-  tris: [number, number, number];
+  /** Triangles for all plants together (their share of the main pass). */
+  tris: number;
+  /** Triangles always kept back for LOD1 and for LOD2, so a dense close view never empties the mid and far canopy. */
+  keep: [number, number];
+  /** Triangles of full-detail plants that may cast shadows. */
+  shadowTris: number;
 }
 
 /**
  * Hard caps. Phone numbers are the architecture's (LOD0 600, LOD1 2,500, LOD2 4,000 instances;
- * plants 120k triangles of the main pass, split 45/35/20 between tiers), scaled by quality.density.
- * Laptops get 1.6 times as much.
+ * plants 120k triangles of the main pass, of which 15% is kept for LOD1 and 8% for LOD2; 45k
+ * triangles of shadow casters), scaled by quality.density. Laptops get 1.6 times as much.
  */
 export function capsFor(q: Pick<Quality, 'phone' | 'density' | 'tier'>): VegCaps {
   const k = q.density * (q.phone ? 1 : 1.6) * (q.tier === 0 ? 0.7 : 1);
-  const tri = 120000 * k;
+  const tris = 120000 * k;
   return {
     count: [Math.round(600 * k), Math.round(2500 * k), Math.round(4000 * k)],
-    tris: [tri * 0.45, tri * 0.35, tri * 0.2],
+    tris,
+    keep: [tris * 0.15, tris * 0.08],
+    shadowTris: 45000 * k,
   };
 }
 
 /**
- * Give each candidate block a tier, nearest first. `order` lists block ids by distance; `tier`
- * is each block's tile tier; `cnt`/`tri` hold, per block, the instances and triangles it would
- * cost at LOD0, LOD1, LOD2 (3 values per block). Once a tier's caps are reached it closes, and
- * later blocks fall to the next tier. Writes 0, 1, 2 or 3 (not drawn) into `out[block]`.
+ * Gives each candidate block its level of detail. Levels are filled one after another, each
+ * nearest first, from one shared triangle pool (LOD0 may use all but what is kept for LOD1 and
+ * LOD2; LOD1 all but LOD2's keep). A level closes at the first block that doesn't fit, so detail
+ * always falls off with distance. A block already showing a level (or a nearer one) competes for
+ * it as if LOD_HYSTERESIS metres nearer, so blocks at a cut don't trade places as the camera pans.
  */
-export function assignLods(order: ArrayLike<number>, n: number, tier: ArrayLike<number>, cnt: ArrayLike<number>, tri: ArrayLike<number>, caps: VegCaps, out: Uint8Array): void {
-  const used = [0, 0, 0];
-  const usedTri = [0, 0, 0];
-  const open = [true, true, true];
-  for (let i = 0; i < n; i++) {
-    const b = order[i];
-    let lod = 3;
-    for (let t = tier[b]; t < 3 && lod === 3; t++) {
-      if (!open[t]) continue;
-      const c = cnt[b * 3 + t];
-      const tr = tri[b * 3 + t];
-      if (c === 0) continue;
-      if (used[t] + c <= caps.count[t] && usedTri[t] + tr <= caps.tris[t]) {
-        used[t] += c;
-        usedTri[t] += tr;
-        lod = t;
-      } else {
-        open[t] = false;
+export class LodPicker {
+  private inc = new Int32Array(256);
+  private rest = new Int32Array(256);
+
+  /**
+   * `order` lists the candidate blocks nearest first and `dist` gives their distances; `tier` is
+   * each block's nearest allowed level (its tile tier); `cnt`/`tri` hold, per block, the instances
+   * and triangles it costs at LOD0, LOD1, LOD2 (3 values per block); `shown` is the level each
+   * block shows now (3 = none). Writes 0, 1, 2 or 3 (not drawn) into `out[block]`.
+   */
+  assign(order: ArrayLike<number>, n: number, tier: ArrayLike<number>, cnt: ArrayLike<number>, tri: ArrayLike<number>, dist: ArrayLike<number>, shown: ArrayLike<number>, caps: VegCaps, out: Uint8Array): void {
+    if (this.inc.length < n) {
+      this.inc = new Int32Array(n * 2);
+      this.rest = new Int32Array(n * 2);
+    }
+    for (let i = 0; i < n; i++) out[order[i]] = 3;
+    let usedTris = 0;
+    for (let L = 0; L < 3; L++) {
+      // The blocks still without a level that may take this one: incumbents and the rest, each
+      // still nearest first.
+      let ni = 0;
+      let nr = 0;
+      for (let i = 0; i < n; i++) {
+        const b = order[i];
+        if (out[b] !== 3 || tier[b] > L || cnt[b * 3 + L] === 0) continue;
+        if (shown[b] <= L) this.inc[ni++] = b;
+        else this.rest[nr++] = b;
+      }
+      const limit = caps.tris - (L === 0 ? caps.keep[0] + caps.keep[1] : L === 1 ? caps.keep[1] : 0);
+      let count = 0;
+      let a = 0;
+      let r = 0;
+      while (a < ni || r < nr) {
+        const takeInc = r >= nr || (a < ni && dist[this.inc[a]] - LOD_HYSTERESIS <= dist[this.rest[r]]);
+        const b = takeInc ? this.inc[a++] : this.rest[r++];
+        const c = cnt[b * 3 + L];
+        const tr = tri[b * 3 + L];
+        if (count + c > caps.count[L] || usedTris + tr > limit) break;
+        count += c;
+        usedTris += tr;
+        out[b] = L;
       }
     }
-    out[b] = lod;
   }
 }
 
@@ -305,17 +383,18 @@ export class PlantField {
   readonly pop = new Uint8Array(NP * NP * SPOTS);
   /** Base height. Ground that rises around a plant buries it rather than lifting it. */
   readonly baseY = new Float32Array(NP * NP * SPOTS);
+  /** Per patch: its plant bytes, dryness and habitat when last worked out (see sameKey). */
+  private readonly key = new Uint8Array(NP * NP * KEY);
 
   // per tile
   readonly tracked = new Uint8Array(NT * NT);
+  /** Some block of the tile needs working out. */
   readonly dirty = new Uint8Array(NT * NT);
-  /** The ground or ponds changed in the tile (not just life). */
-  readonly groundDirty = new Uint8Array(NT * NT);
   readonly evaluated = new Uint8Array(NT * NT);
   readonly tier = new Uint8Array(NT * NT).fill(3);
   readonly tileDist = new Float32Array(NT * NT);
-  /** Records per tile (REC floats each), in block order. */
-  readonly recs: Float32Array[] = [];
+  /** Records per tile (REC floats each), in block order, patch order within a block. */
+  recs: Float32Array[] = [];
   readonly recN = new Int32Array(NT * NT);
   /** Record index where each of the 16 blocks starts (17 per tile). */
   readonly blockStart = new Int32Array(NT * NT * 17);
@@ -323,6 +402,10 @@ export class PlantField {
   readonly tileY1 = new Float32Array(NT * NT).fill(120);
 
   // per block (NB * NB)
+  /** LIFE and GROUND flags: what changed since the block was last worked out. */
+  readonly bDirty = new Uint8Array(NB * NB);
+  /** The block has been worked out since its tile came near. */
+  readonly bSeen = new Uint8Array(NB * NB);
   /** Instances and triangles a block costs at LOD0, LOD1, LOD2. */
   readonly bCnt = new Int32Array(NB * NB * 3);
   readonly bTri = new Float32Array(NB * NB * 3);
@@ -343,6 +426,10 @@ export class PlantField {
   /** Bumped whenever the set of drawn plants or their data changed. */
   version = 0;
 
+  /** The tile being worked out writes its new records here; then the arrays swap. */
+  private next: Float32Array = new Float32Array(256 * REC);
+  private readonly oldStart = new Int32Array(17);
+  private changed = false;
   private ponds: readonly PondInfo[] | null = null;
   // Where the plant being placed stands (scratch, so the hot loop allocates nothing).
   private px = 0;
@@ -374,6 +461,8 @@ export class PlantField {
     this.blockStart.fill(0);
     this.bCnt.fill(0);
     this.bTri.fill(0);
+    this.bSeen.fill(0);
+    this.bDirty.fill(0);
     this.tier.fill(3);
     this.pendN = 0;
     this.deadN = 0;
@@ -383,19 +472,20 @@ export class PlantField {
   }
 
   /**
-   * Mark the tiles under a patch rectangle as needing another look. `ground` says the ground (or a
-   * pond) changed too, so every plant's footing is checked again; life-only changes skip that for
-   * plants that simply stay.
+   * Mark the blocks under a patch rectangle as needing another look. `ground` says the ground (or
+   * a pond) changed too, so every plant's footing there is checked again; life-only changes only
+   * revisit patches whose plant data changed.
    */
   markPatches(x0: number, z0: number, w: number, h: number, ground: boolean): void {
-    const tx0 = Math.max(0, Math.floor(x0 / TILE_P));
-    const tz0 = Math.max(0, Math.floor(z0 / TILE_P));
-    const tx1 = Math.min(NT - 1, Math.floor((x0 + w - 1) / TILE_P));
-    const tz1 = Math.min(NT - 1, Math.floor((z0 + h - 1) / TILE_P));
-    for (let tz = tz0; tz <= tz1; tz++) {
-      for (let tx = tx0; tx <= tx1; tx++) {
-        this.dirty[tx + tz * NT] = 1;
-        if (ground) this.groundDirty[tx + tz * NT] = 1;
+    const bx0 = Math.max(0, Math.floor(x0 / BLOCK_P));
+    const bz0 = Math.max(0, Math.floor(z0 / BLOCK_P));
+    const bx1 = Math.min(NB - 1, Math.floor((x0 + w - 1) / BLOCK_P));
+    const bz1 = Math.min(NB - 1, Math.floor((z0 + h - 1) / BLOCK_P));
+    const flag = ground ? LIFE | GROUND : LIFE;
+    for (let bz = bz0; bz <= bz1; bz++) {
+      for (let bx = bx0; bx <= bx1; bx++) {
+        this.bDirty[bx + bz * NB] |= flag;
+        this.dirty[((bx / BPT) | 0) + ((bz / BPT) | 0) * NT] = 1;
       }
     }
   }
@@ -453,6 +543,8 @@ export class PlantField {
         const gb = tx * BPT + bx + (tz * BPT + bz) * NB;
         this.bCnt.fill(0, gb * 3, gb * 3 + 3);
         this.bTri.fill(0, gb * 3, gb * 3 + 3);
+        this.bSeen[gb] = 0;
+        this.bDirty[gb] = 0;
       }
     }
     this.version++;
@@ -471,143 +563,234 @@ export class PlantField {
     return best;
   }
 
-  /** Work out every spot of a tile: births, deaths, positions. Returns true if anything changed. */
-  evaluate(t: number, c: FieldConditions): boolean {
+  /**
+   * Work out a tile's blocks that need it: births, deaths, positions. Blocks that don't, and
+   * blocks left over once `deadline` (performance.now() ms) has passed, keep their plants as they
+   * are; the tile stays dirty until all are done. Returns true if anything changed.
+   */
+  evaluate(t: number, c: FieldConditions, deadline = Infinity): boolean {
     this.dirty[t] = 0;
-    // Plants found on a first look at a tile (the camera arrived, or a save loaded) were already
-    // there: they count as having waited for a pop slot, so a few pop and the rest fade in at once.
-    const firstLook = !this.evaluated[t];
-    const footing = firstLook || this.groundDirty[t] === 1;
-    this.groundDirty[t] = 0;
-    let changed = firstLook;
     this.evaluated[t] = 1;
     this.ponds = c.ponds;
+    this.changed = false;
     const tx = t % NT;
     const tz = (t / NT) | 0;
-    const plants = this.fields.plants;
-    const triLod = this.tris.lod;
-    let rec = this.recs[t];
+    const old = this.recs[t];
+    this.oldStart.set(this.blockStart.subarray(t * 17, t * 17 + 17));
     let n = 0;
-    let ty0 = Infinity;
-    let ty1 = -Infinity;
-    for (let bz = 0; bz < BPT; bz++) {
-      for (let bx = 0; bx < BPT; bx++) {
-        const bi = bx + bz * BPT;
-        const gb = tx * BPT + bx + (tz * BPT + bz) * NB;
-        this.blockStart[t * 17 + bi] = n;
-        let c0 = 0;
-        let c1 = 0;
-        let c2 = 0;
-        let t0 = 0;
-        let t1 = 0;
-        let t2 = 0;
-        let y0 = Infinity;
-        let y1 = -Infinity;
-        for (let pz = 0; pz < BLOCK_P; pz++) {
-          for (let px = 0; px < BLOCK_P; px++) {
-            const p = tx * TILE_P + bx * BLOCK_P + px + (tz * TILE_P + bz * BLOCK_P + pz) * NP;
-            this.host = Host.None;
-            for (let L = 0; L < 3; L++) {
-              const o = p * PLANT_BYTES + L * 2;
-              const species = plants[o] - 1;
-              const cover = plants[o + 1] / 255;
-              const model = species >= 0 && species < this.table.n ? this.table.model[species] : -1;
-              for (let k = 0; k < LAYER_SPOTS[L]; k++) {
-                const slot = LAYER_SLOT[L] + k;
-                const s = p * SPOTS + slot;
-                const shown = this.sp[s] - 1;
-                if (shown < 0 && (model <= 0 || cover <= 0)) continue;
-                let want = model > 0 && spotWanted(cover, spotThreshold(p, slot), shown === species);
-                if (want) {
-                  if (!footing && shown === species && ARCHETYPES[model].placement !== 'canopy') {
-                    // Same plant, same ground: it stays exactly where it stands.
-                    this.px = spotX(p, slot);
-                    this.pz = spotZ(p, slot);
-                    this.py = this.baseY[s];
-                  } else {
-                    want = this.place(p, slot, species, model);
-                  }
-                }
-                if (shown >= 0 && (!want || shown !== species)) {
-                  this.kill(s, p, slot, shown, c);
-                  changed = true;
-                }
-                if (!want) continue;
-                const arch = ARCHETYPES[model];
-                if (this.sp[s] === 0) {
-                  this.sp[s] = species + 1;
-                  this.birth[s] = NaN;
-                  this.pop[s] = 0;
-                  this.baseY[s] = this.py;
-                  this.queueBirth(s, firstLook ? c.now - POP_WAIT - 1 : c.now);
-                  changed = true;
-                } else {
-                  // Living plants ride down with the ground; ground that rises around them buries
-                  // them instead (trees keep their crowns above new sand). Perched plants follow their host.
-                  const b = this.baseY[s];
-                  if (arch.placement === 'canopy' || this.py < b - 0.03 || (this.py > b && this.py < b + 0.15)) {
-                    if (Math.abs(this.py - b) > 1e-3) changed = true;
-                    this.baseY[s] = this.py;
-                  }
-                }
-                if ((n + 1) * REC > rec.length) {
-                  const bigger = new Float32Array(rec.length * 2);
-                  bigger.set(rec);
-                  rec = bigger;
-                  this.recs[t] = rec;
-                }
-                const scale = this.plantScale(p, slot, species);
-                const yaw = spotHash(p, slot, 3) * Math.PI * 2;
-                const y = this.baseY[s];
-                const o2 = n * REC;
-                rec[o2] = this.px;
-                rec[o2 + 1] = y;
-                rec[o2 + 2] = this.pz;
-                rec[o2 + 3] = packYawScale(yaw, scale);
-                rec[o2 + 4] = packSeedDry(spotHash(p, slot, 5), 1 - this.fields.coverB[p * 4 + 2] / 255);
-                rec[o2 + 5] = s;
-                rec[o2 + 6] = species;
-                rec[o2 + 7] = L;
-                n++;
-                if (slot === 0) this.setHost(Host.Alive, this.px, y, this.pz, scale, yaw, model);
-                const top = y + arch.height * scale;
-                if (y < y0) y0 = y;
-                if (top > y1) y1 = top;
-                c0++;
-                t0 += triLod[model * 2];
-                if (L < 2) {
-                  c1++;
-                  t1 += triLod[model * 2 + 1];
-                }
-                if (L === 0) {
-                  c2++;
-                  t2 += this.tris.far[arch.far];
-                }
-              }
-            }
-          }
-        }
-        this.bCnt[gb * 3] = c0;
-        this.bCnt[gb * 3 + 1] = c1;
-        this.bCnt[gb * 3 + 2] = c2;
-        this.bTri[gb * 3] = t0;
-        this.bTri[gb * 3 + 1] = t1;
-        this.bTri[gb * 3 + 2] = t2;
-        this.bY0[gb] = y0 === Infinity ? 0 : y0;
-        this.bY1[gb] = y1 === -Infinity ? 0 : y1;
-        if (y0 < ty0) ty0 = y0;
-        if (y1 > ty1) ty1 = y1;
+    let worked = false;
+    for (let bi = 0; bi < BPT * BPT; bi++) {
+      const bx = tx * BPT + (bi % BPT);
+      const bz = tz * BPT + ((bi / BPT) | 0);
+      const gb = bx + bz * NB;
+      const o0 = this.oldStart[bi];
+      const o1 = this.oldStart[bi + 1];
+      this.blockStart[t * 17 + bi] = n;
+      const due = this.bDirty[gb] !== 0 || !this.bSeen[gb];
+      if (due && (!worked || performance.now() < deadline)) {
+        worked = true;
+        const n0 = n;
+        n = this.evaluateBlock(gb, bx, bz, old, o0, o1, n, c);
+        this.blockStats(gb, n0, n);
+        if (n - n0 !== o1 - o0) this.changed = true;
+      } else {
+        n = this.copyRecords(old, o0, o1, n);
+        if (due) this.dirty[t] = 1;
       }
     }
     this.blockStart[t * 17 + 16] = n;
-    if (n !== this.recN[t]) changed = true;
+    // The new records become the tile's; its old array is the next tile's scratch.
+    this.recs[t] = this.next;
+    this.next = old;
     this.recN[t] = n;
+    let ty0 = Infinity;
+    let ty1 = -Infinity;
+    for (let bi = 0; bi < BPT * BPT; bi++) {
+      if (this.blockStart[t * 17 + bi + 1] === this.blockStart[t * 17 + bi]) continue;
+      const gb = tx * BPT + (bi % BPT) + (tz * BPT + ((bi / BPT) | 0)) * NB;
+      ty0 = Math.min(ty0, this.bY0[gb]);
+      ty1 = Math.max(ty1, this.bY1[gb]);
+    }
     this.tileY0[t] = ty0 === Infinity ? -30 : ty0;
     this.tileY1[t] = ty1 === -Infinity ? 0 : ty1;
     // A tile seen for the first time gets its tier now, so its first births can pop this round.
     if (this.tracked[t]) this.tier[t] = tierOf(this.tileDist[t], this.tier[t]);
-    if (changed) this.version++;
-    return changed;
+    if (this.changed) this.version++;
+    return this.changed;
+  }
+
+  /**
+   * Work out one block, writing its records from `n` (into `next`). Patches whose data hasn't
+   * changed keep their old records (`old`, block range o0..o1), unless the ground moved under
+   * them. Returns the new record count.
+   */
+  private evaluateBlock(gb: number, bx: number, bz: number, old: Float32Array, o0: number, o1: number, n: number, c: FieldConditions): number {
+    // Plants found on a first look at a block (the camera arrived, or a save loaded) were already
+    // there: they count as having waited for a pop slot, so a few pop and the rest fade in at once.
+    const firstLook = !this.bSeen[gb];
+    const footing = firstLook || (this.bDirty[gb] & GROUND) !== 0;
+    this.bDirty[gb] = 0;
+    this.bSeen[gb] = 1;
+    let cur = o0;
+    for (let pz = 0; pz < BLOCK_P; pz++) {
+      for (let px = 0; px < BLOCK_P; px++) {
+        const p = bx * BLOCK_P + px + (bz * BLOCK_P + pz) * NP;
+        // This patch's old records (records are in patch order).
+        const run = cur;
+        while (cur < o1 && ((old[cur * REC + 5] / SPOTS) | 0) === p) cur++;
+        if (!footing && this.sameKey(p)) {
+          n = this.copyRecords(old, run, cur, n);
+          continue;
+        }
+        this.storeKey(p);
+        n = this.evaluatePatch(p, n, firstLook, footing, c);
+      }
+    }
+    return n;
+  }
+
+  /**
+   * Same plant data as when the patch was last worked out? Then (with the ground unchanged) the
+   * result would be the same too: species and cover of each layer, dryness, and habitat.
+   */
+  private sameKey(p: number): boolean {
+    const f = this.fields;
+    const k = p * KEY;
+    const o = p * PLANT_BYTES;
+    for (let i = 0; i < PLANT_BYTES; i++) if (this.key[k + i] !== f.plants[o + i]) return false;
+    return this.key[k + 6] === f.coverB[p * 4 + 2] && this.key[k + 7] === f.habitat[p];
+  }
+
+  private storeKey(p: number): void {
+    const f = this.fields;
+    const k = p * KEY;
+    for (let i = 0; i < PLANT_BYTES; i++) this.key[k + i] = f.plants[p * PLANT_BYTES + i];
+    this.key[k + 6] = f.coverB[p * 4 + 2];
+    this.key[k + 7] = f.habitat[p];
+  }
+
+  /** Work out one patch's six spots, writing its plants' records from `n`. Returns the new count. */
+  private evaluatePatch(p: number, n: number, firstLook: boolean, footing: boolean, c: FieldConditions): number {
+    const plants = this.fields.plants;
+    this.host = Host.None;
+    for (let L = 0; L < 3; L++) {
+      const o = p * PLANT_BYTES + L * 2;
+      const species = plants[o] - 1;
+      const cover = plants[o + 1] / 255;
+      const model = species >= 0 && species < this.table.n ? this.table.model[species] : -1;
+      for (let k = 0; k < LAYER_SPOTS[L]; k++) {
+        const slot = LAYER_SLOT[L] + k;
+        const s = p * SPOTS + slot;
+        const shown = this.sp[s] - 1;
+        if (shown < 0 && (model <= 0 || cover <= 0)) continue;
+        let want = model > 0 && spotWanted(cover, spotThreshold(p, slot), shown === species);
+        if (want) {
+          if (!footing && shown === species && ARCHETYPES[model].placement !== 'canopy') {
+            // Same plant, same ground: it stays exactly where it stands.
+            this.px = spotX(p, slot);
+            this.pz = spotZ(p, slot);
+            this.py = this.baseY[s];
+          } else {
+            want = this.place(p, slot, species, model);
+          }
+        }
+        if (shown >= 0 && (!want || shown !== species)) {
+          this.kill(s, p, slot, shown, c);
+          this.changed = true;
+        }
+        if (!want) continue;
+        const arch = ARCHETYPES[model];
+        if (this.sp[s] === 0) {
+          this.sp[s] = species + 1;
+          this.birth[s] = NaN;
+          this.pop[s] = 0;
+          this.baseY[s] = this.py;
+          this.queueBirth(s, firstLook ? c.now - POP_WAIT - 1 : c.now);
+          this.changed = true;
+        } else {
+          // Living plants ride down with the ground; ground that rises around them buries them
+          // instead (trees keep their crowns above new sand). Perched plants follow their host.
+          const b = this.baseY[s];
+          if (arch.placement === 'canopy' || this.py < b - 0.03 || (this.py > b && this.py < b + 0.15)) {
+            if (Math.abs(this.py - b) > 1e-3) this.changed = true;
+            this.baseY[s] = this.py;
+          }
+        }
+        if ((n + 1) * REC > this.next.length) this.growNext(n + 1);
+        const rec = this.next;
+        const scale = this.plantScale(p, slot, species);
+        const yaw = spotHash(p, slot, 3) * Math.PI * 2;
+        const y = this.baseY[s];
+        const o2 = n * REC;
+        rec[o2] = this.px;
+        rec[o2 + 1] = y;
+        rec[o2 + 2] = this.pz;
+        rec[o2 + 3] = packYawScale(yaw, scale);
+        rec[o2 + 4] = packSeedDry(spotHash(p, slot, 5), 1 - this.fields.coverB[p * 4 + 2] / 255);
+        rec[o2 + 5] = s;
+        rec[o2 + 6] = species;
+        rec[o2 + 7] = L;
+        n++;
+        if (slot === 0) this.setHost(Host.Alive, this.px, y, this.pz, scale, yaw, model);
+      }
+    }
+    return n;
+  }
+
+  /** Append records a..b of `src` to `next` at n. Returns the new count. */
+  private copyRecords(src: Float32Array, a: number, b: number, n: number): number {
+    if (b <= a) return n;
+    if ((n + b - a) * REC > this.next.length) this.growNext(n + b - a);
+    this.next.set(src.subarray(a * REC, b * REC), n * REC);
+    return n + b - a;
+  }
+
+  private growNext(records: number): void {
+    const bigger = new Float32Array(Math.max(records * REC, this.next.length * 2));
+    bigger.set(this.next);
+    this.next = bigger;
+  }
+
+  /** What a block's plants cost at each level, and how high they reach (from its new records). */
+  private blockStats(gb: number, r0: number, r1: number): void {
+    const rec = this.next;
+    const triLod = this.tris.lod;
+    let c0 = 0;
+    let c1 = 0;
+    let c2 = 0;
+    let t0 = 0;
+    let t1 = 0;
+    let t2 = 0;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    for (let r = r0; r < r1; r++) {
+      const o = r * REC;
+      const model = this.table.model[rec[o + 6]];
+      const arch = ARCHETYPES[model];
+      const L = rec[o + 7];
+      const y = rec[o + 1];
+      const top = y + arch.height * (Math.floor(rec[o + 3]) / 128);
+      if (y < y0) y0 = y;
+      if (top > y1) y1 = top;
+      c0++;
+      t0 += triLod[model * 2];
+      if (L < 2) {
+        c1++;
+        t1 += triLod[model * 2 + 1];
+      }
+      if (L === 0) {
+        c2++;
+        t2 += this.tris.far[arch.far];
+      }
+    }
+    this.bCnt[gb * 3] = c0;
+    this.bCnt[gb * 3 + 1] = c1;
+    this.bCnt[gb * 3 + 2] = c2;
+    this.bTri[gb * 3] = t0;
+    this.bTri[gb * 3 + 1] = t1;
+    this.bTri[gb * 3 + 2] = t2;
+    this.bY0[gb] = y0 === Infinity ? 0 : y0;
+    this.bY1[gb] = y1 === -Infinity ? 0 : y1;
   }
 
   /** A plant's size: the species' size, a little per-plant variety, and the oldest spots (lowest threshold) a bit bigger. */
@@ -628,8 +811,9 @@ export class PlantField {
   /**
    * Can this spot hold this plant right now? Sets px, py, pz to where it stands.
    * Rules: never on molten lava; sea plants only under water; mangroves at the waterline; lilies
-   * only floating on ponds; sedges also in shallow pond water; land plants above the sea and out
-   * of ponds; epiphytes perch in the crown of the patch's own (living) canopy plant.
+   * only floating on pond patches; sedges also in a pond's shallow edge; land plants above the
+   * sea and never on pond patches; epiphytes perch in the crown of the patch's own (living)
+   * canopy plant. The habitat says where a pond is; the pond's box and level only give its height.
    */
   private place(p: number, slot: number, species: number, model: number): boolean {
     const f = this.fields;
@@ -650,16 +834,18 @@ export class PlantField {
       this.py = h - 0.05;
       return h > -1.6 && h < 1.2;
     }
-    const pond = this.ponds ? pondLevel(this.ponds, x, z) : NaN;
+    const inPond = hab === Habitat.Pond || hab === Habitat.SaltPond;
+    const pond = inPond && this.ponds ? pondLevel(this.ponds, x, z) : NaN;
     if (arch.placement === 'pond') {
       this.py = pond + 0.005;
       return pond > h + 0.1;
     }
-    if (arch.placement === 'wet' && pond > h && pond < h + 0.6) {
+    if (arch.placement === 'wet' && pond > h - 0.5 && pond < h + 0.6) {
+      // Reeds stand in the shallows and on the wet margin of a pond.
       this.py = h - 0.02;
       return true;
     }
-    if (h < SEA_LEVEL + 0.15 || hab === Habitat.Pond || hab === Habitat.SaltPond || pond > h + 0.05) return false;
+    if (h < SEA_LEVEL + 0.15 || inPond) return false;
     if (arch.limit > 60) {
       // Trees stand on the lowest ground under their trunk, so roots never float on a slope.
       const r = 0.6;
@@ -770,8 +956,7 @@ export class PlantField {
     let w = 0;
     for (let i = 0; i < this.deadN; i++) {
       const o = i * DEAD;
-      const kind = this.dead[o + 7] % 16;
-      if (now - this.dead[o + 6] > DEATH_SPAN[kind]) continue;
+      if (now - this.dead[o + 6] > deathSpan(this.dead[o + 7] % 16, this.dead[o + 10])) continue;
       if (w !== i) this.dead.copyWithin(w * DEAD, o, o + DEAD);
       w++;
     }
@@ -845,9 +1030,12 @@ function freq(cyclesPerHour: number): string {
   return ((2 * Math.PI * cyclesPerHour) / 3600).toFixed(6);
 }
 
+const f2 = (x: number): string => x.toFixed(2);
+
 const PLANT_GLSL = /* glsl */ `
 attribute vec4 aPlant;
-attribute vec3 aAttach;
+attribute vec4 aAttach;
+attribute vec4 aHub;
 attribute vec4 iPos;
 attribute vec4 iLife;
 attribute vec4 iCol;
@@ -874,6 +1062,8 @@ vec4 vegUnpack(float f) {
 }
 vec3 vegLinear(vec3 c) { return c * (c * (c * 0.305306011 + 0.682171111) + 0.012522878); }
 float vegBack(float t) { float u = t - 1.0; return 1.0 + 2.70158 * u * u * u + 1.70158 * u * u; }
+// How far the pop has revealed things of reveal order g at x = age / REVEAL.time (1 for g < 0).
+float vegReveal(float g, float x) { return smoothstep(g * ${f2(REVEAL.slope)}, g * ${f2(REVEAL.slope)} + ${f2(REVEAL.width)}, x); }
 
 void plantVertex(out vec3 wp, out vec3 wn, out vec3 col, out vec3 emit) {
   float sc = floor(iPos.w) / 128.0;
@@ -895,7 +1085,7 @@ void plantVertex(out vec3 wp, out vec3 wn, out vec3 col, out vec3 emit) {
   float dAge = uNow - iLife.y;
   float dying = step(0.0, dAge);
   vec3 p = position;
-  vec3 a = aAttach;
+  vec3 a = aAttach.xyz;
   vec3 n = normal;
   float vis = 1.0;
   float fall = 0.0;
@@ -910,13 +1100,17 @@ void plantVertex(out vec3 wp, out vec3 wn, out vec3 col, out vec3 emit) {
   if (dying < 0.5) {
     // The pop: sprout up from the ground (ease-out-back), revealed bottom-up by grow; leaves
     // unfurl from where they join (fern fiddleheads uncurl, palms open like an umbrella),
-    // flowers open last; then two small settling wobbles.
+    // flowers open last; then two small settling wobbles. Each piece opens from its join, and
+    // the join rides up on its still-growing parent (the trunk, then a branch), so crowns,
+    // limbs and fronds always sit on the trunk as it grows.
     float settle = max(age - 0.55, 0.0);
     float wob = exp(-settle * 4.0) * sin(settle * 13.0) * (1.0 - smoothstep(1.2, 1.5, age));
     float hs = vegBack(clamp(age / 0.55, 0.0, 1.0)) + 0.07 * wob;
     float wsx = mix(0.35, 1.0, smoothstep(0.05, 0.9, age)) - 0.05 * wob;
-    float rv = smoothstep(grow * 0.55, grow * 0.55 + 0.3, age / 0.95);
-    vec3 off = (p - a) * rv;
+    float x = age / ${f2(REVEAL.time)};
+    vec3 hub = aHub.xyz * vegReveal(aHub.w, x);
+    vec3 join = hub + (a - aHub.xyz) * vegReveal(aAttach.w, x);
+    vec3 off = (p - a) * vegReveal(grow, x);
     if (part > 0.5) {
       float u = smoothstep(0.3 + 0.3 * grow, 1.1 + 0.15 * grow, age);
       if (part > 1.5) {
@@ -938,10 +1132,10 @@ void plantVertex(out vec3 wp, out vec3 wn, out vec3 col, out vec3 emit) {
         off *= mix(0.15, 1.0, u);
       }
     }
-    p = a + off;
+    p = join + off;
     p.y *= hs;
     p.xz *= wsx;
-    vis = 1.0 - step(${POP_TIME.toFixed(2)}, age);
+    vis = 1.0 - step(${f2(POP_TIME)}, age);
   } else {
     vec3 off = p - a;
     if (kind < 1.5) {
@@ -960,24 +1154,27 @@ void plantVertex(out vec3 wp, out vec3 wn, out vec3 col, out vec3 emit) {
       vis = 1.0 - step(3.0, dAge);
     } else if (kind < 3.5) {
       if (uArch2.y < 0.5) {
-        // Storm topple: pivot at the base across the wind, a bounce, the crown fades, the log stays.
+        // Storm topple: pivot at the base across the wind, a bounce, the crown fades, the log
+        // lies a while and then settles into the ground.
         float t = clamp(dAge / 0.9, 0.0, 1.0);
         float st = max(dAge - 0.9, 0.0);
         fall = 1.4708 * t * t - 0.15 * exp(-st * 5.0) * sin(st * 14.0) * step(0.9, dAge);
         strawK = smoothstep(1.2, 2.6, dAge) * 0.6;
         if (part > 0.5) off *= 1.0 - smoothstep(1.3, 2.6, dAge);
+        sink = 0.12 * smoothstep(${f2(LOG_LINGER)}, ${f2(LOG_LINGER + LOG_SETTLE)}, dAge);
       } else if (uArch2.y < 1.5) {
-        // Palms lose their fronds to the wind instead; the bare trunk stands on.
+        // Palms lose their fronds to the wind instead; the bare trunk stands on, then greys.
         blow = smoothstep(0.0, 1.6, dAge);
         if (part > 0.5) off *= 1.0 - smoothstep(0.6, 1.6, dAge);
+        strawK = 0.7 * smoothstep(${f2(LOG_LINGER)}, ${f2(LOG_LINGER + 1)}, dAge);
       } else {
         // Small plants are flattened downwind and wither.
         fall = 1.25 * smoothstep(0.0, 0.6, dAge);
         strawK = smoothstep(0.5, 1.5, dAge);
         vis = 1.0 - smoothstep(1.2, 2.0, dAge);
       }
-      sink = max(sink, smoothstep(${LOG_LINGER.toFixed(1)}, ${(LOG_LINGER + 3).toFixed(1)}, dAge) * 0.6);
-      vis *= 1.0 - step(${(LOG_LINGER + 3).toFixed(1)}, dAge);
+      // Whatever is left shrinks away to its base at the end (no last-frame pop).
+      vis *= 1.0 - smoothstep(${f2(LOG_LINGER + 1)}, ${f2(LOG_LINGER + LOG_SETTLE)}, dAge);
     } else {
       // Burial: the plant sinks into the new ground.
       sink = smoothstep(0.0, 1.6, dAge) * 1.1;
@@ -986,9 +1183,10 @@ void plantVertex(out vec3 wp, out vec3 wn, out vec3 col, out vec3 emit) {
     p = a + off;
   }
 #else
-  // Bulk: a popping plant waits for the animating mesh to finish; others fade in; far deaths shrink away.
-  vis = popF > 0.5 ? step(${POP_TIME.toFixed(2)}, age) : smoothstep(0.0, ${FADE_TIME.toFixed(2)}, age);
-  vis *= 1.0 - dying * smoothstep(0.0, ${FADE_TIME.toFixed(2)}, dAge);
+  // Bulk: a popping plant waits for the animating mesh to finish; others fade in; far deaths and
+  // the old level of a block that changed detail shrink away.
+  vis = popF > 0.5 ? step(${f2(POP_TIME)}, age) : smoothstep(0.0, ${f2(FADE_TIME)}, age);
+  vis *= 1.0 - dying * smoothstep(0.0, ${f2(FADE_TIME)}, dAge);
   // Far blobs thin out smoothly toward the edge of their range (no hard tile edge).
   if (uArch2.z > 0.0) vis *= 1.0 - smoothstep(uArch2.z - 80.0, uArch2.z, distance(iPos.xyz, uCamPos));
 #endif
@@ -1010,7 +1208,7 @@ void plantVertex(out vec3 wp, out vec3 wn, out vec3 col, out vec3 emit) {
     swayOff = vec3(wdir.x, 0.0, wdir.y) * (sway * hsc * 0.16 * surge);
   } else {
     float bend = sway * hsc * (ws * gust * 0.12 + 0.025 * sin(uTime * ${freq(458)} + ph));
-    float bp = dot(aAttach, vec3(3.1, 1.7, 2.3)) + seed * 17.0;
+    float bp = dot(a, vec3(3.1, 1.7, 2.3)) + seed * 17.0;
     float branch = sway * hsc * 0.02 * (0.3 + ws) * sin(uTime * ${freq(630)} + bp);
     swayOff = vec3(wdir.x, 0.0, wdir.y) * (bend + branch);
     swayOff.y -= bend * bend / max(hsc, 0.3) * 0.5;
@@ -1069,9 +1267,9 @@ void plantVertex(out vec3 wp, out vec3 wn, out vec3 col, out vec3 emit) {
 
 type Variant = 'bulk' | 'anim';
 
-/** The shared plant material (Lambert, double-sided leaves) with the plant vertex code. */
-function plantMaterial(u: WorldUniforms, now: THREE.IUniform<number>, arch: THREE.Vector4, arch2: THREE.Vector4, variant: Variant): THREE.MeshLambertMaterial {
-  const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+/** The plant material (Lambert, vertex colours) with the plant vertex code; `side` per model (see plantKit sideOf). */
+function plantMaterial(u: WorldUniforms, now: THREE.IUniform<number>, arch: THREE.Vector4, arch2: THREE.Vector4, variant: Variant, side: THREE.Side): THREE.MeshLambertMaterial {
+  const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side });
   if (variant === 'anim') mat.defines = { PLANT_ANIM: '' };
   mat.onBeforeCompile = (shader) => {
     addWorldUniforms(shader, u);
@@ -1092,7 +1290,10 @@ function plantMaterial(u: WorldUniforms, now: THREE.IUniform<number>, arch: THRE
   return mat;
 }
 
-/** The matching shadow material: the same sway, pop and fall, so shadows move with the plant. */
+/**
+ * The matching shadow material: the same sway, pop and fall, so shadows move with the plant.
+ * (three draws it with the back faces of front-sided plants, and both faces of the others.)
+ */
 function plantDepthMaterial(u: WorldUniforms, now: THREE.IUniform<number>, arch: THREE.Vector4, arch2: THREE.Vector4, variant: Variant): THREE.MeshDepthMaterial {
   const mat = new THREE.MeshDepthMaterial();
   mat.defines = variant === 'anim' ? { PLANT_ANIM: '', PLANT_DEPTH: '' } : { PLANT_DEPTH: '' };
@@ -1109,6 +1310,38 @@ function plantDepthMaterial(u: WorldUniforms, now: THREE.IUniform<number>, arch:
   return mat;
 }
 
+/**
+ * One archetype's materials, made on first use: bulk and animating, front-sided and double-sided,
+ * and their shadow versions. They all share a handful of shader programs; only uniforms differ.
+ * (A shadow material per side keeps three's per-side depth state stable.)
+ */
+class ArchMaterials {
+  private readonly made = new Map<string, THREE.Material>();
+  constructor(
+    private readonly u: WorldUniforms,
+    private readonly now: THREE.IUniform<number>,
+    private readonly arch: THREE.Vector4,
+    private readonly arch2: THREE.Vector4,
+  ) {}
+
+  main(variant: Variant, side: THREE.Side): THREE.Material {
+    return this.get(`${variant}-${side}`, () => plantMaterial(this.u, this.now, this.arch, this.arch2, variant, side));
+  }
+
+  depth(variant: Variant, side: THREE.Side): THREE.Material {
+    return this.get(`depth-${variant}-${side}`, () => plantDepthMaterial(this.u, this.now, this.arch, this.arch2, variant));
+  }
+
+  private get(key: string, make: () => THREE.Material): THREE.Material {
+    let m = this.made.get(key);
+    if (!m) {
+      m = make();
+      this.made.set(key, m);
+    }
+    return m;
+  }
+}
+
 // ---------- instance buffers ----------
 
 /** One instanced mesh: an archetype (or far shape) at one level of detail, bulk or animating. */
@@ -1120,23 +1353,31 @@ class Slot {
   n = 0;
   /** Instances (a prefix, since blocks are written nearest first) close enough to cast shadows. */
   near = 0;
+  /** The shader program this slot draws with (bulk/anim, side, shadow): one per kind is warmed at load. */
+  readonly program: string;
+  /** Instances lo..hi-1 changed in this build: only they are uploaded. */
+  private lo = 0;
+  private hi = 0;
+  private readonly tmp = new Float32Array(INST);
 
   constructor(
     private readonly base: THREE.BufferGeometry,
     material: THREE.Material,
     depth: THREE.Material | null,
     scene: THREE.Scene,
-    shadows: boolean,
+    variant: Variant,
   ) {
     this.arr = new Float32Array(32 * INST);
     this.buf = new THREE.InstancedInterleavedBuffer(this.arr, INST, 1);
+    this.buf.setUsage(THREE.DynamicDrawUsage);
     this.geo = this.makeGeometry();
     this.mesh = new THREE.Mesh(this.geo, material);
     this.mesh.frustumCulled = false; // culled per 16 m block on the CPU
     this.mesh.visible = false;
     this.mesh.receiveShadow = true;
     this.mesh.matrixAutoUpdate = false;
-    if (depth && shadows) {
+    this.program = `${variant}-${material.side}-${depth ? 'shadow' : ''}`;
+    if (depth) {
       this.mesh.castShadow = true;
       this.mesh.customDepthMaterial = depth;
       // Only the nearest instances cast shadows (a prefix of the buffer).
@@ -1153,9 +1394,8 @@ class Slot {
   /** A geometry with its own copies of the model attributes plus this slot's instance buffer. */
   private makeGeometry(): THREE.InstancedBufferGeometry {
     const g = new THREE.InstancedBufferGeometry();
-    for (const name of ['position', 'normal', 'color', 'aPlant', 'aAttach']) g.setAttribute(name, this.base.getAttribute(name).clone());
+    for (const name of ['position', 'normal', 'color', 'aPlant', 'aAttach', 'aHub']) g.setAttribute(name, this.base.getAttribute(name).clone());
     g.setIndex(this.base.getIndex()!.clone());
-    this.buf.setUsage(THREE.DynamicDrawUsage);
     g.setAttribute('iPos', new THREE.InterleavedBufferAttribute(this.buf, 4, 0));
     g.setAttribute('iLife', new THREE.InterleavedBufferAttribute(this.buf, 4, 4));
     g.setAttribute('iCol', new THREE.InterleavedBufferAttribute(this.buf, 4, 8));
@@ -1169,42 +1409,59 @@ class Slot {
     bigger.set(this.arr);
     this.arr = bigger;
     this.buf = new THREE.InstancedInterleavedBuffer(this.arr, INST, 1);
+    this.buf.setUsage(THREE.DynamicDrawUsage);
     const old = this.geo;
     this.geo = this.makeGeometry();
     this.mesh.geometry = this.geo;
     old.dispose();
   }
 
+  /** Start writing this round's instances from the beginning of the buffer. */
+  begin(): void {
+    this.n = 0;
+    this.near = 0;
+    this.lo = Infinity;
+    this.hi = 0;
+  }
+
   write(x: number, y: number, z: number, ys: number, birth: number, death: number, kind: number, sd: number, cols: Float32Array, co: number): void {
     if ((this.n + 1) * INST > this.arr.length) this.grow();
+    const w = this.tmp;
+    w[0] = x;
+    w[1] = y;
+    w[2] = z;
+    w[3] = ys;
+    w[4] = birth;
+    w[5] = death;
+    w[6] = kind;
+    w[7] = sd;
+    w[8] = cols[co];
+    w[9] = cols[co + 1];
+    w[10] = cols[co + 2];
+    w[11] = cols[co + 3];
+    // Only instances whose data differs from what the buffer already holds need uploading.
     const a = this.arr;
     const o = this.n * INST;
-    a[o] = x;
-    a[o + 1] = y;
-    a[o + 2] = z;
-    a[o + 3] = ys;
-    a[o + 4] = birth;
-    a[o + 5] = death;
-    a[o + 6] = kind;
-    a[o + 7] = sd;
-    a[o + 8] = cols[co];
-    a[o + 9] = cols[co + 1];
-    a[o + 10] = cols[co + 2];
-    a[o + 11] = cols[co + 3];
+    for (let k = 0; k < INST; k++) {
+      if (a[o + k] !== w[k]) {
+        a.set(w, o);
+        if (this.n < this.lo) this.lo = this.n;
+        this.hi = this.n + 1;
+        break;
+      }
+    }
     this.n++;
   }
 
-  /** Upload what was written this round. */
+  /** Upload the changed part of what was written this round. */
   commit(): void {
     this.geo.instanceCount = this.n;
     this.mesh.visible = this.n > 0;
-    if (this.n > 0) {
-      this.buf.clearUpdateRanges();
-      this.buf.addUpdateRange(0, this.n * INST);
+    if (this.hi > this.lo) {
+      this.buf.addUpdateRange(this.lo * INST, (this.hi - this.lo) * INST);
       this.buf.needsUpdate = true;
     }
   }
-
 }
 
 // ---------- motes ----------
@@ -1292,6 +1549,17 @@ class Motes {
     this.info[i * 2] = at;
     this.info[i * 2 + 1] = kind;
     if (at + MOTE_LIFE > this.lastSpawn) this.lastSpawn = at + MOTE_LIFE;
+    this.touch();
+  }
+
+  /** The vegetation clock moved back by dt (see VegetationSystem.update): move every mote's start with it. */
+  rebase(dt: number): void {
+    for (let i = 0; i < MOTE_N; i++) this.info[i * 2] -= dt;
+    this.lastSpawn -= dt;
+    this.touch();
+  }
+
+  private touch(): void {
     for (const name of ['position', 'aVel', 'aInfo']) (this.points.geometry.getAttribute(name) as THREE.BufferAttribute).needsUpdate = true;
   }
 
@@ -1322,8 +1590,8 @@ function blockOfSpot(s: number): number {
 interface Slots {
   /** [lod 0|1][model][variant] */
   bulk: Slot[][][];
-  /** [model][variant] at LOD0 with the full animation shader */
-  anim: Slot[][];
+  /** [lod 0|1][model][variant] with the full animation shader */
+  anim: Slot[][][];
   /** per far shape */
   far: Slot[];
   all: Slot[];
@@ -1333,40 +1601,37 @@ export function createVegetation(deps: SystemDeps): PageSystem {
   const { scene, fields, u, quality } = deps;
   const now: THREE.IUniform<number> = { value: 0 };
   const models = buildModels();
-  const slots: Slots = { bulk: [[], []], anim: [], far: [], all: [] };
+  const slots: Slots = { bulk: [[], []], anim: [[], []], far: [], all: [] };
   for (const a of ARCHETYPES) {
-    slots.bulk[0][a.model] = [];
-    slots.bulk[1][a.model] = [];
-    slots.anim[a.model] = [];
+    for (let lod = 0; lod < 2; lod++) {
+      slots.bulk[lod][a.model] = [];
+      slots.anim[lod][a.model] = [];
+    }
     if (a.model === PlantModel.Tint) continue;
-    // One set of materials per archetype: they share programs, only the uniforms differ.
-    const archU = new THREE.Vector4(a.height, a.unfurl, a.dry, a.surge ? 1 : 0);
-    const arch2U = new THREE.Vector4(a.bloom, a.storm, 0, 0);
-    const mBulk = plantMaterial(u, now, archU, arch2U, 'bulk');
-    const mAnim = plantMaterial(u, now, archU, arch2U, 'anim');
-    const dBulk = plantDepthMaterial(u, now, archU, arch2U, 'bulk');
-    const dAnim = plantDepthMaterial(u, now, archU, arch2U, 'anim');
+    const mats = new ArchMaterials(u, now, new THREE.Vector4(a.height, a.unfurl, a.dry, a.surge ? 1 : 0), new THREE.Vector4(a.bloom, a.storm, 0, 0));
     for (let v = 0; v < a.variants; v++) {
-      const g0 = models.lod0[a.model][v];
-      const g1 = models.lod1[a.model][v];
-      const s0 = new Slot(g0, mBulk, dBulk, scene, quality.shadows);
-      const s1 = new Slot(g1, mBulk, null, scene, false);
-      const sa = new Slot(g0, mAnim, dAnim, scene, quality.shadows);
-      slots.bulk[0][a.model][v] = s0;
-      slots.bulk[1][a.model][v] = s1;
-      slots.anim[a.model][v] = sa;
-      slots.all.push(s0, s1, sa);
+      for (let lod = 0; lod < 2; lod++) {
+        const g = (lod === 0 ? models.lod0 : models.lod1)[a.model][v];
+        const side = sideOf(g);
+        // Only full detail casts shadows (and only its nearest instances).
+        const shadows = lod === 0 && quality.shadows;
+        const bulk = new Slot(g, mats.main('bulk', side), shadows ? mats.depth('bulk', side) : null, scene, 'bulk');
+        const anim = new Slot(g, mats.main('anim', side), shadows ? mats.depth('anim', side) : null, scene, 'anim');
+        slots.bulk[lod][a.model][v] = bulk;
+        slots.anim[lod][a.model][v] = anim;
+        slots.all.push(bulk, anim);
+      }
     }
   }
-  const farMat = plantMaterial(u, now, new THREE.Vector4(1, 0, 0.25, 0), new THREE.Vector4(1, StormFall.Topple, TIER_RANGE[2], 0), 'bulk');
+  const farMats = new ArchMaterials(u, now, new THREE.Vector4(1, 0, 0.25, 0), new THREE.Vector4(1, StormFall.Topple, TIER_RANGE[2], 0));
   for (const g of models.far) {
-    const slot = new Slot(g, farMat, null, scene, false);
+    const slot = new Slot(g, farMats.main('bulk', sideOf(g)), null, scene, 'bulk');
     slots.far.push(slot);
     slots.all.push(slot);
   }
   const table = new SpeciesTable(deps.species);
   const field = new PlantField(fields, table, models.tris);
-  // New life data or reshaped ground: those tiles get another look.
+  // New life data or reshaped ground: those blocks get another look.
   const onEco = (x0: number, z0: number, w: number, h: number): void => field.markPatches(x0, z0, w, h, false);
   const onCols = (x0: number, z0: number, w: number, h: number): void => {
     // Column rectangle -> patch rectangle (2 columns per patch).
@@ -1395,15 +1660,22 @@ class VegetationSystem implements PageSystem {
   private readonly lastDir = new THREE.Vector3();
   private nextAnimEnd = Infinity;
   private seenVersion = -1;
-  /** Frames left in which one empty mesh per program stays visible, so shaders compile at load. */
+  /** Frames left in which one empty mesh per shader program stays visible, so shaders compile at load. */
   private warm = 3;
+  private readonly warmSlots: Slot[] = [];
   private pondKey = '';
   private ponds: readonly PondInfo[] | null = null;
   private readonly cond: FieldConditions = { now: 0, storm: { phase: 'none', t: 0, level: 0, great: false }, ponds: null, windAngle: Math.PI };
 
-  // Selection scratch, per 16 m block.
+  // Selection, per 16 m block.
+  /** This round's level for each candidate block (3: not drawn or not a candidate). */
   private readonly lod = new Uint8Array(NB * NB).fill(3);
-  /** Per block: tier, plus 4 when it casts shadows; a change means the buffers need rewriting. */
+  /** The level each block shows (kept while it is out of view, so turning back doesn't re-fade it). */
+  private readonly shown = new Uint8Array(NB * NB).fill(3);
+  /** The level a block showed before its last change, and when that change happened (vegetation clock). */
+  private readonly fromLod = new Uint8Array(NB * NB).fill(3);
+  private readonly switchAt = new Float32Array(NB * NB).fill(-1e6);
+  /** Per block: level, plus 4 when it casts shadows; a change means the buffers need rewriting. */
   private readonly state = new Uint8Array(NB * NB).fill(3);
   private readonly prevState = new Uint8Array(NB * NB).fill(3);
   private readonly strict = new Uint8Array(NB * NB);
@@ -1413,6 +1685,7 @@ class VegetationSystem implements PageSystem {
   private readonly keys = new Float64Array(NB * NB);
   private readonly order = new Int32Array(NB * NB);
   private candN = 0;
+  private readonly picker = new LodPicker();
   private readonly frustum = new THREE.Frustum();
   private readonly projView = new THREE.Matrix4();
   private readonly sphere = new THREE.Sphere();
@@ -1435,6 +1708,12 @@ class VegetationSystem implements PageSystem {
     this.renderer = deps.renderer;
     this.u = deps.u;
     this.quality = deps.quality;
+    const programs = new Set<string>();
+    for (const s of slots.all) {
+      if (programs.has(s.program)) continue;
+      programs.add(s.program);
+      this.warmSlots.push(s);
+    }
   }
 
   dispose(): void {
@@ -1458,11 +1737,13 @@ class VegetationSystem implements PageSystem {
     if (m.t === 'clear') {
       // A new world: everything goes at once, no death animations; ponds come with the next life info.
       this.field.reset();
+      this.shown.fill(3);
+      this.fromLod.fill(3);
       this.ponds = null;
       this.pondKey = '';
       this.needBuild = true;
     } else if (m.t === 'life') {
-      // Ponds decide where lilies float and where land plants can't stand.
+      // Ponds give lilies and reeds their water level.
       const ponds = m.life.ponds;
       const key = ponds.map((p) => `${p.x0},${p.z0},${p.x1},${p.z1},${p.level.toFixed(2)}`).join(';');
       if (key === this.pondKey) return;
@@ -1485,7 +1766,12 @@ class VegetationSystem implements PageSystem {
     if (f.t - this.epoch > 4000) {
       this.epoch += 3600;
       this.field.rebase(3600);
+      this.motes.rebase(3600);
       this.nextAnimEnd -= 3600;
+      for (let i = 0; i < NB * NB; i++) this.switchAt[i] -= 3600;
+      // Every instance buffer holds times on the old clock: rewrite them before this frame draws.
+      this.needBuild = true;
+      this.sinceBuild = REBUILD_INTERVAL;
     }
     const t = f.t - this.epoch;
     this.now.value = t;
@@ -1494,17 +1780,17 @@ class VegetationSystem implements PageSystem {
     const cam = this.camera.position;
     if (this.field.track(cam.x, cam.y, cam.z)) this.needSelect = true;
 
-    // Work out dirty tiles, nearest first, within a small time budget.
+    // Work out dirty blocks, nearest tile first, within a small time budget.
     const c = this.cond;
     c.now = t;
     c.storm = f.storm;
     c.ponds = this.ponds;
     const w = this.u.uWind.value;
     c.windAngle = Math.hypot(w.x, w.y) > 1e-4 ? Math.atan2(w.y, w.x) : Math.PI;
-    const t0 = performance.now();
+    const deadline = performance.now() + EVAL_BUDGET_MS;
     for (let tile = this.field.nextDirty(); tile >= 0; tile = this.field.nextDirty()) {
-      this.field.evaluate(tile, c);
-      if (performance.now() - t0 > EVAL_BUDGET_MS) break;
+      this.field.evaluate(tile, c, deadline);
+      if (performance.now() > deadline) break;
     }
     if (this.field.version !== this.seenVersion) {
       this.seenVersion = this.field.version;
@@ -1523,7 +1809,7 @@ class VegetationSystem implements PageSystem {
     if ((this.needSelect || this.needBuild) && this.sinceBuild >= REBUILD_INTERVAL) {
       this.sinceBuild = 0;
       if (this.field.expireDead(t)) this.needBuild = true;
-      if (this.needSelect && this.select()) this.needBuild = true;
+      if (this.needSelect && this.select(t)) this.needBuild = true;
       this.needSelect = false;
       if (this.needBuild) this.build(t);
       this.needBuild = false;
@@ -1531,17 +1817,18 @@ class VegetationSystem implements PageSystem {
     if (this.warm > 0) {
       this.warm--;
       const keep = this.warm > 0;
-      for (const s of [this.slots.bulk[0][PlantModel.Fern][0], this.slots.anim[PlantModel.Fern][0], this.slots.far[0]]) s.mesh.visible = s.n > 0 || keep;
+      for (const s of this.warmSlots) s.mesh.visible = s.n > 0 || keep;
       this.motes.warm(keep);
     }
     this.motes.update(t, f.camera, this.renderer.domElement.height);
   }
 
   /**
-   * Choose each block's tier: frustum cull (with a margin, since rebuilds lag the camera by up to
-   * 0.25 s), sort by distance, then fill the caps nearest first. Returns true if anything changed.
+   * Choose each block's level: frustum cull (with a margin, since rebuilds lag the camera by up
+   * to 0.25 s), sort by distance, fill the caps (LodPicker), start cross-fades for blocks that
+   * changed level, and pick the shadow casters. Returns true if anything changed.
    */
-  private select(): boolean {
+  private select(now: number): boolean {
     const fd = this.field;
     const cam = this.camera.position;
     this.lastCam.copy(cam);
@@ -1586,27 +1873,47 @@ class VegetationSystem implements PageSystem {
     this.keys.subarray(0, n).sort();
     for (let i = 0; i < n; i++) this.order[i] = this.cand[this.keys[i] % 8192];
     this.lod.fill(3);
-    assignLods(this.order, n, this.bTier, fd.bCnt, fd.bTri, capsFor(this.quality), this.lod);
-    // What a build depends on per block: its tier, and whether it is close enough to cast shadows.
+    const caps = capsFor(this.quality);
+    this.picker.assign(this.order, n, this.bTier, fd.bCnt, fd.bTri, this.bDist, this.shown, caps, this.lod);
+    // What a build depends on per block: its level, and whether it casts shadows (full detail,
+    // close, nearest first until the shadow triangle cap). A level change starts a cross-fade.
     this.prevState.set(this.state);
     this.state.fill(3);
+    let shadowTris = 0;
+    let shadowsOpen = this.quality.shadows;
     for (let i = 0; i < n; i++) {
       const gb = this.order[i];
-      this.state[gb] = this.lod[gb] | (this.lod[gb] === 0 && this.bDist[gb] < SHADOW_RANGE ? 4 : 0);
+      const lod = this.lod[gb];
+      if (lod !== this.shown[gb]) {
+        this.fromLod[gb] = this.shown[gb];
+        this.switchAt[gb] = now;
+        this.shown[gb] = lod;
+      }
+      let st = lod;
+      if (lod === 0 && shadowsOpen && this.bDist[gb] < SHADOW_RANGE) {
+        if (shadowTris + fd.bTri[gb * 3] <= caps.shadowTris) {
+          shadowTris += fd.bTri[gb * 3];
+          st |= 4;
+        } else {
+          shadowsOpen = false;
+        }
+      }
+      this.state[gb] = st;
     }
     for (let i = 0; i < NB * NB; i++) if (this.state[i] !== this.prevState[i]) return true;
     return false;
   }
 
-  /** May this spot's plant pop (full detail, on screen, close)? */
+  /** May this spot's plant pop (drawn at LOD0 or LOD1, on screen, within POP_RANGE)? */
   private canPop(s: number): boolean {
     const gb = blockOfSpot(s);
-    return this.lod[gb] === 0 && this.strict[gb] === 1 && this.bDist[gb] <= POP_RANGE;
+    const lod = this.lod[gb];
+    return lod <= 1 && drawnAt(slotLayer(s % SPOTS), lod) && this.strict[gb] === 1 && this.bDist[gb] <= POP_RANGE;
   }
 
   /**
-   * Decide pending births: the best few on screen and close pop (trees before shrubs before herbs,
-   * then nearest), at most four a second; the rest fade in, at once if they can't pop at all.
+   * Decide pending births: the best few on screen pop (trees before shrubs before herbs, then
+   * nearest), at most four a second; the rest fade in, at once if they can't pop at all.
    */
   private schedulePops(now: number): void {
     const fd = this.field;
@@ -1626,7 +1933,7 @@ class VegetationSystem implements PageSystem {
       fd.birth[best] = now;
       fd.pop[best] = 1;
       this.tokens -= 1;
-      this.popMotes(best, now);
+      if (this.bDist[blockOfSpot(best)] <= NEAR_RANGE) this.popMotes(best, now);
     }
     let w = 0;
     for (let i = 0; i < fd.pendN; i++) {
@@ -1668,7 +1975,7 @@ class VegetationSystem implements PageSystem {
       const e = ev[i];
       const dx = e.x - cam.x;
       const dz = e.z - cam.z;
-      if (dx * dx + dz * dz > POP_RANGE * POP_RANGE || e.kind === DeathKind.Burial) continue;
+      if (dx * dx + dz * dz > NEAR_RANGE * NEAR_RANGE || e.kind === DeathKind.Burial) continue;
       const fx = Math.cos(e.dir);
       const fz = Math.sin(e.dir);
       const n = e.kind === DeathKind.Wither ? 3 : 8;
@@ -1687,57 +1994,30 @@ class VegetationSystem implements PageSystem {
     ev.length = 0;
   }
 
-  /** Write every drawn plant into the instance buffers and upload them. */
+  /** Write every drawn plant into the instance buffers and upload what changed. */
   private build(now: number): void {
     const fd = this.field;
     const { bulk, anim, far, all } = this.slots;
     this.schedulePops(now);
-    for (const s of all) {
-      s.n = 0;
-      s.near = 0;
-    }
+    for (const s of all) s.begin();
     const cols = this.table.colours;
     let animEnd = Infinity;
+    let fadeTris = capsFor(this.quality).tris * LOD_FADE_SHARE;
     for (let i = 0; i < this.candN; i++) {
       const gb = this.order[i];
       const lod = this.lod[gb];
-      if (lod > 2) continue;
-      const bx = gb % NB;
-      const bz = (gb / NB) | 0;
-      const t = ((bx / BPT) | 0) + ((bz / BPT) | 0) * NT;
-      const bi = (bx % BPT) + (bz % BPT) * BPT;
-      const rec = fd.recs[t];
-      const near = this.bDist[gb] < SHADOW_RANGE;
-      for (let r = fd.blockStart[t * 17 + bi]; r < fd.blockStart[t * 17 + bi + 1]; r++) {
-        const o = r * REC;
-        const L = rec[o + 7];
-        if ((lod === 1 && L > 1) || (lod === 2 && L > 0)) continue;
-        const s = rec[o + 5];
-        const birth = fd.birth[s];
-        if (Number.isNaN(birth)) continue;
-        const sp = rec[o + 6];
-        const model = this.table.model[sp];
-        const arch = ARCHETYPES[model];
-        const sd = rec[o + 4];
-        const co = sp * 4;
-        if (lod === 2) {
-          // Far blobs are 1 m models: scale them by the plant's height, and sink them a little
-          // (the far terrain is coarser than the height map).
-          const ys = rec[o + 3];
-          far[arch.far].write(rec[o], rec[o + 1] - 0.4, rec[o + 2], packYawScale((ys - Math.floor(ys)) * Math.PI * 2, (Math.floor(ys) / 128) * arch.height), birth, NEVER, 0, sd, cols, co);
-          continue;
-        }
-        const v = variantOf(arch, sd - Math.floor(sd));
-        const popping = lod === 0 && fd.pop[s] === 1 && now - birth < POP_TIME;
-        const slot = bulk[lod][model][v];
-        slot.write(rec[o], rec[o + 1], rec[o + 2], rec[o + 3], birth, NEVER, popping ? 8 : 0, sd, cols, co);
-        if (lod === 0 && near) slot.near = slot.n;
-        if (popping) {
-          const a = anim[model][v];
-          a.write(rec[o], rec[o + 1], rec[o + 2], rec[o + 3], birth, NEVER, 8, sd, cols, co);
-          if (near) a.near = a.n;
-          animEnd = Math.min(animEnd, birth + POP_TIME);
-        }
+      const shadow = (this.state[gb] & 4) !== 0;
+      const since = this.switchAt[gb];
+      // The block's plants at its level; a block that just changed level grows them in...
+      if (lod <= 2) animEnd = Math.min(animEnd, this.writeBlock(gb, lod, lod, since, NEVER, shadow, now));
+      // ...while its old level shrinks away (and pops already playing there finish), within the fade budget.
+      const from = this.fromLod[gb];
+      if (from <= 2 && from !== lod && now - since < LOD_LEAVE) {
+        const cost = fd.bTri[gb * 3 + from];
+        if (cost > fadeTris) continue;
+        fadeTris -= cost;
+        const shrunk = since + LOD_HOLD + FADE_TIME;
+        animEnd = Math.min(animEnd, this.writeBlock(gb, from, lod, -Infinity, since + LOD_HOLD, false, now), now < shrunk ? shrunk : Infinity);
       }
     }
     // Dying plants: the full death close up, a quick shrink further away.
@@ -1753,11 +2033,11 @@ class VegetationSystem implements PageSystem {
       const v = d[o + 11];
       const kind = d[o + 7];
       const co = d[o + 8] * 4;
-      if (dist < TIER_RANGE[0]) {
-        const a = anim[model][v];
+      if (dist < NEAR_RANGE) {
+        const a = anim[0][model][v];
         a.write(d[o], d[o + 1], d[o + 2], d[o + 3], d[o + 5], d[o + 6], kind, d[o + 4], cols, co);
         if (dist < SHADOW_RANGE) a.near = a.n;
-        animEnd = Math.min(animEnd, d[o + 6] + DEATH_SPAN[kind % 16]);
+        animEnd = Math.min(animEnd, d[o + 6] + deathSpan(kind % 16, model));
       } else if (now - d[o + 6] < FADE_TIME) {
         const L = d[o + 9];
         const arch = ARCHETYPES[model];
@@ -1772,5 +2052,67 @@ class VegetationSystem implements PageSystem {
     }
     for (const s of all) s.commit();
     this.nextAnimEnd = animEnd;
+  }
+
+  /**
+   * Write one block's plants at a level. Living plants are written with birth no earlier than
+   * `growFrom` (so a block arriving at this level grows in) and the given death time (NEVER, or
+   * when an old level starts shrinking away; `nowLod` is then the block's new level). Popping
+   * plants also go to the animating mesh. Returns when the next pop here ends (Infinity if none).
+   */
+  private writeBlock(gb: number, lod: number, nowLod: number, growFrom: number, death: number, shadow: boolean, now: number): number {
+    const fd = this.field;
+    const { bulk, anim, far } = this.slots;
+    const cols = this.table.colours;
+    const bx = gb % NB;
+    const bz = (gb / NB) | 0;
+    const t = ((bx / BPT) | 0) + ((bz / BPT) | 0) * NT;
+    const bi = (bx % BPT) + (bz % BPT) * BPT;
+    const rec = fd.recs[t];
+    const leaving = death < NEVER;
+    let end = Infinity;
+    for (let r = fd.blockStart[t * 17 + bi]; r < fd.blockStart[t * 17 + bi + 1]; r++) {
+      const o = r * REC;
+      const L = rec[o + 7];
+      if (!drawnAt(L, lod)) continue;
+      const s = rec[o + 5];
+      const birth = fd.birth[s];
+      if (Number.isNaN(birth)) continue;
+      const popping = lod <= 1 && fd.pop[s] === 1 && now - birth < POP_TIME;
+      const sp = rec[o + 6];
+      const model = this.table.model[sp];
+      const arch = ARCHETYPES[model];
+      const sd = rec[o + 4];
+      const co = sp * 4;
+      if (popping && leaving) {
+        // A pop already playing finishes: at the new level if that draws and pops this plant,
+        // otherwise here, on the old level's animating mesh.
+        if (nowLod <= 1 && drawnAt(L, nowLod)) continue;
+        anim[lod][model][variantOf(arch, sd - Math.floor(sd))].write(rec[o], rec[o + 1], rec[o + 2], rec[o + 3], birth, NEVER, 8, sd, cols, co);
+        end = Math.min(end, birth + POP_TIME);
+        continue;
+      }
+      // Once shrunk away, an old level's plants are no longer written.
+      if (leaving && now >= death + FADE_TIME) continue;
+      const shownFrom = popping ? birth : Math.max(birth, growFrom);
+      if (lod === 2) {
+        // Far blobs are 1 m models: scale them by the plant's height, and sink them a little
+        // (the far terrain is coarser than the height map).
+        const ys = rec[o + 3];
+        far[arch.far].write(rec[o], rec[o + 1] - 0.4, rec[o + 2], packYawScale((ys - Math.floor(ys)) * Math.PI * 2, (Math.floor(ys) / 128) * arch.height), shownFrom, death, 0, sd, cols, co);
+        continue;
+      }
+      const v = variantOf(arch, sd - Math.floor(sd));
+      const slot = bulk[lod][model][v];
+      slot.write(rec[o], rec[o + 1], rec[o + 2], rec[o + 3], shownFrom, death, popping ? 8 : 0, sd, cols, co);
+      if (shadow && lod === 0) slot.near = slot.n;
+      if (popping) {
+        const a = anim[lod][model][v];
+        a.write(rec[o], rec[o + 1], rec[o + 2], rec[o + 3], birth, NEVER, 8, sd, cols, co);
+        if (shadow && lod === 0) a.near = a.n;
+        end = Math.min(end, birth + POP_TIME);
+      }
+    }
+    return end;
   }
 }

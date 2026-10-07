@@ -32,6 +32,7 @@ import {
   sub,
   tube,
   type Paint,
+  type Ride,
   type SwayFn,
   type V3,
 } from './plantKit';
@@ -233,10 +234,10 @@ function crown(b: PlantBuilder, c: V3, r: V3, n: number, seed: number, paint: Pa
   return puffs;
 }
 
-/** A pad (prickly pear) or lens: a rim with a raised centre on each face. Triangles: 2 * n. */
+/** A pad (prickly pear) or lens: a rim with a raised centre on each face (a closed shape). Triangles: 2 * n. */
 function pad(b: PlantBuilder, centre: V3, normal: V3, up: V3, rx: number, ry: number, thick: number, n: number, paint: Paint): void {
-  fan(b, { centre, normal, start: up, r: ry, n, stretch: rx / ry, peak: thick / ry, paint });
-  fan(b, { centre, normal: scale(normal, -1), start: up, r: ry, n, stretch: rx / ry, peak: thick / ry, paint });
+  fan(b, { centre, normal, start: up, r: ry, n, stretch: rx / ry, peak: thick / ry, solid: true, paint });
+  fan(b, { centre, normal: scale(normal, -1), start: up, r: ry, n, stretch: rx / ry, peak: thick / ry, solid: true, paint });
 }
 
 // ---------- archetype recipes ----------
@@ -275,6 +276,8 @@ function treeFern(lod: 0 | 1): THREE.BufferGeometry {
   const path: V3[] = lod === 0 ? [[0, 0, 0], [0.04, 0.9, 0.02], [0.12, 1.8, 0.05], [0.2, 2.6, 0.08], top] : [[0, 0, 0], [0.1, 1.7, 0.04], top];
   const radii = lod === 0 ? [0.22, 0.17, 0.15, 0.14, 0.17] : [0.2, 0.15, 0.16];
   tube(b, path, radii, lod === 0 ? 6 : 4, bark([0, 0.55], { shade: (t) => 0.75 + 0.25 * (Math.sin(t * 40) > 0 ? 1 : 0.6), tone: (t) => 0.15 * (1 - t) }));
+  // Everything in the crown rides up on the growing trunk.
+  const crownRide = { grow: 0.55 };
   const n = lod === 0 ? 9 : 6;
   rosette(n, 0.2, (_i, a) => {
     const az = a + (r() - 0.5) * 0.3;
@@ -285,18 +288,18 @@ function treeFern(lod: 0 | 1): THREE.BufferGeometry {
       bend: 1.6,
       fold: lod === 0 ? 0.25 : 0,
       zig: lod === 0 ? 0.35 : 0,
-      paint: leaf([0.55, 1], { attach: top }),
+      paint: leaf([0.55, 1], { attach: top, ride: crownRide }),
     });
   });
   if (lod === 0) {
     // A skirt of old brown fronds hanging against the trunk.
     rosette(3, 1.0, (_i, a) => {
       const base = add(top, [Math.cos(a) * 0.15, -0.1, Math.sin(a) * 0.15]);
-      frond(b, base, a, -1.25, 1.2, { segs: 2, width: 0.2, bend: -0.2, paint: { part: Part.Own, own: 0x8b6a3e, shade: 0.9, grow: [0.5, 0.7], attach: top } });
+      frond(b, base, a, -1.25, 1.2, { segs: 2, width: 0.2, bend: -0.2, paint: { part: Part.Own, own: 0x8b6a3e, shade: 0.9, grow: [0.5, 0.7], attach: top, ride: crownRide } });
     });
     // Fiddleheads in the crown.
     for (let i = 0; i < 2; i++) {
-      strip(b, { base: add(top, [0, 0.05, 0]), dir: dirFrom(i * 2.6, 1.3), len: 0.4, segs: 2, width: (t) => (t >= 1 ? 0 : 0.04), bend: 4, bendPow: 1.2, paint: leaf([0.8, 1], { tone: 0.9 }) });
+      strip(b, { base: add(top, [0, 0.05, 0]), dir: dirFrom(i * 2.6, 1.3), len: 0.4, segs: 2, width: (t) => (t >= 1 ? 0 : 0.04), bend: 4, bendPow: 1.2, paint: leaf([0.8, 1], { tone: 0.9, attach: top, ride: crownRide }) });
     }
   }
   return b.finish(swayOf(4.2, 0.5, 0.35));
@@ -335,7 +338,7 @@ function duneGrass(lod: 0 | 1): THREE.BufferGeometry {
       const az = i * 2.2 + 0.9;
       const top: V3 = [Math.cos(az) * 0.18, 0.95 + r() * 0.12, Math.sin(az) * 0.18];
       blade(b, [0, 0, 0], az, top[1], 0.012, 0.18, 1, { part: Part.Flower, shade: 0.75, grow: [0.3, 0.8], attach: [0, 0, 0] });
-      strip(b, { base: top, dir: dirFrom(az, -0.6), len: 0.26, segs: 2, width: (t) => (t >= 1 ? 0 : 0.03), bend: 0.4, paint: { part: Part.Flower, shade: (t) => 0.9 + 0.15 * t, grow: [0.8, 1], flutter: 0.6, attach: top } });
+      strip(b, { base: top, dir: dirFrom(az, -0.6), len: 0.26, segs: 2, width: (t) => (t >= 1 ? 0 : 0.03), bend: 0.4, paint: { part: Part.Flower, shade: (t) => 0.9 + 0.15 * t, grow: [0.8, 1], flutter: 0.6, attach: top, ride: { grow: 0.8 } } });
     }
   }
   return b.finish(swayOf(1.0, 0, 1.2));
@@ -354,7 +357,7 @@ function sedge(lod: 0 | 1): THREE.BufferGeometry {
       const az = i * 2.1;
       const top: V3 = [Math.cos(az) * 0.08, 0.85 + r() * 0.1, Math.sin(az) * 0.08];
       blade(b, [0, 0, 0], az, top[1] - 0.05, 0.01, 0.09, 1, leaf([0.2, 0.8], { tone: 0.3, attach: [0, 0, 0] }));
-      tube(b, [add(top, [0, -0.07, 0]), add(top, [0, 0.06, 0])], [0.025, 0], 4, { part: Part.Fruit, grow: [0.85, 1], shade: 0.9 });
+      tube(b, [add(top, [0, -0.07, 0]), add(top, [0, 0.06, 0])], [0.025, 0], 4, { part: Part.Fruit, grow: [0.85, 1], shade: 0.9, ride: { grow: 0.8 } });
     }
   }
   return b.finish(swayOf(0.85, 0, 0.8));
@@ -364,25 +367,26 @@ function vine(lod: 0 | 1): THREE.BufferGeometry {
   const b = new PlantBuilder();
   const r = seq(16);
   const runners = lod === 0 ? 2 : 1;
-  const leaves: { p: V3; az: number }[] = [];
+  const leaves: { p: V3; az: number; on: number }[] = [];
   for (let k = 0; k < runners; k++) {
     const az0 = k * Math.PI + 0.4;
     const segs = lod === 0 ? 3 : 2;
     const length = 1.0;
     // The runner creeps along the sand (it never sways); only its leaves and flowers move.
-    strip(b, { base: [0, 0.02, 0], dir: dirFrom(az0, 0), len: length, segs, width: () => 0.03, paint: { part: Part.Trunk, tone: 0.6, shade: 0.8, grow: [0, 0.9] } });
+    strip(b, { base: [0, 0.02, 0], dir: dirFrom(az0, 0), len: length, segs, width: () => 0.03, paint: { part: Part.Trunk, tone: 0.6, shade: 0.8, grow: [0, 0.9], attach: [0, 0, 0] } });
     for (let j = 0; j < (lod === 0 ? 4 : 3); j++) {
       const d = (j + 0.6) / 4.4;
-      leaves.push({ p: [Math.cos(az0) * d * length, 0.03, Math.sin(az0) * d * length], az: az0 + (j % 2 === 0 ? 1.2 : -1.2) + (r() - 0.5) * 0.4 });
+      // `on`: the runner's reveal order where the leaf sits, so leaves appear as the runner creeps out.
+      leaves.push({ p: [Math.cos(az0) * d * length, 0.03, Math.sin(az0) * d * length], az: az0 + (j % 2 === 0 ? 1.2 : -1.2) + (r() - 0.5) * 0.4, on: 0.9 * d });
     }
   }
   const nLeaves = lod === 0 ? 7 : 3;
   for (let i = 0; i < nLeaves; i++) {
-    const { p, az } = leaves[i];
+    const { p, az, on } = leaves[i];
     // Goat's-foot leaves: round with a notch at the tip, tipped up toward the sun.
     const nrm = norm([Math.cos(az) * 0.5, 1, Math.sin(az) * 0.5]);
     const start = norm(sub(dirFrom(az, 0.4), scale(nrm, 0.4)));
-    fan(b, { centre: add(p, scale(dirFrom(az, 0.3), 0.12)), normal: nrm, start, r: 0.14, n: lod === 0 ? 5 : 3, zig: lod === 0 ? 0.35 : 0, cup: 0.15, paint: leaf([0.3 + i * 0.08, 0.6 + i * 0.05], { tone: 0.3, attach: p }) });
+    fan(b, { centre: add(p, scale(dirFrom(az, 0.3), 0.12)), normal: nrm, start, r: 0.14, n: lod === 0 ? 5 : 3, zig: lod === 0 ? 0.35 : 0, cup: 0.15, paint: leaf([0.3 + i * 0.08, 0.6 + i * 0.05], { tone: 0.3, attach: p, ride: { grow: on } }) });
   }
   if (lod === 0) {
     for (let i = 0; i < 2; i++) {
@@ -401,7 +405,7 @@ function mat(lod: 0 | 1): THREE.BufferGeometry {
   const tips: { p: V3; az: number }[] = [];
   for (let k = 0; k < stems; k++) {
     const az = (k / stems) * Math.PI * 2 + r() * 0.5;
-    strip(b, { base: [0, 0.03, 0], dir: dirFrom(az, 0.08), len: 0.38, segs: 1, width: () => 0.016, paint: bark([0, 0.6]) });
+    strip(b, { base: [0, 0.03, 0], dir: dirFrom(az, 0.08), len: 0.38, segs: 1, width: () => 0.016, paint: bark([0, 0.6], { attach: [0, 0, 0] }) });
     tips.push({ p: [0, 0.03, 0], az });
   }
   for (let i = 0; i < nLeaves; i++) {
@@ -409,7 +413,7 @@ function mat(lod: 0 | 1): THREE.BufferGeometry {
     const d = 0.05 + r() * 0.33;
     const p: V3 = [Math.cos(s.az) * d, 0.04 + d * 0.06, Math.sin(s.az) * d];
     const az = s.az + (r() - 0.5) * 2.2;
-    diamond(b, p, dirFrom(az, 0.35 + r() * 0.4), 0.14, 0.045, leaf([0.3, 0.9], { tone: r() * 0.6, attach: p }));
+    diamond(b, p, dirFrom(az, 0.35 + r() * 0.4), 0.14, 0.045, leaf([0.3, 0.9], { tone: r() * 0.6, attach: p, ride: { grow: 0.6 * Math.min(1, d / 0.38) } }));
   }
   return b.finish(swayOf(0.15, 0, 0.2));
 }
@@ -435,8 +439,10 @@ function herb(lod: 0 | 1): THREE.BufferGeometry {
   for (const top of heads) {
     const nrm = norm([top[0], 1.4, top[2]]);
     const start = perpendicular(nrm);
-    fan(b, { centre: top, normal: nrm, start, r: 0.07, n: lod === 0 ? 6 : 4, zig: lod === 0 ? 0.45 : 0, cup: 0.12, paint: { part: Part.Flower, grow: [0.9, 1], shade: 1, attach: top } });
-    if (lod === 0) fan(b, { centre: add(top, scale(nrm, 0.008)), normal: nrm, start, r: 0.022, n: 4, peak: 0.3, paint: { part: Part.Fruit, grow: [0.9, 1], attach: top } });
+    // Flower heads ride up on their growing stems.
+    const ride = { grow: 0.7 };
+    fan(b, { centre: top, normal: nrm, start, r: 0.07, n: lod === 0 ? 6 : 4, zig: lod === 0 ? 0.45 : 0, cup: 0.12, paint: { part: Part.Flower, grow: [0.9, 1], shade: 1, attach: top, ride } });
+    if (lod === 0) fan(b, { centre: add(top, scale(nrm, 0.008)), normal: nrm, start, r: 0.022, n: 4, peak: 0.3, paint: { part: Part.Fruit, grow: [0.9, 1], attach: top, ride } });
   }
   return b.finish(swayOf(0.5, 0, 1.0));
 }
@@ -455,7 +461,10 @@ function palm(lod: 0 | 1): THREE.BufferGeometry {
   const radii = lod === 0 ? [0.34, 0.26, 0.22, 0.2, 0.19] : [0.32, 0.22, 0.19];
   tube(b, path, radii, lod === 0 ? 6 : 4, bark([0, 0.55], { shade: (t, u) => 0.82 + 0.12 * Math.sin(t * 60) + 0.06 * Math.cos(u * 6.28) }));
   const top = path[rings - 1];
-  if (lod === 0) blob(b, add(top, [0, 0.1, 0]), [0.36, 0.3, 0.36], 'octa', 0.1, 3, leaf([0.5, 0.6], { tone: 0.2, shade: 0.75, flutter: 0 }));
+  // The crown shaft, fronds and coconuts ride up on the growing trunk: the fronds stay a closed
+  // spear until the trunk is up, then open like an umbrella.
+  const crownRide = { grow: 0.55 };
+  if (lod === 0) blob(b, add(top, [0, 0.1, 0]), [0.36, 0.3, 0.36], 'octa', 0.1, 3, leaf([0.5, 0.6], { tone: 0.2, shade: 0.75, flutter: 0, attach: top, ride: crownRide }));
   const n = lod === 0 ? 8 : 6;
   rosette(n, 0.15, (_i, a) => {
     const az = a + (r() - 0.5) * 0.3;
@@ -466,14 +475,14 @@ function palm(lod: 0 | 1): THREE.BufferGeometry {
       bend: 2.0,
       fold: lod === 0 ? -0.3 : 0,
       zig: lod === 0 ? 0.3 : 0,
-      paint: leaf([0.55, 1], { attach: top }),
+      paint: leaf([0.55, 1], { attach: top, ride: crownRide }),
       shape: (t) => Math.sin(Math.PI * Math.min(1, 0.1 + t * 0.92)) * (0.7 + 0.3 * t),
     });
   });
   if (lod === 0) {
     for (let c = 0; c < 3; c++) {
       const a = c * 2.1 + 0.5;
-      blob(b, add(top, [Math.cos(a) * 0.28, -0.22, Math.sin(a) * 0.28]), [0.2, 0.22, 0.2], 'octa', 0.05, c, { part: Part.Fruit, grow: [0.85, 0.95], shade: 1, attach: top });
+      blob(b, add(top, [Math.cos(a) * 0.28, -0.22, Math.sin(a) * 0.28]), [0.2, 0.22, 0.2], 'octa', 0.05, c, { part: Part.Fruit, grow: [0.85, 0.95], shade: 1, attach: top, ride: crownRide });
     }
   }
   return b.finish(swayOf(9, 1.8, 0.25));
@@ -489,25 +498,29 @@ function pandanus(lod: 0 | 1): THREE.BufferGeometry {
       tube(b, [[Math.cos(a) * 0.85, 0, Math.sin(a) * 0.85], [Math.cos(a) * 0.12, 1.25, Math.sin(a) * 0.12]], [0.06, 0.08], 4, bark([0, 0.2]));
     });
   }
-  tube(b, lod === 0 ? [[0, 0.6, 0], [0.03, 1.6, 0.02], [0.06, 2.5, 0.04], fork] : [[0, 0, 0], fork], lod === 0 ? [0.17, 0.15, 0.14, 0.12] : [0.16, 0.12], lod === 0 ? 5 : 4, bark([0, 0.45]));
+  // The trunk grows from the root (its stilt roots join it at about 1.2 m).
+  tube(b, lod === 0 ? [[0, 0.6, 0], [0.03, 1.6, 0.02], [0.06, 2.5, 0.04], fork] : [[0, 0, 0], fork], lod === 0 ? [0.17, 0.15, 0.14, 0.12] : [0.16, 0.12], lod === 0 ? 5 : 4, bark([0, 0.45], { attach: [0, 0, 0] }));
+  // Branches ride the trunk top; leaf tufts and fruit ride the branch tips.
+  const forkRide = { grow: 0.45 };
+  const tipRide = { grow: 0.6, hub: fork, hubGrow: 0.45 };
   const tips: V3[] = [];
   rosette(3, 0.4, (_i, a) => {
     const tip: V3 = add(fork, [Math.cos(a) * 1.3, 1.5 + r() * 0.6, Math.sin(a) * 1.3]);
-    if (lod === 0) tube(b, kinked(fork, tip, 3, 0.2, r), [0.11, 0.09, 0.08], 4, bark([0.4, 0.6], { attach: fork }));
+    if (lod === 0) tube(b, kinked(fork, tip, 3, 0.2, r), [0.11, 0.09, 0.08], 4, bark([0.4, 0.6], { attach: fork, ride: forkRide }));
     tips.push(tip);
   });
   for (const tip of tips) {
     const nl = lod === 0 ? 11 : 4;
     rosette(nl, r() * 3, (_j, a) => {
       if (lod === 0) {
-        frond(b, tip, a, 0.75 + (r() - 0.5) * 0.7, 2.1 + r() * 0.4, { segs: 2, width: 0.15, bend: 1.7, paint: leaf([0.6, 1], { attach: tip }), shape: (t) => 1 - t * 0.6 });
+        frond(b, tip, a, 0.75 + (r() - 0.5) * 0.7, 2.1 + r() * 0.4, { segs: 2, width: 0.15, bend: 1.7, paint: leaf([0.6, 1], { attach: tip, ride: tipRide }), shape: (t) => 1 - t * 0.6 });
       } else {
-        frond(b, tip, a, 0.3, 1.4, { segs: 1, width: 0.12, bend: 1, paint: leaf([0.6, 1], { attach: tip }), shape: () => 1 });
+        frond(b, tip, a, 0.3, 1.4, { segs: 1, width: 0.12, bend: 1, paint: leaf([0.6, 1], { attach: tip, ride: tipRide }), shape: () => 1 });
       }
     });
   }
   if (lod === 0) {
-    for (let k = 0; k < 2; k++) blob(b, add(tips[k], [0.1, -0.35, 0.05]), [0.18, 0.24, 0.18], 'octa', 0.1, 9 + k, { part: Part.Fruit, grow: [0.85, 0.95], shade: (t) => 0.85 + 0.2 * t, attach: tips[k] });
+    for (let k = 0; k < 2; k++) blob(b, add(tips[k], [0.1, -0.35, 0.05]), [0.18, 0.24, 0.18], 'octa', 0.1, 9 + k, { part: Part.Fruit, grow: [0.85, 0.95], shade: (t) => 0.85 + 0.2 * t, attach: tips[k], ride: tipRide });
   }
   return b.finish(swayOf(6, 0.7, 0.3));
 }
@@ -517,7 +530,7 @@ function seaGrape(lod: 0 | 1): THREE.BufferGeometry {
   const r = seq(21);
   if (lod === 1) {
     tube(b, [[0, 0, 0], [0.05, 1.2, 0]], [0.08, 0.05], 4, bark([0, 0.5]));
-    crown(b, [0.05, 1.6, 0], [1.25, 0.85, 1.2], 1, 1, leaf([0.5, 0.9], { attach: [0.05, 1.2, 0] }), 1);
+    crown(b, [0.05, 1.6, 0], [1.25, 0.85, 1.2], 1, 1, leaf([0.5, 0.9], { attach: [0.05, 1.2, 0], ride: { grow: 0.5 } }), 1);
     return b.finish(swayOf(2.6, 0.5, 0.15));
   }
   const tips: V3[] = [];
@@ -536,11 +549,12 @@ function seaGrape(lod: 0 | 1): THREE.BufferGeometry {
     const out = dirFrom(a, e);
     const c = add(at, scale(out, 0.25 + r() * 0.35));
     const nrm = norm(add(out, [0, 0.8, 0]));
-    fan(b, { centre: c, normal: nrm, start: perpendicular(nrm), r: 0.3 + r() * 0.1, n: 5, cup: 0.12, paint: leaf([0.45 + along * 0.4, 0.95], { tone: r(), shade: 0.8 + r() * 0.25, attach: at }) });
+    // Each leaf rides its stem at the stem's reveal order there.
+    fan(b, { centre: c, normal: nrm, start: perpendicular(nrm), r: 0.3 + r() * 0.1, n: 5, cup: 0.12, paint: leaf([0.45 + along * 0.4, 0.95], { tone: r(), shade: 0.8 + r() * 0.25, attach: at, ride: { grow: 0.5 * along } }) });
   }
   for (let k = 0; k < 3; k++) {
     const tip = tips[k];
-    blob(b, add(tip, [0.15, -0.35, 0.1]), [0.07, 0.2, 0.07], 'octa', 0.1, 30 + k, { part: Part.Fruit, grow: [0.9, 1], shade: 1, attach: tip });
+    blob(b, add(tip, [0.15, -0.35, 0.1]), [0.07, 0.2, 0.07], 'octa', 0.1, 30 + k, { part: Part.Fruit, grow: [0.9, 1], shade: 1, attach: tip, ride: { grow: 0.5 } });
   }
   return b.finish(swayOf(2.6, 0.5, 0.15));
 }
@@ -562,7 +576,12 @@ function shrub(lod: 0 | 1): THREE.BufferGeometry {
     [0.55, 0.45, 0.55],
     [0.55, 0.45, 0.5],
   ];
-  puffs.forEach((c, i) => blob(b, c, radii[i], 'ico', 0.18, 40 + i, leaf([0.25 + i * 0.1, 0.8], { attach: [c[0] * 0.3, 0.1, c[2] * 0.3] }), [0, 0.5, 0]));
+  // Each mound puff grows from a point near the ground; its leaves and flowers ride the puff's
+  // centre out as it swells.
+  const roots = puffs.map((c): V3 => [c[0] * 0.3, 0.1, c[2] * 0.3]);
+  const puffGrow = puffs.map((_c, i) => 0.25 + i * 0.1);
+  const onPuff = (i: number) => ({ grow: (puffGrow[i] + 0.8) / 2, hub: roots[i] });
+  puffs.forEach((c, i) => blob(b, c, radii[i], 'ico', 0.18, 40 + i, leaf([puffGrow[i], 0.8], { attach: roots[i] }), [0, 0.5, 0]));
   // Spoon-leaf rosettes poking out of the mound.
   for (let i = 0; i < 12; i++) {
     const a = r() * Math.PI * 2;
@@ -570,15 +589,16 @@ function shrub(lod: 0 | 1): THREE.BufferGeometry {
     const c = puffs[i % 3];
     const out = dirFrom(a, e);
     const p = add(c, [out[0] * radii[i % 3][0] * 0.9, out[1] * radii[i % 3][1] * 0.9, out[2] * radii[i % 3][2] * 0.9]);
-    diamond(b, p, norm(add(out, [0, 0.6, 0])), 0.28, 0.07, leaf([0.6, 1], { tone: 0.7 + r() * 0.3, attach: c }));
+    diamond(b, p, norm(add(out, [0, 0.6, 0])), 0.28, 0.07, leaf([0.6, 1], { tone: 0.7 + r() * 0.3, attach: c, ride: onPuff(i % 3) }));
   }
-  // White half-flowers: fans that are only half a circle.
+  // White half-flowers: fans that are only half a circle, facing out of the mound (solid: their
+  // backs are inside it).
   for (let i = 0; i < 6; i++) {
     const a = i * 1.05 + r() * 0.3;
     const c = puffs[i % 3];
     const out = dirFrom(a, 0.6);
     const p = add(c, [out[0] * radii[i % 3][0], out[1] * radii[i % 3][1], out[2] * radii[i % 3][2]]);
-    fan(b, { centre: p, normal: out, start: [0, 1, 0], r: 0.07, n: 3, arc: Math.PI, cup: 0.2, paint: { part: Part.Flower, grow: [0.9, 1], attach: c } });
+    fan(b, { centre: p, normal: out, start: [0, 1, 0], r: 0.07, n: 3, arc: Math.PI, cup: 0.2, solid: true, paint: { part: Part.Flower, grow: [0.9, 1], attach: c, ride: onPuff(i % 3) } });
   }
   return b.finish(swayOf(1.4, 0.4, 0.1));
 }
@@ -587,7 +607,14 @@ function mangrove(lod: 0 | 1): THREE.BufferGeometry {
   const b = new PlantBuilder();
   const r = seq(23);
   const trunkTop: V3 = [0.1, 3.4, 0];
-  tube(b, lod === 0 ? [[0, 0.9, 0], [0.05, 2.2, 0.02], trunkTop] : [[0, 0.5, 0], trunkTop], lod === 0 ? [0.16, 0.14, 0.11] : [0.15, 0.1], lod === 0 ? 5 : 4, bark([0.2, 0.6]));
+  // The trunk stands on its prop roots but grows from the root point, so everything rides it.
+  const trunkBase = lod === 0 ? 0.9 : 0.5;
+  tube(b, lod === 0 ? [[0, trunkBase, 0], [0.05, 2.2, 0.02], trunkTop] : [[0, trunkBase, 0], trunkTop], lod === 0 ? [0.16, 0.14, 0.11] : [0.15, 0.1], lod === 0 ? 5 : 4, bark([0.2, 0.6], { attach: [0, 0, 0] }));
+  /** The trunk's reveal order at a height (its rings are evenly spaced in reveal order). */
+  const trunkGrow = (y: number): number => {
+    const t = lod === 0 ? (y < 2.2 ? (0.5 * (y - trunkBase)) / (2.2 - trunkBase) : 0.5 + (0.5 * (y - 2.2)) / (3.4 - 2.2)) : (y - trunkBase) / (3.4 - trunkBase);
+    return 0.2 + 0.4 * Math.min(1, Math.max(0, t));
+  };
   // Arched prop roots: from the trunk out and down into the mud (darker below the tide line).
   const roots = lod === 0 ? 6 : 2;
   rosette(roots, 0.3, (_i, a) => {
@@ -597,15 +624,16 @@ function mangrove(lod: 0 | 1): THREE.BufferGeometry {
     const mid1: V3 = [Math.cos(a) * reach * 0.45, from[1] + 0.35, Math.sin(a) * reach * 0.45];
     const mid2: V3 = [Math.cos(a) * reach * 0.85, from[1] * 0.5, Math.sin(a) * reach * 0.85];
     const path: V3[] = lod === 0 ? [from, mid1, mid2, to] : [from, to];
-    tube(b, path, lod === 0 ? [0.06, 0.055, 0.05, 0.05] : [0.06, 0.05], 3, { part: Part.Trunk, grow: [0, 0.5], shade: (t) => (t > 0.75 ? 0.6 : 0.9), attach: [0, from[1], 0] });
+    tube(b, path, lod === 0 ? [0.06, 0.055, 0.05, 0.05] : [0.06, 0.05], 3, { part: Part.Trunk, grow: [0, 0.5], shade: (t) => (t > 0.75 ? 0.6 : 0.9), attach: [0, from[1], 0], ride: { grow: trunkGrow(from[1]) } });
   });
-  crown(b, [0.1, 3.9, 0], [2.5, 1.4, 2.4], 5, 50, leaf([0.6, 0.95], { attach: trunkTop }), lod);
+  const crownRide = { grow: 0.6 };
+  crown(b, [0.1, 3.9, 0], [2.5, 1.4, 2.4], 5, 50, leaf([0.6, 0.95], { attach: trunkTop, ride: crownRide }), lod);
   if (lod === 0) {
     // Dangling cigar-shaped seedlings (propagules).
     for (let k = 0; k < 4; k++) {
       const a = k * 1.6 + 0.3;
       const p: V3 = [Math.cos(a) * 1.0, 3.1, Math.sin(a) * 1.0];
-      tube(b, [p, add(p, [0, -0.45, 0])], [0.03, 0], 3, { part: Part.Fruit, grow: [0.9, 1], shade: 0.9, attach: trunkTop });
+      tube(b, [p, add(p, [0, -0.45, 0])], [0.03, 0], 3, { part: Part.Fruit, grow: [0.9, 1], shade: 0.9, attach: trunkTop, ride: crownRide });
     }
   }
   return b.finish(swayOf(5.5, 0.35, 0.08));
@@ -615,8 +643,10 @@ function fig(lod: 0 | 1): THREE.BufferGeometry {
   const b = new PlantBuilder();
   const r = seq(24);
   const crownBase: V3 = [0, 6.2, 0];
+  // The trunk's reveal order where the limbs and crown join it (the stems reach 6.4 m at 0.5).
+  const baseGrow = lod === 0 ? (0.5 * 6.2) / 6.4 : 0.5;
   if (lod === 0) {
-    // Three stems twisted together (a strangler fig's fused trunk).
+    // Three stems twisted together (a strangler fig's fused trunk), growing from one root.
     for (let k = 0; k < 3; k++) {
       const path: V3[] = [];
       for (let i = 0; i < 4; i++) {
@@ -625,28 +655,31 @@ function fig(lod: 0 | 1): THREE.BufferGeometry {
         const rr = 0.42 * (1 - t * 0.55);
         path.push([Math.cos(a) * rr, t * 6.4, Math.sin(a) * rr]);
       }
-      tube(b, path, [0.32, 0.26, 0.24, 0.2], 5, bark([0, 0.5], { shade: (t, u) => 0.8 + 0.12 * Math.sin(u * 12.6 + t * 8) }));
+      tube(b, path, [0.32, 0.26, 0.24, 0.2], 5, bark([0, 0.5], { shade: (t, u) => 0.8 + 0.12 * Math.sin(u * 12.6 + t * 8), attach: [0, 0, 0] }));
     }
     // Limbs spreading wide.
     rosette(4, 0.4, (_i, a) => {
       const tip: V3 = [Math.cos(a) * 4.2, 8.2 + r() * 1.2, Math.sin(a) * 4.2];
-      tube(b, kinked(crownBase, tip, 3, 0.4, r), [0.2, 0.15, 0.1], 3, bark([0.45, 0.65], { attach: crownBase }));
+      tube(b, kinked(crownBase, tip, 3, 0.4, r), [0.2, 0.15, 0.1], 3, bark([0.45, 0.65], { attach: crownBase, ride: { grow: baseGrow } }));
     });
-    // Aerial roots dropping from the limbs.
+    // Aerial roots dropping from the limbs (each rides its limb out as the limb grows).
     rosette(6, 0.9, (_i, a) => {
       const d = 2.2 + r() * 1.8;
       const top: V3 = [Math.cos(a) * d, 7.4, Math.sin(a) * d];
-      tube(b, [top, [top[0] * 1.03, 0, top[2] * 1.03]], [0.04, 0.05], 3, bark([0.6, 0.75], { shade: 0.85, attach: top }));
+      const ride = { grow: 0.45 + (0.2 * d) / 4.2, hub: crownBase, hubGrow: baseGrow };
+      tube(b, [top, [top[0] * 1.03, 0, top[2] * 1.03]], [0.04, 0.05], 3, bark([0.6, 0.75], { shade: 0.85, attach: top, ride }));
     });
   } else {
     tube(b, [[0, 0, 0], crownBase], [0.7, 0.45], 5, bark([0, 0.5]));
   }
   // A wide, flat, dark crown: the fig is the island's great tree.
-  crown(b, [0, 9.3, 0], lod === 0 ? [6.2, 2.6, 6.0] : [6.0, 2.4, 5.8], 10, 60, leaf([0.6, 0.95], { attach: crownBase }), lod);
+  crown(b, [0, 9.3, 0], lod === 0 ? [6.2, 2.6, 6.0] : [6.0, 2.4, 5.8], 10, 60, leaf([0.6, 0.95], { attach: crownBase, ride: { grow: baseGrow } }), lod);
   if (lod === 0) {
     for (let k = 0; k < 2; k++) {
       const a = k * 2.7 + 0.2;
-      blob(b, [Math.cos(a) * 2.6, 7.6, Math.sin(a) * 2.6], [0.16, 0.16, 0.16], 'octa', 0, 70 + k, { part: Part.Fruit, grow: [0.9, 1], attach: [Math.cos(a) * 2.0, 8.4, Math.sin(a) * 2.0] });
+      // Figs hang under the crown, riding it out as it spreads (its underside reveals at about 0.7).
+      const ride = { grow: 0.7, hub: crownBase, hubGrow: baseGrow };
+      blob(b, [Math.cos(a) * 2.6, 7.6, Math.sin(a) * 2.6], [0.16, 0.16, 0.16], 'octa', 0, 70 + k, { part: Part.Fruit, grow: [0.9, 1], attach: [Math.cos(a) * 2.0, 8.4, Math.sin(a) * 2.0], ride });
     }
   }
   return b.finish(swayOf(12, 0.22, 0.05));
@@ -669,7 +702,7 @@ function puffTree(
     puffs: number;
     trunkTone?: (t: number) => number;
   },
-  extra?: (b: PlantBuilder, tips: V3[], puffs: [V3, V3][], r: () => number) => void,
+  extra?: (b: PlantBuilder, tips: V3[], puffs: [V3, V3][], r: () => number, top: V3) => void,
 ): THREE.BufferGeometry {
   const b = new PlantBuilder();
   const r = seq(o.seed);
@@ -680,27 +713,32 @@ function puffTree(
   } else {
     tube(b, [[0, 0, 0], top], [o.trunkR, o.trunkR * 0.6], 4, bark([0, 0.5], { tone: (t) => tone(t) }));
   }
+  // Limbs and crown ride up on the growing trunk top.
+  const topRide = { grow: 0.5 };
   const tips: V3[] = [];
   rosette(o.limbs, r() * 3, (_i, a) => {
     const tip: V3 = add(top, [Math.cos(a) * o.reach, o.height * 0.12 + r() * o.height * 0.1, Math.sin(a) * o.reach]);
-    if (lod === 0) tube(b, kinked(top, tip, 3, o.kink * 0.5, r), [o.trunkR * 0.5, o.trunkR * 0.35, o.trunkR * 0.25], 3, bark([0.4, 0.6], { tone: (t) => tone(0.5 + t * 0.5), attach: top }));
+    if (lod === 0) tube(b, kinked(top, tip, 3, o.kink * 0.5, r), [o.trunkR * 0.5, o.trunkR * 0.35, o.trunkR * 0.25], 3, bark([0.4, 0.6], { tone: (t) => tone(0.5 + t * 0.5), attach: top, ride: topRide }));
     tips.push(tip);
   });
-  const puffs = crown(b, o.crownC, o.crownR, o.puffs, o.seed * 10, leaf([0.6, 0.95], { attach: top }), lod);
-  if (lod === 0 && extra) extra(b, tips, puffs, r);
+  const puffs = crown(b, o.crownC, o.crownR, o.puffs, o.seed * 10, leaf([0.6, 0.95], { attach: top, ride: topRide }), lod);
+  if (lod === 0 && extra) extra(b, tips, puffs, r, top);
   return b.finish(swayOf(o.height, 0.3, 0.06));
 }
 
 function pomTree(lod: 0 | 1): THREE.BufferGeometry {
-  return puffTree(lod, { seed: 25, height: 8, trunkTop: 4.0, trunkR: 0.22, sides: 5, kink: 0.6, limbs: 3, reach: 1.6, crownC: [0.2, 5.9, 0.1], crownR: [3.0, 1.9, 2.9], puffs: 7 }, (b, _tips, puffs, r) => {
-    // Red pom-pom flowers dotted over the crown.
+  return puffTree(lod, { seed: 25, height: 8, trunkTop: 4.0, trunkR: 0.22, sides: 5, kink: 0.6, limbs: 3, reach: 1.6, crownC: [0.2, 5.9, 0.1], crownR: [3.0, 1.9, 2.9], puffs: 7 }, (b, _tips, puffs, r, top) => {
+    // Red pom-pom flowers dotted over the crown, riding their puff out as the crown swells
+    // (a crown puff's centre is half way through the crown's 0.6..0.95 reveal).
+    const ride = { grow: 0.775, hub: top, hubGrow: 0.5 };
     for (let i = 0; i < 8; i++) {
       const [c, rr] = puffs[1 + (i % (puffs.length - 1))];
       const a = r() * Math.PI * 2;
       const e = r() * 1.0 + 0.1;
       const out = dirFrom(a, e);
       const p: V3 = [c[0] + out[0] * rr[0] * 1.02, c[1] + out[1] * rr[1] * 1.02, c[2] + out[2] * rr[2] * 1.02];
-      fan(b, { centre: p, normal: out, start: perpendicular(out), r: 0.34, n: 4, zig: 0.65, peak: 0.6, paint: { part: Part.Flower, grow: [0.9, 1], flutter: 0.4, attach: c } });
+      // Solid: it faces out of the crown, so its back is never seen.
+      fan(b, { centre: p, normal: out, start: perpendicular(out), r: 0.34, n: 4, zig: 0.65, peak: 0.6, solid: true, paint: { part: Part.Flower, grow: [0.9, 1], flutter: 0.4, attach: c, ride } });
     }
   });
 }
@@ -710,18 +748,21 @@ function broadleaf(lod: 0 | 1): THREE.BufferGeometry {
 }
 
 function cloudTree(lod: 0 | 1): THREE.BufferGeometry {
-  return puffTree(lod, { seed: 27, height: 6.5, trunkTop: 3.0, trunkR: 0.3, sides: 5, kink: 0.9, limbs: 3, reach: 1.7, crownC: [0.2, 4.6, 0.1], crownR: [3.0, 1.6, 2.8], puffs: 6, trunkTone: (t) => 0.25 + 0.55 * t }, (b, tips, _puffs, r) => {
-    // Bromeliads perched on the limbs: a rosette of straps around a red heart.
-    for (let k = 0; k < 3; k++) {
-      const p = add(tips[k % tips.length], [0, -0.55, 0]);
-      rosette(4, r() * 3, (_j, a) => diamond(b, p, dirFrom(a, 0.7), 0.35, 0.06, leaf([0.8, 1], { tone: 0.8, attach: p })));
-      fan(b, { centre: add(p, [0, 0.05, 0]), normal: [0, 1, 0], start: [1, 0, 0], r: 0.07, n: 3, cup: 0.6, paint: { part: Part.Flower, grow: [0.9, 1], attach: p } });
+  return puffTree(lod, { seed: 27, height: 6.5, trunkTop: 3.0, trunkR: 0.3, sides: 5, kink: 0.9, limbs: 3, reach: 1.7, crownC: [0.2, 4.6, 0.1], crownR: [3.0, 1.6, 2.8], puffs: 6, trunkTone: (t) => 0.25 + 0.55 * t }, (b, tips, _puffs, r, top) => {
+    // Perchers ride their limb tip out (limb tips reveal at 0.6, from the trunk top at 0.5).
+    const ride = { grow: 0.6, hub: top, hubGrow: 0.5 };
+    // Bromeliads perched on two of the limbs: a rosette of straps around a red heart (a cup
+    // sitting in the rosette, never seen from below).
+    for (let k = 0; k < 2; k++) {
+      const p = add(tips[k], [0, -0.55, 0]);
+      rosette(4, r() * 3, (_j, a) => diamond(b, p, dirFrom(a, 0.7), 0.35, 0.06, leaf([0.8, 1], { tone: 0.8, attach: p, ride })));
+      fan(b, { centre: add(p, [0, 0.05, 0]), normal: [0, 1, 0], start: [1, 0, 0], r: 0.07, n: 3, cup: 0.6, solid: true, paint: { part: Part.Flower, grow: [0.9, 1], attach: p, ride } });
     }
     // Beard lichen hanging from the limbs, pale and slow.
-    for (let k = 0; k < 4; k++) {
+    for (let k = 0; k < 3; k++) {
       const t = tips[k % tips.length];
       const p: V3 = add(t, [(r() - 0.5) * 0.6, -0.5, (r() - 0.5) * 0.6]);
-      strip(b, { base: p, dir: [0.05, -1, 0], len: 0.8, segs: 2, width: (tt) => (tt >= 1 ? 0 : 0.06), paint: { part: Part.Own, own: 0xc9d3a8, grow: [0.85, 1], flutter: 0.8, attach: t } });
+      strip(b, { base: p, dir: [0.05, -1, 0], len: 0.8, segs: 2, width: (tt) => (tt >= 1 ? 0 : 0.06), paint: { part: Part.Own, own: 0xc9d3a8, grow: [0.85, 1], flutter: 0.8, attach: t, ride } });
     }
   });
 }
@@ -733,13 +774,15 @@ function sheOak(lod: 0 | 1): THREE.BufferGeometry {
   tube(b, lod === 0 ? [[0, 0, 0], [0.05, 3, 0.02], [0.08, 6.2, 0.03], top] : [[0, 0, 0], top], lod === 0 ? [0.22, 0.17, 0.12, 0.05] : [0.2, 0.06], lod === 0 ? 5 : 4, bark([0, 0.6]));
   // Tiers of drooping, feathery skirts: a cone shape like a soft pine.
   const tiers = lod === 0 ? 5 : 3;
+  // Every tier and wisp rides the growing trunk at its own height (the trunk reveals 0..0.6 up to 9.4 m).
+  const onTrunk = (y: number) => ({ grow: (0.6 * y) / 9.4 });
   for (let k = 0; k < tiers; k++) {
     const t = k / (tiers - 1);
     const y = 3.4 + t * 5.4;
     const rad = 2.4 * (1 - t * 0.75);
     const c: V3 = [0.08 * t, y, 0];
-    fan(b, { centre: c, normal: [0, 1, 0], start: dirFrom(k * 0.7, 0), r: rad, n: 7, cup: -0.45, peak: 0.55, zig: 0.25, paint: leaf([0.45 + t * 0.4, 0.95], { tone: 0.2 + t * 0.6, shade: 0.8 + t * 0.2, attach: c }) });
-    if (lod === 0) fan(b, { centre: add(c, [0, -0.35, 0]), normal: [0, 1, 0], start: dirFrom(k * 0.7 + 0.45, 0), r: rad * 0.9, n: 7, cup: -0.5, peak: 0.6, zig: 0.3, paint: leaf([0.45 + t * 0.4, 0.95], { tone: 0.1 + t * 0.5, shade: 0.72, attach: c }) });
+    fan(b, { centre: c, normal: [0, 1, 0], start: dirFrom(k * 0.7, 0), r: rad, n: 7, cup: -0.45, peak: 0.55, zig: 0.25, paint: leaf([0.45 + t * 0.4, 0.95], { tone: 0.2 + t * 0.6, shade: 0.8 + t * 0.2, attach: c, ride: onTrunk(y) }) });
+    if (lod === 0) fan(b, { centre: add(c, [0, -0.35, 0]), normal: [0, 1, 0], start: dirFrom(k * 0.7 + 0.45, 0), r: rad * 0.9, n: 7, cup: -0.5, peak: 0.6, zig: 0.3, paint: leaf([0.45 + t * 0.4, 0.95], { tone: 0.1 + t * 0.5, shade: 0.72, attach: c, ride: onTrunk(y) }) });
   }
   if (lod === 0) {
     // Hanging needle wisps under the tiers.
@@ -748,7 +791,7 @@ function sheOak(lod: 0 | 1): THREE.BufferGeometry {
       const y = 3.2 + r() * 4.8;
       const rad = 2.2 * (1 - ((y - 3.2) / 5.4) * 0.7);
       const p: V3 = [Math.cos(a) * rad * 0.85, y, Math.sin(a) * rad * 0.85];
-      strip(b, { base: p, dir: norm([Math.cos(a) * 0.3, -1, Math.sin(a) * 0.3]), len: 0.7, segs: 2, width: (t) => (t >= 1 ? 0 : 0.05), paint: leaf([0.7, 1], { tone: 0.5, flutter: 0.9, attach: [0, y, 0] }) });
+      strip(b, { base: p, dir: norm([Math.cos(a) * 0.3, -1, Math.sin(a) * 0.3]), len: 0.7, segs: 2, width: (t) => (t >= 1 ? 0 : 0.05), paint: leaf([0.7, 1], { tone: 0.5, flutter: 0.9, attach: [0, y, 0], ride: onTrunk(y) }) });
     }
   }
   return b.finish(swayOf(10, 0.45, 0.06));
@@ -759,31 +802,45 @@ function cactus(lod: 0 | 1): THREE.BufferGeometry {
   const r = seq(29);
   const top: V3 = [0.05, 1.25, 0];
   tube(b, lod === 0 ? [[0, 0, 0], [0.03, 0.65, 0], top] : [[0, 0, 0], top], lod === 0 ? [0.17, 0.15, 0.13] : [0.16, 0.12], lod === 0 ? 6 : 4, bark([0, 0.45], { shade: (_t, u) => (Math.floor(u * 12) % 2 === 0 ? 0.9 : 1.02) }));
-  const pads: { c: V3; n: V3; up: V3; s: number }[] = [];
+  /** Pads, each with the index of the pad it grows from (-1: the trunk top). */
+  const pads: { c: V3; n: V3; up: V3; s: number; parent: number }[] = [];
   // Pads chained upward from the trunk top, two to three levels deep.
-  const grow = (c: V3, dir: V3, depth: number, s: number): void => {
+  const grow = (c: V3, dir: V3, depth: number, s: number, parent: number): void => {
     if (pads.length >= (lod === 0 ? 9 : 4)) return;
     const up = norm(dir);
     const centre = add(c, scale(up, 0.42 * s));
     const nrm = norm([up[2] + (r() - 0.5) * 0.6, 0.15, -up[0] + (r() - 0.5) * 0.6]);
-    pads.push({ c: centre, n: nrm, up, s });
+    const me = pads.length;
+    pads.push({ c: centre, n: nrm, up, s, parent });
     if (depth >= 2) return;
     const tip = add(centre, scale(up, 0.4 * s));
-    for (let k = 0; k < 2; k++) grow(tip, norm(add(up, scale(perpendicular(up), (k === 0 ? 1 : -1) * (0.6 + r() * 0.4)))), depth + 1, s * 0.85);
+    for (let k = 0; k < 2; k++) grow(tip, norm(add(up, scale(perpendicular(up), (k === 0 ? 1 : -1) * (0.6 + r() * 0.4)))), depth + 1, s * 0.85, me);
   };
-  grow(top, [0.4, 1, 0.1], 0, 1);
-  grow(top, [-0.5, 1, -0.2], 1, 0.95);
+  grow(top, [0.4, 1, 0.1], 0, 1, -1);
+  grow(top, [-0.5, 1, -0.2], 1, 0.95, -1);
+  const padGrow = (i: number): [number, number] => (lod === 0 ? [0.45 + i * 0.05, 0.6 + i * 0.05] : [0.5, 0.8]);
+  const padJoin = (i: number): V3 => (lod === 0 ? add(pads[i].c, scale(pads[i].up, -0.3 * pads[i].s)) : pads[i].c);
+  /** The first pad of a chain (the one on the trunk top). */
+  const chainRoot = (i: number): number => (pads[i].parent < 0 ? i : chainRoot(pads[i].parent));
+  // A pad (or a flower on one) rides the rim of the pad it grows from, reckoned from where its
+  // chain's first pad joins the trunk top (the trunk reveals 0..0.45 to the top).
+  const onRim = (i: number): Ride => ({ grow: padGrow(i)[1], hub: padJoin(chainRoot(i)), hubGrow: 0.45 });
   pads.forEach((p, i) => {
-    if (lod === 0) pad(b, p.c, p.n, p.up, 0.3 * p.s, 0.43 * p.s, 0.06 * p.s, 6, { part: Part.Leaf, tone: (t) => 0.3 * t, shade: (t) => 0.86 + 0.14 * t, grow: [0.45 + i * 0.05, 0.6 + i * 0.05], attach: add(p.c, scale(p.up, -0.3 * p.s)) });
-    else fan(b, { centre: p.c, normal: p.n, start: p.up, r: 0.43 * p.s, n: 4, stretch: 0.7, paint: { part: Part.Leaf, grow: [0.5, 0.8], attach: p.c } });
+    const ride = p.parent < 0 ? { grow: 0.45 } : onRim(p.parent);
+    const paint: Paint = { part: Part.Leaf, tone: (t) => 0.3 * t, shade: (t) => 0.86 + 0.14 * t, grow: padGrow(i), attach: padJoin(i), ride };
+    if (lod === 0) pad(b, p.c, p.n, p.up, 0.3 * p.s, 0.43 * p.s, 0.06 * p.s, 6, paint);
+    else fan(b, { centre: p.c, normal: p.n, start: p.up, r: 0.43 * p.s, n: 4, stretch: 0.7, paint });
   });
   if (lod === 0) {
     for (let k = 0; k < 3; k++) {
-      const p = pads[pads.length - 1 - k];
+      const i = pads.length - 1 - k;
+      const p = pads[i];
+      // Flowers and fruit sit on the pad's rim and ride it.
+      const ride = onRim(i);
       const at = add(p.c, scale(p.up, 0.44 * p.s));
-      fan(b, { centre: at, normal: p.up, start: perpendicular(p.up), r: 0.07, n: 4, cup: 0.7, zig: 0.2, paint: { part: Part.Flower, grow: [0.9, 1], attach: at } });
+      fan(b, { centre: at, normal: p.up, start: perpendicular(p.up), r: 0.07, n: 4, cup: 0.7, zig: 0.2, paint: { part: Part.Flower, grow: [0.9, 1], attach: at, ride } });
       const fr = add(p.c, add(scale(p.up, 0.34 * p.s), scale(perpendicular(p.up), 0.2)));
-      blob(b, fr, [0.05, 0.07, 0.05], 'octa', 0, 80 + k, { part: Part.Fruit, grow: [0.9, 1], attach: fr });
+      blob(b, fr, [0.05, 0.07, 0.05], 'octa', 0, 80 + k, { part: Part.Fruit, grow: [0.9, 1], attach: fr, ride });
     }
   }
   return b.finish(still);
@@ -801,13 +858,16 @@ function silversword(lod: 0 | 1): THREE.BufferGeometry {
   }
   // A tall flowering spike on the plants that are in bloom.
   const spike: V3[] = lod === 0 ? [[0, 0.35, 0], [0, 0.7, 0], [0.02, 1.0, 0], [0.03, 1.25, 0]] : [[0, 0.35, 0], [0.03, 1.2, 0]];
-  tube(b, spike, lod === 0 ? [0.06, 0.055, 0.045, 0] : [0.06, 0], lod === 0 ? 5 : 3, { part: Part.Flower, shade: (t) => 1.1 + 0.3 * t, grow: [0.7, 1], attach: [0, 0.35, 0] });
+  const spikeBase: V3 = [0, 0.35, 0];
+  tube(b, spike, lod === 0 ? [0.06, 0.055, 0.045, 0] : [0.06, 0], lod === 0 ? 5 : 3, { part: Part.Flower, shade: (t) => 1.1 + 0.3 * t, grow: [0.7, 1], attach: spikeBase });
   if (lod === 0) {
     for (let k = 0; k < 8; k++) {
       const y = 0.5 + k * 0.09;
       const a = k * 2.4;
       const p: V3 = [Math.cos(a) * 0.08, y, Math.sin(a) * 0.08];
-      fan(b, { centre: p, normal: dirFrom(a, 0.5), start: [0, 1, 0], r: 0.05, n: 3, cup: 0.3, paint: { part: Part.Flower, shade: 1.1, grow: [0.85, 1], attach: [0, 0.35, 0] } });
+      // Each floret opens where it sits on the spike, as the spike rises past it.
+      const ride = { grow: 0.7 + (0.3 * (y - 0.35)) / 0.9, hub: spikeBase };
+      fan(b, { centre: p, normal: dirFrom(a, 0.5), start: [0, 1, 0], r: 0.05, n: 3, cup: 0.3, paint: { part: Part.Flower, shade: 1.1, grow: [0.85, 1], attach: [0, y, 0], ride } });
     }
   }
   return b.finish(swayOf(1.2, 0.15, 0.05));
@@ -847,11 +907,13 @@ function coral(lod: 0 | 1, variant: number): THREE.BufferGeometry {
   }
   if (variant === 2) {
     // Table coral: a wide flat plate on a short stalk.
-    if (lod === 0) tube(b, [[0, -0.05, 0], [0, 0.35, 0]], [0.1, 0.08], 5, { part: Part.Leaf, tone: 0.2, shade: 0.75, grow: [0, 0.4] });
+    if (lod === 0) tube(b, [[0, -0.05, 0], [0, 0.35, 0]], [0.1, 0.08], 5, { part: Part.Leaf, tone: 0.2, shade: 0.75, grow: [0, 0.4], attach: [0, 0, 0] });
+    // The plate (a closed top and underside) opens from the top of its rising stalk.
     const c: V3 = [0, 0.38, 0];
     const n = lod === 0 ? 10 : 6;
-    fan(b, { centre: c, normal: [0, 1, 0], start: [1, 0, 0], r: 0.75, n, cup: 0.12, zig: 0.12, paint: { part: Part.Flower, shade: (t) => 1.05 - 0.15 * t, grow: [0.4, 1], attach: c } });
-    fan(b, { centre: add(c, [0, -0.04, 0]), normal: [0, -1, 0], start: [1, 0, 0], r: 0.72, n, cup: -0.08, paint: { part: Part.Flower, shade: 0.6, grow: [0.4, 1], attach: c } });
+    const ride = { grow: 0.4 };
+    fan(b, { centre: c, normal: [0, 1, 0], start: [1, 0, 0], r: 0.75, n, cup: 0.12, zig: 0.12, solid: true, paint: { part: Part.Flower, shade: (t) => 1.05 - 0.15 * t, grow: [0.4, 1], attach: c, ride } });
+    fan(b, { centre: add(c, [0, -0.04, 0]), normal: [0, -1, 0], start: [1, 0, 0], r: 0.72, n, cup: -0.08, solid: true, paint: { part: Part.Flower, shade: 0.6, grow: [0.4, 1], attach: c, ride } });
     return b.finish(still);
   }
   // Sea fan: a flat lacy fan standing across the surge, which sways.
@@ -895,7 +957,8 @@ function epiphyte(lod: 0 | 1): THREE.BufferGeometry {
       for (let f = 0; f < (k === 0 ? 3 : 2); f++) {
         const t = 0.45 + f * 0.2;
         const p: V3 = [Math.cos(az) * 0.3 * t, 0.32 * Math.sin(Math.PI * t * 0.8), Math.sin(az) * 0.3 * t];
-        fan(b, { centre: p, normal: dirFrom(az, 0.2), start: [0, 1, 0], r: 0.045, n: 5, zig: 0.45, paint: { part: Part.Flower, grow: [0.85, 1], flutter: 0.5, attach: c } });
+        // Each flower opens where it hangs on the spray, as the spray arches out past it.
+        fan(b, { centre: p, normal: dirFrom(az, 0.2), start: [0, 1, 0], r: 0.045, n: 5, zig: 0.45, paint: { part: Part.Flower, grow: [0.85, 1], flutter: 0.5, attach: p, ride: { grow: 0.5 + 0.3 * t } } });
       }
     }
   }
@@ -951,8 +1014,8 @@ export function buildFarShape(shape: FarShape): THREE.BufferGeometry {
     rosette(6, 0.3, (_i, a) => diamond(b, [0, 0.95, 0], dirFrom(a, 0.25), 0.42, 0.07, leaf([0.6, 1], { flutter: 0, attach: [0, 0.95, 0] }), 1.2));
   } else if (shape === FarShape.Cone) {
     stalk(0.3);
-    fan(b, { centre: [0, 0.3, 0], normal: [0, 1, 0], start: [1, 0, 0], r: 0.24, n: 7, peak: 2.9, paint: leaf([0.5, 1], { flutter: 0, tone: (t) => 0.3 + 0.5 * t }) });
-    fan(b, { centre: [0, 0.3, 0], normal: [0, -1, 0], start: [1, 0, 0], r: 0.24, n: 7, peak: 0.2, paint: leaf([0.5, 1], { flutter: 0, shade: 0.7 }) });
+    fan(b, { centre: [0, 0.3, 0], normal: [0, 1, 0], start: [1, 0, 0], r: 0.24, n: 7, peak: 2.9, solid: true, paint: leaf([0.5, 1], { flutter: 0, tone: (t) => 0.3 + 0.5 * t }) });
+    fan(b, { centre: [0, 0.3, 0], normal: [0, -1, 0], start: [1, 0, 0], r: 0.24, n: 7, peak: 0.2, solid: true, paint: leaf([0.5, 1], { flutter: 0, shade: 0.7 }) });
   } else {
     stalk(0.6);
     blob(b, [0, 0.78, 0], [0.55, 0.2, 0.52], 'ico', 0.12, 2, leaf([0.5, 1], { flutter: 0, attach: [0, 0.6, 0] }));

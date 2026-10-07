@@ -18,7 +18,13 @@
  *   sway     how much the trunk bend moves it (0 at the base)
  *   flutter  leaf jitter along the normal
  *   grow     0..1 order from base to tips (the pop reveals the plant bottom-up by it)
- *   attach   where its leaf or branch joins the parent (leaves unfurl from it)
+ *   attach   where its leaf or branch joins the parent (leaves unfurl from it), plus how that
+ *            join rides up on the growing parent during the pop (see `Ride`)
+ *
+ * Triangles are either CLOSED (tubes, puffs, domes, lenses: you only ever see their outside) or
+ * THIN (leaves, blades, petals: seen from both sides). A plant made mostly of closed shapes is
+ * drawn front faces only, with its few thin pieces given a second, reversed copy; a leafy plant
+ * is drawn double-sided. Either way the hidden back faces of a crown are never shaded.
  */
 import * as THREE from 'three';
 
@@ -46,7 +52,26 @@ export interface Paint {
   grow?: [number, number];
   /** Where this piece joins its parent (default: its own base). */
   attach?: V3;
+  /** How the join rides on its growing parent during the pop (default: it stays put). */
+  ride?: Ride;
 }
+
+/**
+ * During the pop every piece is revealed outward from its join while its parent is still being
+ * revealed itself, so a join on a trunk has to move up with the trunk (or crowns and fronds would
+ * hang in the air above a trunk that is still growing). Trunks grow out of the plant's root at the
+ * origin. A piece on a trunk gives the trunk's reveal order (`grow`) at its join. A piece on a
+ * branch also gives where that branch joins the trunk (`hub`) and the trunk's order there
+ * (`hubGrow`); a hub without `hubGrow` stays put (a branch rooted in the ground, a flower spike).
+ */
+export interface Ride {
+  grow: number;
+  hub?: V3;
+  hubGrow?: number;
+}
+
+/** The reveal order of a join that never moves (the shader's reveal of anything below 0 is 1). */
+export const FIXED = -1;
 
 // ---------- small vector helpers (build time only) ----------
 
@@ -114,8 +139,13 @@ export class PlantBuilder {
   private col: number[] = [];
   /** per vertex: flutter, grow, part + tone * 0.98 (sway is filled in by finish) */
   private trait: number[] = [];
+  /** per vertex: attach xyz + the parent's reveal order there */
   private att: number[] = [];
+  /** per vertex: where the parent joins the trunk xyz + the trunk's reveal order there */
+  private hub: number[] = [];
   private idx: number[] = [];
+  /** Per triangle: 1 = thin (seen from both sides), 0 = part of a closed shape. */
+  private thin: number[] = [];
   /** Vertices whose normals come from their triangles (true) or were set by the primitive (false). */
   private autoN: boolean[] = [];
   /** How much each auto normal is bent toward "up" (soft foliage lighting). */
@@ -144,15 +174,20 @@ export class PlantBuilder {
     const g = paint.grow ?? [0, 1];
     this.trait.push(ramp(paint.flutter, t, u, 0), g[0] + (g[1] - g[0]) * t, paint.part + tone * 0.98);
     const a = paint.attach ?? attach;
-    this.att.push(a[0], a[1], a[2]);
+    const r = paint.ride;
+    this.att.push(a[0], a[1], a[2], r ? r.grow : FIXED);
+    const h = r ? (r.hub ?? [0, 0, 0]) : a;
+    this.hub.push(h[0], h[1], h[2], r?.hubGrow ?? FIXED);
     return i;
   }
 
-  tri(a: number, b: number, c: number): void {
+  /** Add a triangle (counter-clockwise seen from its front). `thin` pieces are seen from both sides. */
+  tri(a: number, b: number, c: number, thin: boolean): void {
     this.idx.push(a, b, c);
+    this.thin.push(thin ? 1 : 0);
   }
 
-  /** Build the geometry. `sway` gives each vertex its trunk-bend weight. */
+  /** Build the geometry. `sway` gives each vertex its trunk-bend weight; `sideOf` says how to draw it. */
   finish(sway: SwayFn): THREE.BufferGeometry {
     const nv = this.vertexCount;
     // Normals from triangles for the pieces that asked for it.
@@ -181,23 +216,45 @@ export class PlantBuilder {
       normal[v * 3 + 1] = n[1];
       normal[v * 3 + 2] = n[2];
       const p: V3 = [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]];
-      const at: V3 = [this.att[v * 3], this.att[v * 3 + 1], this.att[v * 3 + 2]];
+      const at: V3 = [this.att[v * 4], this.att[v * 4 + 1], this.att[v * 4 + 2]];
       const part = Math.floor(this.trait[v * 3 + 2] + 1e-3) as Part;
       plant[v * 4] = sway(p, at, part);
       plant[v * 4 + 1] = this.trait[v * 3];
       plant[v * 4 + 2] = this.trait[v * 3 + 1];
       plant[v * 4 + 3] = this.trait[v * 3 + 2];
     }
+    // Front faces only when thin pieces are a small share: they get a reversed second copy on the
+    // same vertices, so both faces sway, flutter and light as one leaf. Leafy plants stay double-sided.
+    let nThin = 0;
+    for (const t of this.thin) nThin += t;
+    const front = nThin <= FRONT_SIDE_THIN_SHARE * this.thin.length;
+    const index = this.idx.slice();
+    if (front) {
+      for (let f = 0; f < this.thin.length; f++) if (this.thin[f]) index.push(this.idx[f * 3], this.idx[f * 3 + 2], this.idx[f * 3 + 1]);
+    }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
     g.setAttribute('aPlant', new THREE.BufferAttribute(plant, 4));
-    g.setAttribute('aAttach', new THREE.Float32BufferAttribute(this.att, 3));
-    g.setIndex(nv > 65535 ? new THREE.Uint32BufferAttribute(this.idx, 1) : new THREE.Uint16BufferAttribute(this.idx, 1));
+    g.setAttribute('aAttach', new THREE.Float32BufferAttribute(this.att, 4));
+    g.setAttribute('aHub', new THREE.Float32BufferAttribute(this.hub, 4));
+    g.setIndex(nv > 65535 ? new THREE.Uint32BufferAttribute(index, 1) : new THREE.Uint16BufferAttribute(index, 1));
     g.computeBoundingSphere();
+    g.userData.side = front ? THREE.FrontSide : THREE.DoubleSide;
     return g;
   }
+}
+
+/**
+ * A plant whose thin pieces are at most this share of its triangles is drawn front faces only:
+ * doubling those few pieces costs less than shading every hidden back face of its trunk and crown.
+ */
+const FRONT_SIDE_THIN_SHARE = 0.3;
+
+/** How a finished plant geometry is drawn: FrontSide (mostly closed shapes) or DoubleSide (leafy). */
+export function sideOf(g: THREE.BufferGeometry): THREE.Side {
+  return g.userData.side === THREE.FrontSide ? THREE.FrontSide : THREE.DoubleSide;
 }
 
 // ---------- the six shapes ----------
@@ -244,14 +301,14 @@ export function tube(b: PlantBuilder, path: V3[], radii: number[], sides: number
     const r0 = rings[i];
     const r1 = rings[i + 1];
     if (i === n - 2 && tipClosed) {
-      for (let j = 0; j < sides; j++) b.tri(r0 + j, r0 + ((j + 1) % sides), r1);
+      for (let j = 0; j < sides; j++) b.tri(r0 + j, r0 + ((j + 1) % sides), r1, false);
       continue;
     }
     // Wound counter-clockwise seen from outside, so the outward normals face the viewer.
     for (let j = 0; j < sides; j++) {
       const j1 = (j + 1) % sides;
-      b.tri(r0 + j, r0 + j1, r1 + j);
-      b.tri(r0 + j1, r1 + j1, r1 + j);
+      b.tri(r0 + j, r0 + j1, r1 + j, false);
+      b.tri(r0 + j1, r1 + j1, r1 + j, false);
     }
   }
 }
@@ -327,18 +384,18 @@ export function strip(b: PlantBuilder, o: StripOpts): void {
     const r1 = rows[s + 1];
     if (r0.length === 1) {
       // Pointed base (a diamond leaf): fan out from the point.
-      for (let k = 0; k < r1.length - 1; k++) b.tri(r0[0], r1[k + 1], r1[k]);
+      for (let k = 0; k < r1.length - 1; k++) b.tri(r0[0], r1[k + 1], r1[k], true);
       continue;
     }
     if (r1.length === 1) {
       // Closing tip: fan to the point.
-      for (let k = 0; k < r0.length - 1; k++) b.tri(r0[k], r0[k + 1], r1[0]);
+      for (let k = 0; k < r0.length - 1; k++) b.tri(r0[k], r0[k + 1], r1[0], true);
       continue;
     }
     // Wound so the face normal is side x dir: "up" on a level leaf.
     for (let k = 0; k < r0.length - 1; k++) {
-      b.tri(r0[k], r0[k + 1], r1[k]);
-      b.tri(r0[k + 1], r1[k + 1], r1[k]);
+      b.tri(r0[k], r0[k + 1], r1[k], true);
+      b.tri(r0[k + 1], r1[k + 1], r1[k], true);
     }
   }
 }
@@ -355,16 +412,16 @@ export function blade(b: PlantBuilder, base: V3, azimuth: number, h: number, w: 
   const br = b.vertex(add(base, scale(side, w)), null, paint, 0, 1, base, 0.55);
   if (segs === 1) {
     const tp = b.vertex(tip, null, paint, 1, 0.5, base, 0.55);
-    b.tri(bl, tp, br);
+    b.tri(bl, tp, br, true);
     return;
   }
   const mid = add(base, [d[0] * lean * h * 0.3, h * 0.55, d[2] * lean * h * 0.3]);
   const ml = b.vertex(add(mid, scale(side, -w * 0.7)), null, paint, 0.55, 0, base, 0.55);
   const mr = b.vertex(add(mid, scale(side, w * 0.7)), null, paint, 0.55, 1, base, 0.55);
   const tp = b.vertex(tip, null, paint, 1, 0.5, base, 0.55);
-  b.tri(bl, ml, br);
-  b.tri(br, ml, mr);
-  b.tri(ml, tp, mr);
+  b.tri(bl, ml, br, true);
+  b.tri(br, ml, mr, true);
+  b.tri(ml, tp, mr, true);
 }
 
 // Unit octahedron and icosahedron (shared vertices, so blobs shade smooth).
@@ -421,7 +478,7 @@ export function blob(b: PlantBuilder, centre: V3, r: V3, kind: 'octa' | 'ico', l
     const t = (v[1] + 1) / 2;
     b.vertex(p, n, { ...paint, attach }, t, i / verts.length, attach);
   }
-  for (let f = 0; f < faces.length; f += 3) b.tri(base + faces[f], base + faces[f + 1], base + faces[f + 2]);
+  for (let f = 0; f < faces.length; f += 3) b.tri(base + faces[f], base + faces[f + 1], base + faces[f + 2], false);
 }
 
 /**
@@ -447,9 +504,9 @@ export function dome(b: PlantBuilder, centre: V3, r: number, h: number, sides: n
   const top = b.vertex([centre[0], centre[1] + h, centre[2]], [0, 1, 0], paint, 1, 0.5, centre);
   for (let j = 0; j < sides; j++) {
     const j1 = (j + 1) % sides;
-    b.tri(ring0[j], ring1[j], ring0[j1]);
-    b.tri(ring0[j1], ring1[j], ring1[j1]);
-    b.tri(ring1[j], top, ring1[j1]);
+    b.tri(ring0[j], ring1[j], ring0[j1], false);
+    b.tri(ring0[j1], ring1[j], ring1[j1], false);
+    b.tri(ring1[j], top, ring1[j1], false);
   }
 }
 
@@ -471,6 +528,8 @@ export interface FanOpts {
   stretch?: number;
   /** Shift the centre point along the normal (a dome or a cone). */
   peak?: number;
+  /** One face of a closed shape (a lens, a plate's top or bottom): never seen from behind. */
+  solid?: boolean;
   paint: Paint;
 }
 
@@ -492,7 +551,7 @@ export function fan(b: PlantBuilder, o: FanOpts): void {
   }
   for (let j = 0; j < o.n; j++) {
     const j1 = closed ? (j + 1) % nRim : j + 1;
-    b.tri(c, rim[j], rim[j1]);
+    b.tri(c, rim[j], rim[j1], !o.solid);
   }
 }
 
