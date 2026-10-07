@@ -1,19 +1,24 @@
 /**
- * Geology: the tools, lava flow and cooling, sand sliding, waves on beaches (WP-B).
- * See docs/ARCHITECTURE.md §5.2.
+ * Geology: the tools, lava flow and cooling, sand sliding, and waves on beaches (WP-B).
+ * See docs/ARCHITECTURE.md §5.2. This is the one object the engine hub and the ecology talk to;
+ * the work is done in seabed.ts, lava.ts, sand.ts, tools.ts and coast.ts.
  *
- * STUB (lead): the class shape is the contract used by the engine hub (WP-C) and the
- * ecology (WP-D). WP-B replaces the bodies (and adds seabed.ts, lava.ts, sand.ts, tools.ts, coast.ts).
+ * Geo sends no messages. Every change it makes is reported through Columns.markChanged
+ * (one tight rectangle per changed 16 x 16 block), and the hub streams those to the page.
+ *
+ * Geo also listens to Columns: when something else rewrites the ground (undo, loading a save),
+ * it picks up any molten lava there and any sand left steeper than it can hold, so nothing is
+ * ever stuck half-done.
  */
-import type { ToolId } from '../../config';
+import { NX, NZ, type ToolId } from '../../config';
 import type { Columns } from '../columns';
+import { Coast } from './coast';
+import { Lava } from './lava';
+import { ChangeTracker, PATCH_BITS, Sand, type Reporter } from './sand';
+import { generateSeabed, seabedLayout, type SeabedLayout } from './seabed';
+import { Tools, type ToolResult } from './tools';
 
-export interface ToolResult {
-  /** Volume added (+) or removed (-) this call, m^3. */
-  volume: number;
-  /** Column rectangle touched (inclusive), or null if nothing changed. */
-  rect: [number, number, number, number] | null;
-}
+export type { ToolResult } from './tools';
 
 export interface GeoStepStats {
   /** Columns with molten lava. */
@@ -25,88 +30,151 @@ export interface GeoStepStats {
   ms: number;
 }
 
-/** What the ecology may ask of geology (years-time coast processes and storm surf). */
+/**
+ * What the ecology may ask of geology (years-time coast processes and storm surf). Shore lists
+ * hold column indices (i + k * NX) of shoreline columns; only the first `n` entries are used.
+ */
 export interface GeoForEco {
+  /** Storm level 0..1: widens and flattens the band of beach the waves work. */
   setStorm(level: number): void;
+  /** Real-time storm surf for dt seconds: berm sand is pulled offshore, windward beaches most. */
   stormPulse(level: number, dt: number, shore: Int32Array, n: number): void;
+  /** Calm years: berms rebuild, windward sea cliffs wear back, `reefSand[j]` (m/yr) lands at `shore[j]`. */
   coastYears(dtYears: number, shore: Int32Array, n: number, reefSand: Float32Array | null): void;
+  /** Raise reef limestone on `cols[j]` by `amounts[j]` metres, never above -0.5 m. */
   growReef(cols: Int32Array, amounts: Float32Array, n: number): void;
 }
 
 export class Geo implements GeoForEco {
-  /** Where the first-minute glow sits (the knoll nearest the centre). */
-  readonly seabed: { glow: { x: number; z: number } } = { glow: { x: 0, z: 0 } };
+  /** Where the first-minute glow sits (the knoll nearest the centre). Known from the seed alone. */
+  readonly seabed: { glow: { x: number; z: number } };
+  private readonly layout: SeabedLayout;
+  /** Changed columns (Geom/Look), gathered per undo block, and newly burnt columns, per patch. */
+  private readonly changes = new ChangeTracker();
+  private readonly burns = new ChangeTracker(PATCH_BITS);
+  private readonly sand: Sand;
+  private readonly lava: Lava;
+  private readonly tools: Tools;
+  private readonly coast: Coast;
+  /** True while Geo itself is reporting, so its own changes don't wake it again. */
+  private reporting = false;
 
   constructor(
     readonly cols: Columns,
     readonly seed: number,
-  ) {}
-
-  /** Shape the starting seabed into the columns (called once for a new sea). */
-  generateSeabed(): void {}
-
-  /**
-   * Apply a tool for dt seconds at world (x, z). `strength` 0..1.
-   * Must touch() before writing and markChanged() after (with ChangeFlag.Tool, and Burn when lava covers ground).
-   */
-  applyTool(tool: ToolId, x: number, z: number, radius: number, dt: number, strength: number): ToolResult {
-    void tool;
-    void x;
-    void z;
-    void radius;
-    void dt;
-    void strength;
-    return { volume: 0, rect: null };
+  ) {
+    this.layout = seabedLayout(seed);
+    this.seabed = { glow: { ...this.layout.glow } };
+    this.sand = new Sand(cols, this.changes, seed);
+    this.lava = new Lava(cols, this.changes, this.burns, this.sand);
+    this.tools = new Tools(cols, this.lava, this.sand, this.report);
+    this.coast = new Coast(cols, this.sand, this.changes, this.report);
+    cols.addListener(this.onOutsideChange);
+    // A world built before Geo (a loaded save) carries on where it was: molten lava keeps
+    // flowing, and sand saved mid-slide keeps sliding instead of staying frozen too steep.
+    this.lava.wakeRect(0, 0, NX - 1, NZ - 1);
+    this.sand.wakeUnstableRect(0, 0, NX - 1, NZ - 1);
   }
 
-  /** Advance lava and sand physics by dt (seconds), within budgetMs (continues next step if out of time). */
+  /** Report a change made by Geo (and don't react to it ourselves). */
+  private readonly report: Reporter = (i0, k0, i1, k1, flags) => {
+    this.reporting = true;
+    try {
+      this.cols.markChanged(i0, k0, i1, k1, flags);
+    } finally {
+      this.reporting = false;
+    }
+  };
+
+  /** Someone else rewrote some ground (undo, load, a debug island): pick up loose ends there. */
+  private readonly onOutsideChange = (i0: number, k0: number, i1: number, k1: number): void => {
+    if (this.reporting) return;
+    this.lava.wakeRect(i0, k0, i1, k1);
+    this.sand.wakeUnstableRect(i0, k0, i1, k1);
+    this.flush();
+  };
+
+  private flush(): void {
+    if (this.changes.pending) this.changes.flush(this.report);
+    if (this.burns.pending) this.burns.flush(this.report);
+  }
+
+  /** Shape the starting seabed into the columns (called once for a new sea). */
+  generateSeabed(): void {
+    this.lava.clear();
+    this.sand.clear();
+    generateSeabed(this.cols, this.layout, this.seed, this.report);
+  }
+
+  /**
+   * Apply a tool for dt seconds at world (x, z), brush radius in metres, strength 0..1.
+   * Called by the hub every physics step while a stroke is held, at the stroke's latest point.
+   */
+  applyTool(tool: ToolId, x: number, z: number, radius: number, dt: number, strength: number): ToolResult {
+    return this.tools.apply(tool, x, z, radius, dt, strength);
+  }
+
+  /**
+   * Advance lava, then sand, by dt seconds within budgetMs. If time runs out, the rest waits
+   * for the next step: the physics slows down rather than skipping ahead.
+   *
+   * For the hub: one call always runs at least one whole lava substep (so lava never stalls),
+   * which costs about 0.08 ms per 1,000 molten columns on a desktop and perhaps three times that
+   * on a phone. With a lot of molten lava a call can therefore run over budgetMs; once the
+   * tick's budget is spent, don't call step() again in the same tick.
+   */
   step(dt: number, budgetMs: number): GeoStepStats {
-    void dt;
-    void budgetMs;
-    return { lavaCols: 0, sandCols: 0, slid: 0, ms: 0 };
+    const t0 = performance.now();
+    let slid = 0;
+    if (dt > 0) {
+      const deadline = t0 + budgetMs;
+      this.lava.step(dt, deadline);
+      slid = this.sand.step(dt, deadline);
+      this.flush();
+    }
+    return { lavaCols: this.lava.molten, sandCols: this.sand.set.count, slid, ms: performance.now() - t0 };
   }
 
   /** Nothing molten and nothing sliding. */
   isSettled(): boolean {
-    return true;
+    return this.lava.molten === 0 && this.sand.set.count === 0;
   }
 
-  /** Append x, z, strength triples where lava met water since the last call. */
+  /** Append x, z, strength triples where lava met water since the last call (at most 32). */
   takeSteam(out: number[]): void {
-    void out;
+    this.lava.takeSteam(out);
   }
 
   /** Molten lava area (m^2) and the biggest molten area's centre, radius and strength 0..1. */
   lavaStats(): { area: number; glow: [number, number, number, number] } {
-    return { area: 0, glow: [0, 0, 0, 0] };
+    return this.lava.stats();
   }
 
   /** Rock volume placed since the last call (m^3), for clatter sounds. */
   takeRockPlaced(): number {
-    return 0;
+    return this.tools.takeRockPlaced();
   }
 
+  /** Storm level 0..1: widens and flattens the beach band where waves move sand. */
   setStorm(level: number): void {
-    void level;
+    this.sand.setStorm(level);
   }
 
+  /** Real-time storm surf on the listed shoreline columns (windward beaches lose the most sand). */
   stormPulse(level: number, dt: number, shore: Int32Array, n: number): void {
-    void level;
-    void dt;
-    void shore;
-    void n;
+    this.coast.stormPulse(level, dt, shore, n);
   }
 
+  /**
+   * dtYears of calm coast on the listed shoreline columns: berms rebuild, windward sea cliffs
+   * wear back, and reef sand (`reefSand[j]` m/yr for `shore[j]`, or null) whitens the beaches.
+   */
   coastYears(dtYears: number, shore: Int32Array, n: number, reefSand: Float32Array | null): void {
-    void dtYears;
-    void shore;
-    void n;
-    void reefSand;
+    this.coast.coastYears(dtYears, shore, n, reefSand);
   }
 
+  /** Raise reef limestone on the listed columns by `amounts` metres (never above -0.5 m). */
   growReef(cols: Int32Array, amounts: Float32Array, n: number): void {
-    void cols;
-    void amounts;
-    void n;
+    this.coast.growReef(cols, amounts, n);
   }
 }
