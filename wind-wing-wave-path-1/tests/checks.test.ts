@@ -14,7 +14,8 @@ describe('checks', () => {
       const r = await check.run();
       // A time limit missed on a slow build machine is a warning, not a failure (STRICT_SPEED=1 makes it fail).
       if (!r.pass && check.timing && !process.env.STRICT_SPEED) {
-        console.warn(`SLOW MACHINE (not counted as a failure): ${check.label}: ${r.detail}`);
+        // (Written to stderr directly: vitest hides console.warn from passing tests.)
+        process.stderr.write(`SLOW MACHINE (not counted as a failure): ${check.label}: ${r.detail}\n`);
         return;
       }
       expect(r.pass, r.detail).toBe(true);

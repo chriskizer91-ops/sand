@@ -51,6 +51,13 @@ export function liftToClear(taken: readonly TakenLabel[], x: number, y: number, 
   return oy;
 }
 
+/** Keep a label of width `w` (centred on x) wholly inside a screen `screenW` wide, with a small margin. */
+export function clampToScreen(x: number, w: number, screenW: number): number {
+  const half = w / 2 + 8;
+  if (screenW <= half * 2) return screenW / 2;
+  return Math.min(Math.max(x, half), screenW - half);
+}
+
 /** Rough on-screen width of a place label's words. */
 export function labelWidth(words: string): number {
   return words.length * LABEL_CHAR_PX;
@@ -136,6 +143,8 @@ export class WorldPins {
       let oy = 0;
       if (taken) {
         const w = labelWidth(p.el.textContent ?? '');
+        // A label near the edge of the screen slides inward rather than being cut off.
+        this.p.x = clampToScreen(this.p.x, w, window.innerWidth);
         oy = liftToClear(taken, this.p.x, this.p.y, w);
         taken.push({ x: this.p.x, y: this.p.y - oy, w });
       }

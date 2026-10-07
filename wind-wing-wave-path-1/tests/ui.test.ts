@@ -9,7 +9,7 @@ import type { JournalEntry } from '../src/engine/protocol';
 import { WorldFields } from '../src/render/fields';
 import { CardQueue, type CardEvent, type CardItem } from '../src/ui/cards';
 import { chartToWorld, paintChart, worldToChart } from '../src/ui/chart';
-import { labelWidth, liftToClear, type TakenLabel } from '../src/ui/labels';
+import { clampToScreen, labelWidth, liftToClear, type TakenLabel } from '../src/ui/labels';
 import { pageCheckRows } from '../src/ui/checks';
 import { DIRECT_HINT_MINUTES, HintMemo, hintLevel, placeYears, speciesRecords } from '../src/ui/guide';
 import { firstYears, storyEntries } from '../src/ui/journal';
@@ -505,5 +505,15 @@ describe('place labels', () => {
     expect(lifts[1]).toBeGreaterThan(0);
     expect(lifts[2]).toBeGreaterThan(lifts[1]);
     expect(Math.max(...lifts)).toBeLessThanOrEqual(4 * 28);
+  });
+});
+
+describe('place labels at the screen edge', () => {
+  it('slide inward so the words are never cut off, and stay put in the middle', () => {
+    const w = labelWidth('A seagrass meadow');
+    expect(clampToScreen(10, w, 412)).toBeCloseTo(w / 2 + 8, 5);
+    expect(clampToScreen(405, w, 412)).toBeCloseTo(412 - w / 2 - 8, 5);
+    expect(clampToScreen(200, w, 412)).toBe(200);
+    expect(clampToScreen(5, 1000, 412)).toBe(206); // wider than the screen: centred
   });
 });
