@@ -25,7 +25,8 @@ async function shot(page, name, note = '') {
   const path = join(out, `look-${name}.png`);
   await page.screenshot({ path });
   const s = await page.evaluate(() => window.__game.stats());
-  console.log(`${name.padEnd(18)} ${String(s.triangles).padStart(7)} tris ${String(s.calls).padStart(3)} calls  ${note}`);
+  const pass = (t, c) => `${String(t).padStart(7)} tris ${String(c).padStart(3)} calls`;
+  console.log(`${name.padEnd(18)} main ${pass(s.mainTriangles, s.mainCalls)} · shadow ${pass(s.shadowTriangles, s.shadowCalls)} · tier ${s.tier}  ${note}`);
 }
 
 /** Wait until an arrival card is on screen (the stand-in engine sends one every 25 s). */
@@ -64,6 +65,10 @@ async function begin(page) {
 
   await setCamera(page, -300, 255, 60, -1.2, 0.35);
   await shot(page, 'beach', 'the white cay close up');
+
+  await setCamera(page, -300, 255, 15, -1.2, 0.25);
+  await sleep(600);
+  await shot(page, 'beach-low', 'standing on the cay: a low view toward the horizon');
 
   // Look: tap the volcano with the eye.
   await setCamera(page, 40, -20, 300, -0.6, 0.9);

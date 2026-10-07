@@ -10,7 +10,9 @@
  * Places list what makes each one and who it brings.
  *
  * Everything here is worked out from the journal (which is append-only and complete) and
- * the latest life summary, so it needs no state of its own in the save.
+ * the latest life summary. The one thing it remembers itself is which hints have reached the
+ * direct line (HintMemo, kept in the save), because "twenty minutes" is counted in years at
+ * the current pace, and a hint must never blur again when the player changes the pace.
  */
 import { ALL_PLACES, placeInfo, roadWord } from '../content/stories';
 import type { GuideGroup, PlaceKind, Road, SpeciesDef } from '../content/speciesTypes';
@@ -84,6 +86,34 @@ export function hintLevel(r: SpeciesRecord | undefined, year: number, yearsPerSe
   return year - r.visitYear >= DIRECT_HINT_MINUTES * 60 * yearsPerSecond ? 2 : 1;
 }
 
+/**
+ * Hints only ever sharpen. Once a species' hint has reached the direct line it stays there,
+ * even if a slower-to-faster pace change would make the years since its visit count for
+ * fewer minutes. Kept per sea, in the save.
+ */
+export class HintMemo {
+  private direct = new Set<number>();
+
+  /** The level to show for a species now (and remember it if it is the direct line). */
+  level(id: number, r: SpeciesRecord | undefined, year: number, yearsPerSecond: number): 0 | 1 | 2 {
+    if (this.direct.has(id)) return 2;
+    const l = hintLevel(r, year, yearsPerSecond);
+    if (l === 2) this.direct.add(id);
+    return l;
+  }
+
+  /** Species whose hints have reached the direct line (for the save). */
+  get ids(): number[] {
+    return [...this.direct];
+  }
+
+  /** A new or loaded sea: its own remembered hints (anything that isn't a species id is ignored). */
+  restore(list: readonly unknown[]): void {
+    this.direct.clear();
+    for (const v of list) if (typeof v === 'number' && Number.isInteger(v) && v >= 0) this.direct.add(v);
+  }
+}
+
 /** The first year each kind of place was recognised. */
 export function placeYears(entries: readonly JournalEntry[]): Map<PlaceKind, number> {
   const out = new Map<PlaceKind, number>();
@@ -110,6 +140,7 @@ export class GuidePage {
   private chips: HTMLDivElement;
   private body: HTMLDivElement;
   private tab: Tab = 'plants';
+  readonly hints = new HintMemo();
 
   constructor(private species: readonly SpeciesDef[]) {
     this.root = el('div', 'j-page guide');
@@ -145,7 +176,7 @@ export class GuidePage {
     this.body.appendChild(text('p', 'guide-intro', `${groupName}: found ${found.length} of ${list.length}.`));
     const grid = el('div', 'guide-grid');
     for (const s of found) grid.appendChild(this.foundCard(s, recs.get(s.id)!, life));
-    for (const s of missing) grid.appendChild(this.missingCard(s, hintLevel(recs.get(s.id), year, yps)));
+    for (const s of missing) grid.appendChild(this.missingCard(s, this.hints.level(s.id, recs.get(s.id), year, yps)));
     this.body.appendChild(grid);
   }
 

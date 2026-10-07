@@ -62,6 +62,32 @@ renderer.toneMapping = THREE.NoToneMapping;
 renderer.shadowMap.enabled = true; // never toggled at runtime (ARCHITECTURE §7): quality.shadows only decides casters
 renderer.shadowMap.type = THREE.PCFShadowMap;
 
+/**
+ * Triangles and draw calls of the shadow pass, measured around three.js's own shadow render
+ * (renderer.info counts both passes together), so the budgets for the main pass and the
+ * shadow pass (ARCHITECTURE §7) can be checked separately. `frame` is what this frame's
+ * shadow pass drew; `latest` is the last shadow map actually drawn (a system may draw the
+ * shadow map only now and then).
+ */
+const shadowPass = { frameTriangles: 0, frameCalls: 0, latestTriangles: 0, latestCalls: 0 };
+{
+  const sm = renderer.shadowMap;
+  const drawShadows = sm.render.bind(sm);
+  sm.render = (lights, sc, cm) => {
+    const willDraw = sm.enabled && (sm.autoUpdate || sm.needsUpdate);
+    const r = renderer.info.render;
+    const t0 = r.triangles;
+    const c0 = r.calls;
+    drawShadows(lights, sc, cm);
+    shadowPass.frameTriangles = r.triangles - t0;
+    shadowPass.frameCalls = r.calls - c0;
+    if (willDraw) {
+      shadowPass.latestTriangles = shadowPass.frameTriangles;
+      shadowPass.latestCalls = shadowPass.frameCalls;
+    }
+  };
+}
+
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, 1, 1, 16000);
 
@@ -78,12 +104,19 @@ function densityFor(tier: 0 | 1 | 2): number {
   return (isTouch ? [0.55, 0.8, 1.0] : [0.7, 1.0, 1.2])[tier];
 }
 
+/**
+ * Sharpness and detail follow smoothness: the governor lowers the pixel ratio when frames run
+ * long and, on "auto", the detail tier after a sustained strain, and brings both back later.
+ */
+const governor = new ResolutionGovernor(1, pixelCapFor(settings.quality));
+governor.setTier(tierFor(settings.quality), settings.quality === 'auto');
 const quality: Quality = {
   setting: settings.quality,
   phone: isTouch,
-  tier: tierFor(settings.quality),
-  density: densityFor(tierFor(settings.quality)),
-  shadows: settings.quality !== 'lighter',
+  tier: governor.tier,
+  density: densityFor(governor.tier),
+  // The lightest tier only stops things casting shadows; the renderer's shadow map stays on.
+  shadows: governor.tier > 0,
 };
 
 const fields = new WorldFields();
@@ -141,11 +174,12 @@ let landTime = 0;
 let swapping: 'load' | 'reset' | null = null;
 /** Screenshot preview of the first minute (no land yet), until the next input. */
 let previewNoLand = false;
+/** The sea's real first-minute steps, put back when the preview ends. */
+let stepsBeforePreview: SeaSteps = { island: false, keep: false };
 
 const director = new WatchDirector();
 const awake = new ScreenAwake();
 const pacer = new FramePacer();
-const governor = new ResolutionGovernor(1, pixelCapFor(settings.quality));
 
 // ---------- the interface ----------
 
@@ -195,8 +229,15 @@ ui.setUndo(0);
 ui.setTrayFull(false);
 ui.sheets.setAbout(`Version ${GAME_VERSION} · built ${__BUILD_TIME__.slice(0, 16).replace('T', ' ')}`);
 
-function selectTool(t: ToolId, byPlayer: boolean): void {
-  if (!trayFull && t !== 'lava') return; // Lava alone until the first land cools
+/**
+ * Choose a tool. Lava alone is offered until the first land cools; `force` (the scripted
+ * __game hook only) brings out the full tray at once, so scripts can pick any tool on any sea.
+ */
+function selectTool(t: ToolId, byPlayer: boolean, force = false): void {
+  if (!trayFull && t !== 'lava') {
+    if (!force) return;
+    setTrayFull(true);
+  }
   if (byPlayer && started) ui.onboarding.toolChosen(t);
   if (byPlayer) lookHeldFrom = null;
   if (t === tool) return;
@@ -313,6 +354,7 @@ function wake(): boolean {
   if (previewNoLand) {
     previewNoLand = false;
     ui.setTrayFull(trayFull);
+    ui.setSea(stepsBeforePreview, ui.directHints);
   }
   if (!watching) return false;
   watching = false;
@@ -482,6 +524,9 @@ function onEngine(m: FromEngine): void {
       year = m.year;
       if (!ready) {
         ready = true;
+        // The engine starts with its clocks running: stop them at once, so a resumed sea's
+        // years and storms wait behind the start screen while shaders compile.
+        syncPause();
         void prepare(m.resumed, m.header);
       } else finishSwap(m.header);
       break;
@@ -566,6 +611,12 @@ function seaSteps(h: PageSaveHeader | undefined): SeaSteps {
   return { island: s?.island ?? firstLand, keep: s?.keep ?? firstLand };
 }
 
+/** Field-guide hints this sea has already sharpened to the direct line. */
+function seaHints(h: PageSaveHeader | undefined): readonly unknown[] {
+  const list = h?.ui?.hints;
+  return Array.isArray(list) ? list : [];
+}
+
 function setTrayFull(on: boolean): void {
   trayFull = on;
   landTime = 0;
@@ -576,13 +627,13 @@ function setTrayFull(on: boolean): void {
   }
 }
 
-/** Restore the page's part of a save: camera, sky clock, tool, first-minute steps. */
+/** Restore the page's part of a save: camera, sky clock, tool, first-minute steps, sharpened hints. */
 function applyHeader(h: PageSaveHeader): void {
   if (Array.isArray(h.camera) && h.camera.length >= 6) cam.state = h.camera;
   if (Number.isFinite(h.dayPhase) && h.dayPhase >= 0) daylight.setPhase(h.dayPhase % 1, Math.floor(h.dayPhase));
   const ui0 = h.ui ?? {};
   setTrayFull(ui0.trayFull === true || firstLand);
-  ui.setSea(seaSteps(h));
+  ui.setSea(seaSteps(h), seaHints(h));
   if (typeof ui0.size === 'number' && ui0.size >= 0 && ui0.size <= 2) setSize(ui0.size as BrushSize);
   if (typeof ui0.tool === 'string' && (TOOL_ORDER as readonly string[]).includes(ui0.tool)) selectTool(ui0.tool as ToolId, false);
 }
@@ -592,7 +643,7 @@ function header(): PageSaveHeader {
   return {
     camera: cam.state,
     dayPhase: daylight.day.day + daylight.day.phase,
-    ui: { steps: { ...ui.onboarding.sea }, trayFull, tool, size },
+    ui: { steps: { ...(previewNoLand ? stepsBeforePreview : ui.onboarding.sea) }, hints: ui.directHints, trayFull, tool, size },
   };
 }
 
@@ -607,7 +658,7 @@ async function prepare(resumed: boolean, h: PageSaveHeader | undefined): Promise
   if (h) applyHeader(h);
   else {
     setTrayFull(firstLand);
-    ui.setSea(seaSteps(undefined));
+    ui.setSea(seaSteps(undefined), []);
     if (firstLand) {
       cam.state = [40, 0, -20, 420, -0.6, 0.75];
       home();
@@ -643,9 +694,10 @@ function finishSwap(h: PageSaveHeader | undefined): void {
   if (h) applyHeader(h);
   else {
     setTrayFull(firstLand);
-    ui.setSea(seaSteps(undefined));
+    ui.setSea(seaSteps(undefined), []);
     if (was === 'reset') frameGlow(3);
   }
+  pauseSent = ''; // a replaced world starts with fresh clocks: tell it again whether to run
   syncPause();
   void autosave();
 }
@@ -655,7 +707,6 @@ function finishSwap(h: PageSaveHeader | undefined): void {
 let recovery: ArrayBuffer | null = null;
 
 async function boot(): Promise<void> {
-  resize();
   host = await startEngine(onEngine);
   let saves: Awaited<ReturnType<typeof loadAutosaves>> = [];
   try {
@@ -706,14 +757,22 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('pagehide', () => void autosave());
 
+/** The detail tier systems draw at (the governor may hold it below the setting's for a while). */
+function applyTier(): void {
+  quality.tier = governor.tier;
+  quality.density = densityFor(quality.tier);
+  quality.shadows = quality.tier > 0;
+}
+
+/** The graphics setting changed (or the browser checks asked for it as set): start from its own level. */
 function applyQuality(): void {
   quality.setting = settings.quality;
-  quality.tier = tierFor(settings.quality);
-  quality.density = densityFor(quality.tier);
-  quality.shadows = settings.quality !== 'lighter';
+  governor.setTier(tierFor(settings.quality), settings.quality === 'auto');
+  applyTier();
   governor.cap = pixelCapFor(settings.quality);
   governor.reset(governor.cap);
-  resize();
+  resizeWanted = true;
+  drawNow = true;
 }
 
 function settingChanged(key: keyof Settings): void {
@@ -750,7 +809,23 @@ function settingChanged(key: keyof Settings): void {
   }
 }
 
+/**
+ * The canvas needs a new size or sharpness (window, graphics setting or governor). Resizing
+ * clears what the canvas shows, so it never happens on its own: the frame loop does it right
+ * before it draws. A new window size or setting also draws at the very next animation frame,
+ * whatever the frame cap says (`drawNow`), so the new layout shows at once.
+ */
+let resizeWanted = true;
+let drawNow = true;
+window.addEventListener('resize', () => {
+  resizeWanted = true;
+  drawNow = true;
+});
+/** Browser checks only: hold the graphics at the setting's own level (no automatic changes). */
+let qualityHeld = false;
+
 function resize(): void {
+  resizeWanted = false;
   viewW = window.innerWidth;
   viewH = window.innerHeight;
   renderer.setPixelRatio(governor.ratio);
@@ -758,7 +833,6 @@ function resize(): void {
   camera.aspect = viewW / Math.max(1, viewH);
   camera.updateProjectionMatrix();
 }
-window.addEventListener('resize', resize);
 
 // ---------- saving ----------
 
@@ -821,7 +895,10 @@ function newSea(): void {
   if (!host) return;
   swapping = 'reset';
   ui.setBusy('A new sea…');
-  ui.setSea({ island: false, keep: false });
+  // The old sea's land and tray go now, so nothing about it shows while the new one arrives.
+  firstLand = false;
+  setTrayFull(false);
+  ui.setSea({ island: false, keep: false }, []);
   send({ t: 'reset', seed: newSeed() });
 }
 
@@ -858,6 +935,7 @@ async function runChecks(): Promise<void> {
   const info = gl.getExtension('WEBGL_debug_renderer_info');
   const gpu = String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
   const storage = await testStorage();
+  const wakeLock = await ScreenAwake.probe();
   const f0 = frames;
   const t0 = performance.now();
   await sleep(3500);
@@ -869,9 +947,11 @@ async function runChecks(): Promise<void> {
     storage,
     fps,
     fpsTarget: isTouch ? 45 : 60,
-    wakeLock: ScreenAwake.available,
+    wakeLock,
     pixelRatio: renderer.getPixelRatio(),
     screen: `${viewW}×${viewH} at ${dpr.toFixed(2)}×`,
+    tier: governor.tier,
+    chosenTier: governor.chosenTier,
   });
   const m = await engineAnswer;
   if (m && m.t === 'checks') rows.push(...engineCheckRows(m.results));
@@ -947,8 +1027,10 @@ function frame(now: number): void {
     pacer.cap = cap;
     governor.reset(); // a new target: judge afresh
   }
-  const dt = pacer.tick(raw);
+  const dt = pacer.tick(raw, drawNow);
   if (dt < 0) return;
+  drawNow = false;
+  if (resizeWanted) resize(); // the canvas is cleared here and drawn again below, in this same frame
   time += dt;
   frames++;
   host?.tick(dt);
@@ -991,7 +1073,9 @@ function frame(now: number): void {
   }
   vibrate(dt);
 
-  onboardingState.started = started;
+  // While a load or a new sea replaces the world, the first-minute lines hold still (the land
+  // and tray they would read belong to the sea that is leaving).
+  onboardingState.started = started && !swapping;
   onboardingState.firstLand = firstLand && !previewNoLand;
   onboardingState.trayFull = trayFull && !previewNoLand;
   onboardingState.cameraMoved = cam.userMoves > 0;
@@ -1017,16 +1101,13 @@ function frame(now: number): void {
     savePhoto();
   }
 
-  // Sharpness follows smoothness (only while playing in the open view).
-  if (started && !ui.journalOpen && document.visibilityState === 'visible') {
+  // Sharpness and detail follow smoothness (only while playing in the open view). A new
+  // sharpness waits for the start of the next drawn frame, so the canvas is never left cleared.
+  if (started && !qualityHeld && !ui.journalOpen && document.visibilityState === 'visible') {
     const target = pacer.cap > 0 ? pacer.cap : 1 / 60;
     const change = governor.frame(pacer.interval, target);
-    if (change === 'softer' || change === 'sharper') resize();
-    else if (change === 'lighter' && settings.quality === 'auto' && quality.tier > 0) {
-      quality.tier = (quality.tier - 1) as 0 | 1;
-      quality.density = densityFor(quality.tier);
-      if (quality.tier === 0) quality.shadows = false;
-    }
+    if (change === 'softer' || change === 'sharper') resizeWanted = true;
+    else if (change === 'lighter' || change === 'richer') applyTier();
   }
 }
 
@@ -1099,7 +1180,8 @@ function heightHash(): number {
   fields,
   renderer,
   scene,
-  selectTool: (t: ToolId) => selectTool(t, false),
+  /** Choose a tool; any tool works on any sea (the full tray comes out if it hadn't yet). */
+  selectTool: (t: ToolId) => selectTool(t, false, true),
   send: (m: ToEngine) => send(m),
   /** The last message of a kind the page sent to the engine (e.g. 'settings', 'pause'). */
   lastSent: (t: ToEngine['t']) => lastSent.get(t) ?? null,
@@ -1108,15 +1190,38 @@ function heightHash(): number {
     const v = new THREE.Vector3(x, y, z).project(camera);
     return { x: ((v.x + 1) / 2) * viewW, y: ((1 - v.y) / 2) * viewH };
   },
-  /** Triangles and draw calls in the last frame (shadow pass included), and the current sharpness. */
-  stats: () => ({
-    triangles: renderer.info.render.triangles,
-    calls: renderer.info.render.calls,
-    programs: renderer.info.programs?.length ?? 0,
-    pixelRatio: renderer.getPixelRatio(),
-    tier: quality.tier,
-    frames,
-  }),
+  /**
+   * The last frame's triangles and draw calls (both passes together, and the main and shadow
+   * passes on their own), the current sharpness and detail tier, and whether things cast shadows.
+   */
+  stats: () => {
+    const r = renderer.info.render;
+    return {
+      triangles: r.triangles,
+      calls: r.calls,
+      mainTriangles: r.triangles - shadowPass.frameTriangles,
+      mainCalls: r.calls - shadowPass.frameCalls,
+      shadowTriangles: shadowPass.latestTriangles,
+      shadowCalls: shadowPass.latestCalls,
+      programs: renderer.info.programs?.length ?? 0,
+      pixelRatio: renderer.getPixelRatio(),
+      setting: quality.setting,
+      tier: quality.tier,
+      shadows: quality.shadows,
+      held: qualityHeld,
+      frames,
+    };
+  },
+  /**
+   * Hold the graphics at the setting's own detail tier, with no automatic steps down (or let
+   * them run again). The browser checks measure budgets this way: software drawing is so slow
+   * that the governor would otherwise fall to the lightest tier and test that instead.
+   */
+  holdQuality: (on: boolean) => {
+    qualityHeld = on;
+    applyQuality();
+    return { tier: quality.tier, shadows: quality.shadows };
+  },
   debug,
   start: () => startPlaying(),
   /** Leave watch mode and reset the idle clock (scripts call this before acting). */
@@ -1137,8 +1242,9 @@ function heightHash(): number {
   setDayPhase: (p: number) => daylight.setPhase(p, daylight.day.day),
   /** Show the first minute ("Touch the glow.") over the current sea until the next input, for screenshots. */
   previewFirstMinute: () => {
+    if (!previewNoLand) stepsBeforePreview = { ...ui.onboarding.sea };
     previewNoLand = true;
-    ui.setSea({ island: false, keep: false });
+    ui.setSea({ island: false, keep: false }, ui.directHints);
     ui.setTrayFull(false);
     frameGlow(1.5);
   },

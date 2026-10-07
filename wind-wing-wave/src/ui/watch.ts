@@ -100,6 +100,9 @@ export class WatchDirector {
   }
 }
 
+/** Whether keeping the screen on works here: it did, the browser said no, or it can't at all. */
+export type WakeProbe = 'granted' | 'refused' | 'unavailable';
+
 /** Keeps the screen on while watching (where the browser allows it). */
 export class ScreenAwake {
   private sentinel: WakeLockSentinel | null = null;
@@ -114,6 +117,26 @@ export class ScreenAwake {
 
   static get available(): boolean {
     return typeof navigator !== 'undefined' && 'wakeLock' in navigator;
+  }
+
+  /**
+   * For the checks page: does keeping the screen on actually work here? The feature can exist
+   * and still be refused (battery saver, a page opened from a file, browser policy), so this
+   * asks for it once and lets go at once.
+   */
+  static async probe(): Promise<WakeProbe> {
+    if (!ScreenAwake.available) return 'unavailable';
+    return Promise.race([
+      navigator.wakeLock.request('screen').then(
+        (s) => {
+          void s.release().catch(() => undefined);
+          return 'granted' as const;
+        },
+        () => 'refused' as const,
+      ),
+      // No answer at all counts as a no (a late yes still lets go of the lock above).
+      new Promise<'refused'>((resolve) => setTimeout(() => resolve('refused'), 3000)),
+    ]);
   }
 
   set(on: boolean): void {

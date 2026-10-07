@@ -92,14 +92,19 @@ export class Onboarding {
     this.queue.push(line);
   }
 
+  /**
+   * One frame. `started` is false behind the start screen and while a load or a new sea
+   * replaces the world: then the sea's steps hold still, because the land and the tray the
+   * state describes may belong to the sea that is leaving.
+   */
   update(dt: number, s: OnboardingState, out: OnboardingView): OnboardingView {
-    if (s.firstLand && !this.sea.island) {
+    if (s.started && s.firstLand && !this.sea.island) {
       this.sea.island = true;
-      if (s.started) this.queue.unshift(ISLAND_LINE);
+      this.queue.unshift(ISLAND_LINE);
     }
-    if (s.trayFull && this.sea.island && !this.sea.keep) {
+    if (s.started && s.trayFull && this.sea.island && !this.sea.keep) {
       this.sea.keep = true;
-      if (s.started) this.queue.push(KEEP_LINE);
+      this.queue.push(KEEP_LINE);
     }
 
     const glow = s.started && !s.firstLand;

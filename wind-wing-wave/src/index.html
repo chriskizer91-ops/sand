@@ -140,15 +140,16 @@ body.watching .card-slip.in { opacity: .82; }
 .look-here { font-size: 12.5px; color: var(--leaf); margin-top: 5px !important; font-weight: 600; }
 
 .toast { position: fixed; z-index: 40; left: 50%; bottom: calc(96px + var(--safe-b)); transform: translate(-50%, 8px); display: flex; align-items: center; gap: 12px;
-  max-width: min(92vw, 460px); padding: 10px 16px; border-radius: 20px; background: var(--paper-solid); box-shadow: var(--shadow); font-size: 14.5px; font-weight: 600;
+  width: max-content; max-width: min(92vw, 460px); padding: 10px 16px; border-radius: 20px; background: var(--paper-solid); box-shadow: var(--shadow); font-size: 14.5px; font-weight: 600;
   opacity: 0; pointer-events: none !important; transition: opacity .35s, transform .35s; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .toast.show.has-action { pointer-events: auto !important; }
 .toast-btn { flex: none; padding: 8px 14px; border-radius: 14px; background: var(--sea); color: #fff; font-weight: 700; font-size: 14px; }
 
-/* Watch mode: everything fades except the cards; a touch brings it back. */
-body.watching #hud > .corner, body.watching #hud > .tray, body.watching #hud > .coach, body.watching #hud > .hands-hint, body.watching > .toast {
+/* Watch mode: everything fades except the cards and notes with a button (shown softly); a touch brings it back. */
+body.watching #hud > .corner, body.watching #hud > .tray, body.watching #hud > .coach, body.watching #hud > .hands-hint, body.watching > .toast:not(.has-action) {
   opacity: 0 !important; pointer-events: none !important; }
+body.watching > .toast.show.has-action { opacity: .82; bottom: calc(24px + var(--safe-b)); }
 body.flash::after { content: ""; position: fixed; inset: 0; background: #fff; animation: flash .4s ease-out forwards; pointer-events: none; z-index: 50; }
 @keyframes flash { from { opacity: .7; } to { opacity: 0; } }
 body.busy #view { cursor: progress; }

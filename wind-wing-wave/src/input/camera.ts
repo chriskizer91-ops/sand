@@ -41,6 +41,8 @@ const HARD_MARGIN = 320;
 const FOLLOW_RATE = 14;
 /** Sight-line samples between the target and the camera. */
 const SIGHT_SAMPLES = 24;
+/** Ground this close to the target (m, across the ground) never lifts the camera. */
+const SIGHT_SKIP = 3;
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -325,16 +327,21 @@ export class OrbitCamera implements CamState {
     const cp = Math.cos(this.pitch);
     const p = this.pos.set(t.x + Math.sin(this.yaw) * cp * this.dist, t.y + Math.sin(this.pitch) * this.dist, t.z + Math.cos(this.yaw) * cp * this.dist);
 
-    // Sight-line lift: the lowest camera height from which every sample of ground between
-    // the camera and the target sits under the line of sight.
+    // Sight-line lift: the lowest camera height from which the ground between the camera and
+    // the target stays under the line of sight. The clearance grows from nothing at the target
+    // (which sits on the ground by definition) to `margin` at the camera, so over flat ground a
+    // close-up keeps its low, cinematic angle, while a hill in between still lifts the view.
+    // Samples right next to the target are skipped: there the ground is the target's own
+    // ground, and the target's eased height can lag it for a moment.
     const margin = 0.6 + this.dist * 0.01;
+    const reach = Math.hypot(p.x - t.x, p.z - t.z);
     let need = Math.max(this.ground(p.x, p.z), SEA_LEVEL) + 1.2 + this.dist * 0.02;
     for (let i = 1; i <= SIGHT_SAMPLES; i++) {
       const s = i / (SIGHT_SAMPLES + 1);
+      if (s * reach < SIGHT_SKIP) continue;
       const gx = t.x + (p.x - t.x) * s;
       const gz = t.z + (p.z - t.z) * s;
-      const h = Math.max(this.ground(gx, gz), SEA_LEVEL) + margin;
-      const req = t.y + (h - t.y) / s;
+      const req = t.y + (Math.max(this.ground(gx, gz), SEA_LEVEL) - t.y) / s + margin;
       if (req > need) need = req;
     }
     const want = Math.max(0, need - p.y);

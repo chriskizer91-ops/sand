@@ -70,6 +70,9 @@ export class Ui {
   private journalBtn: HTMLButtonElement;
   private toastEl: HTMLDivElement;
   private toastTimer = 0;
+  /** Seconds a note with a button gets again when the player stops watching (0 = none waiting). */
+  private toastHeld = 0;
+  private watching = false;
   readonly tray: Tray;
   readonly cards: Cards;
   readonly pins: WorldPins;
@@ -328,13 +331,21 @@ export class Ui {
 
   // ---------- messages ----------
 
+  /**
+   * A short note above the tray. A note with a button (keep a copy, save to a file) matters:
+   * in watch mode it still shows, softly, and if its time runs out while the player is only
+   * watching it waits for them and gets its full time again when they come back.
+   */
   toast(words: string, seconds = 2.6, action?: { label: string; run: () => void }): void {
     clearTimeout(this.toastTimer);
+    this.toastHeld = 0;
     this.toastEl.textContent = words;
     if (action) {
       const b = text('button', 'toast-btn', action.label);
       b.type = 'button';
       b.addEventListener('click', () => {
+        clearTimeout(this.toastTimer);
+        this.toastHeld = 0;
         this.toastEl.classList.remove('show');
         action.run();
       });
@@ -342,7 +353,12 @@ export class Ui {
     }
     this.toastEl.classList.toggle('show', !!words && seconds > 0);
     this.toastEl.classList.toggle('has-action', !!action);
-    if (words && seconds > 0) this.toastTimer = window.setTimeout(() => this.toastEl.classList.remove('show'), seconds * 1000);
+    if (words && seconds > 0) this.toastTimer = window.setTimeout(() => this.toastEnd(!!action, seconds), seconds * 1000);
+  }
+
+  private toastEnd(hasAction: boolean, seconds: number): void {
+    if (hasAction && this.watching) this.toastHeld = seconds;
+    else this.toastEl.classList.remove('show');
   }
 
   /** A new Age began: a gentle note to keep a copy (on screen once, and in the journal until saved). */
@@ -357,13 +373,27 @@ export class Ui {
   }
 
   setWatching(on: boolean): void {
+    this.watching = on;
     document.body.classList.toggle('watching', on);
     if (on) this.pins.closeLook();
+    else if (this.toastHeld > 0) {
+      // A note with a button ran out while the player was only watching: its full time again.
+      const seconds = this.toastHeld;
+      this.toastHeld = 0;
+      this.toastTimer = window.setTimeout(() => this.toastEnd(true, seconds), seconds * 1000);
+    }
   }
 
-  /** First-minute steps for the sea now in play. */
-  setSea(steps: SeaSteps): void {
+  /** The sea now in play: its first-minute steps and the field-guide hints it has sharpened. */
+  setSea(steps: SeaSteps, directHints: readonly unknown[]): void {
     this.onboarding.setSea(steps);
+    this.journal.guide.hints.restore(directHints);
+    this.journal.touch();
+  }
+
+  /** Species whose field-guide hints have reached the direct line in this sea (for the save). */
+  get directHints(): number[] {
+    return this.journal.guide.hints.ids;
   }
 
   // ---------- per frame ----------

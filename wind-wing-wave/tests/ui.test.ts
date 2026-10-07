@@ -10,7 +10,7 @@ import { WorldFields } from '../src/render/fields';
 import { CardQueue, type CardEvent, type CardItem } from '../src/ui/cards';
 import { chartToWorld, paintChart, worldToChart } from '../src/ui/chart';
 import { pageCheckRows } from '../src/ui/checks';
-import { DIRECT_HINT_MINUTES, hintLevel, placeYears, speciesRecords } from '../src/ui/guide';
+import { DIRECT_HINT_MINUTES, HintMemo, hintLevel, placeYears, speciesRecords } from '../src/ui/guide';
 import { firstYears, storyEntries } from '../src/ui/journal';
 import { GLOW_LINE, HANDS_AFTER, ISLAND_LINE, JOURNAL_LINE, KEEP_LINE, Onboarding, type OnboardingView } from '../src/ui/onboarding';
 import { FramePacer, ResolutionGovernor } from '../src/ui/pacing';
@@ -105,6 +105,19 @@ describe('field guide', () => {
     expect(hintLevel(recs.get(7), 120 + DIRECT_HINT_MINUTES * 60 * yps, yps)).toBe(2);
   });
 
+  it('a sharpened hint never blurs again when the pace changes, and the memory survives a save', () => {
+    const memo = new HintMemo();
+    const year = 120 + DIRECT_HINT_MINUTES * 60 * PACE_YPS.normal;
+    expect(memo.level(7, recs.get(7), year, PACE_YPS.normal)).toBe(2);
+    // Brisk counts the same years as fewer minutes, but the direct line stays.
+    expect(hintLevel(recs.get(7), year, PACE_YPS.brisk)).toBe(1);
+    expect(memo.level(7, recs.get(7), year, PACE_YPS.brisk)).toBe(2);
+    const loaded = new HintMemo();
+    loaded.restore([...memo.ids, 'junk', -1, 2.5]);
+    expect(loaded.ids).toEqual([7]);
+    expect(loaded.level(7, recs.get(7), year, PACE_YPS.brisk)).toBe(2);
+  });
+
   it('places remember the year they were first recognised', () => {
     const p = placeYears(entries);
     expect(p.get('beach')).toBe(60);
@@ -170,6 +183,18 @@ describe('the first minute', () => {
     const o = new Onboarding(new Set(), () => undefined);
     o.setSea({ island: true, keep: true });
     expect(step(o, 10, { started: true, firstLand: true, trayFull: true, cameraMoved: true }).lines).toEqual([]);
+  });
+
+  it('while a new sea replaces the old one, the old land never shows "Your island."', () => {
+    const o = new Onboarding(new Set(), () => undefined);
+    o.setSea({ island: true, keep: true });
+    // "Begin a new sea": the steps reset while the old sea's land is still on screen.
+    o.setSea({ island: false, keep: false });
+    expect(step(o, 3, { started: false, firstLand: true, trayFull: true, cameraMoved: true }).lines).toEqual([]);
+    expect(o.sea).toEqual({ island: false, keep: false });
+    // The new sea arrives without land: the glow line, and "Your island." only for its own first land.
+    expect(step(o, 3, { started: true, firstLand: false, trayFull: false, cameraMoved: true }).lines).toEqual([GLOW_LINE]);
+    expect(step(o, 4, { started: true, firstLand: true, trayFull: false, cameraMoved: true }).lines).toEqual([ISLAND_LINE]);
   });
 
   it('one line per tool and one for the journal, the first time only, remembered across seas', () => {
@@ -244,16 +269,83 @@ describe('frame pacing and sharpness', () => {
     expect(p.tick(1 / 120)).toBeCloseTo(1 / 120);
   });
 
-  it('softens when frames run long, then asks for a lighter tier at the floor', () => {
-    const g = new ResolutionGovernor(1, 1.75);
-    const changes: string[] = [];
-    for (let i = 0; i < 1000; i++) {
-      const c = g.frame(0.04, 1 / 45);
-      if (c) changes.push(c);
+  /** Feed `seconds` of frames at `interval`; returns each change with the time it happened. */
+  const feed = (g: ResolutionGovernor, seconds: number, interval: number, target = 1 / 45): { c: string; t: number }[] => {
+    const out: { c: string; t: number }[] = [];
+    for (let t = 0; t < seconds; t += interval) {
+      const c = g.frame(interval, target);
+      if (c) out.push({ c, t });
     }
+    return out;
+  };
+
+  it('softens when frames run long, then lowers the detail only after a sustained strain', () => {
+    const g = new ResolutionGovernor(1, 1.75);
+    g.setTier(2, true);
+    const changes = feed(g, 120, 0.04);
     expect(g.ratio).toBe(1);
-    expect(changes[0]).toBe('softer');
-    expect(changes).toContain('lighter');
+    expect(changes[0].c).toBe('softer');
+    const floorAt = changes.filter((x) => x.c === 'softer').pop()!.t;
+    const lighter = changes.filter((x) => x.c === 'lighter');
+    expect(lighter.length).toBe(2);
+    expect(g.tier).toBe(0);
+    // The first step waits for several slow seconds at the lowest sharpness...
+    expect(lighter[0].t - floorAt).toBeGreaterThan(5.9);
+    // ...and the step to the lightest detail (no shadows) waits much longer.
+    expect(lighter[1].t - lighter[0].t).toBeGreaterThan(19.9);
+  });
+
+  it('a short heavy moment never lowers the detail', () => {
+    const g = new ResolutionGovernor(1, 1.75);
+    g.setTier(1, true);
+    g.reset(1);
+    const changes = [...feed(g, 5, 0.04), ...feed(g, 60, 1 / 45), ...feed(g, 5, 0.04)];
+    expect(changes.map((x) => x.c)).not.toContain('lighter');
+    expect(g.tier).toBe(1);
+  });
+
+  it('brings the detail back after a long good stretch, and waits longer when that fails', () => {
+    const g = new ResolutionGovernor(1, 1.75);
+    g.setTier(2, true);
+    feed(g, 25, 0.04);
+    expect(g.tier).toBe(1);
+    /** Smooth frames until the detail comes back; returns how long that took. */
+    const untilRicher = (max: number): number => {
+      for (let t = 0; t < max; t += 1 / 45) {
+        const c = g.frame(1 / 45, 1 / 45);
+        expect(c).not.toBe('sharper'); // detail comes back before any sharpening
+        if (c === 'richer') return t;
+      }
+      return Infinity;
+    };
+    // Smooth again: the detail returns after a long good stretch.
+    const first = untilRicher(200);
+    expect(first).toBeGreaterThan(30);
+    expect(first).toBeLessThan(60);
+    expect(g.tier).toBe(2);
+    // The richer detail is too heavy: it steps down again soon after...
+    expect(feed(g, 25, 0.04).map((x) => x.c)).toContain('lighter');
+    expect(g.tier).toBe(1);
+    // ...and the next try waits about twice as long.
+    expect(untilRicher(400)).toBeGreaterThan(first * 1.7);
+    expect(g.tier).toBe(2);
+  });
+
+  it('"lighter" and "richer" settings are the player\'s choice: the detail never changes', () => {
+    const g = new ResolutionGovernor(1, 2);
+    g.setTier(2, false);
+    const changes = feed(g, 120, 0.06);
+    expect(changes.map((x) => x.c)).not.toContain('lighter');
+    expect(g.tier).toBe(2);
+    expect(g.chosenTier).toBe(2);
+  });
+
+  it('a forced frame draws at once (a new window size shows straight away)', () => {
+    const p = new FramePacer();
+    p.cap = 1 / 30;
+    expect(p.tick(1 / 30)).toBeGreaterThan(0);
+    expect(p.tick(1 / 90)).toBe(-1);
+    expect(p.tick(1 / 90, true)).toBeCloseTo(2 / 90);
   });
 
   it('sharpens again after a good stretch, but backs off when that keeps failing', () => {
@@ -314,23 +406,40 @@ describe('chart', () => {
 });
 
 describe('checks page', () => {
+  const facts = {
+    webgl2: true,
+    gpu: 'Mali-G710',
+    engine: 'page' as const,
+    storage: { where: 'backup' as const, ms: 40, bytes: 1 << 20 },
+    fps: 44.6,
+    fpsTarget: 45,
+    wakeLock: 'refused' as const,
+    pixelRatio: 1.5,
+    screen: '412×915 at 2.63×',
+    tier: 1 as const,
+    chosenTier: 1 as const,
+  };
+
   it('reports in plain words, with information rows that neither pass nor fail', () => {
-    const rows = pageCheckRows({
-      webgl2: true,
-      gpu: 'Mali-G710',
-      engine: 'page',
-      storage: { where: 'backup', ms: 40, bytes: 1 << 20 },
-      fps: 44.6,
-      fpsTarget: 45,
-      wakeLock: false,
-      pixelRatio: 1.5,
-      screen: '412×915 at 2.63×',
-    });
+    const rows = pageCheckRows(facts);
     expect(rows.find((r) => r.label.includes('3D'))!.pass).toBe(true);
     expect(rows.find((r) => r.label.includes('background thread'))!.pass).toBeNull();
     expect(rows.find((r) => r.label.includes('Saving'))!.detail).toMatch(/backup/);
     expect(rows.find((r) => r.label.includes('Smooth'))!.detail).toMatch(/About 45 frames a second/);
-    expect(rows.find((r) => r.label.includes('screen can stay on'))!.pass).toBeNull();
+    expect(rows.find((r) => r.label.includes('Detail'))!.detail).toBe('Standard, as the Graphics setting asks.');
+  });
+
+  it('says whether the screen really can stay on: granted, refused, or not there at all', () => {
+    const wake = (w: 'granted' | 'refused' | 'unavailable') => pageCheckRows({ ...facts, wakeLock: w }).find((r) => r.label.includes('screen can stay on'))!;
+    expect(wake('granted').detail).toMatch(/^Yes/);
+    expect(wake('refused').detail).toMatch(/said no/);
+    expect(wake('unavailable').detail).toMatch(/Not in this browser/);
+    expect(wake('refused').pass).toBeNull();
+  });
+
+  it('says plainly when the detail was lowered to keep things smooth', () => {
+    const row = pageCheckRows({ ...facts, tier: 0, chosenTier: 1 }).find((r) => r.label.includes('Detail'))!;
+    expect(row.detail).toMatch(/^Light for now: lowered from standard/);
   });
 });
 

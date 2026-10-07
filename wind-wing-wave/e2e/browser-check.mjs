@@ -2,7 +2,9 @@
 // a Pixel-sized phone (412x915, touch, DPR 2.625), plays a little, and checks what the player
 // touches: starting, pouring, camera gestures that must never edit the land, every tool, the
 // journal (and that it pauses time), cards, Look, settings, photo, save and load, watch mode,
-// the checks page, page errors, and the triangle and draw-call budgets.
+// the checks page, low close-ups staying low, resizing never showing an empty screen, page
+// errors, and the triangle and draw-call budgets (main and shadow pass on their own, at the
+// detail tier the real laptop and phone draw).
 //   node e2e/browser-check.mjs [--html dist/index.html]
 // Headless Chromium draws with software (SwiftShader): frame rates mean nothing here and are
 // never asserted. Screenshots and a JSON report go to e2e/output/.
@@ -16,9 +18,9 @@ const html = htmlArg >= 0 ? args[htmlArg + 1] : undefined;
 const out = join(root, 'e2e/output');
 mkdirSync(out, { recursive: true });
 
-// Budgets (docs/ARCHITECTURE.md §7): main pass plus shadow pass, as three.js counts them per frame.
-const BUDGET_TRIANGLES = 350000 + 100000;
-const BUDGET_CALLS = 80 + 20;
+// Budgets (docs/ARCHITECTURE.md §7), each pass on its own: the page measures the shadow pass
+// around three.js's shadow render, and the main pass is the rest of the frame.
+const BUDGET = { mainTriangles: 350000, mainCalls: 80, shadowTriangles: 100000, shadowCalls: 20 };
 
 const report = { steps: [], pass: true };
 function step(name, ok, detail = '') {
@@ -57,13 +59,35 @@ async function settle(page) {
   return false;
 }
 
-async function budgets(page, label, poses) {
+/**
+ * Triangle and draw-call budgets at a few camera poses, measured at the detail the real device
+ * draws (laptop: tier 2, phone: tier 1, both with shadows). Software drawing here is so slow
+ * that the page's automatic governor would otherwise fall to the lightest tier, with no
+ * shadows, and the check would measure that instead; so the graphics are held as set.
+ */
+async function budgets(page, label, tier, poses) {
+  const held = await game(page, () => window.__game.holdQuality(true));
+  step(`${label}: budgets are measured at the real detail`, held.tier === tier && held.shadows, `tier ${held.tier} (expected ${tier}), shadows ${held.shadows ? 'on' : 'off'}`);
   for (const [name, pose] of poses) {
     await setCamera(page, ...pose);
-    await sleep(900);
+    await sleep(1200);
     const s = await game(page, () => window.__game.stats());
-    step(`${label}: budget at ${name}`, s.triangles <= BUDGET_TRIANGLES && s.calls <= BUDGET_CALLS, `${s.triangles} triangles (≤ ${BUDGET_TRIANGLES}), ${s.calls} draw calls (≤ ${BUDGET_CALLS})`);
+    const ok =
+      s.mainTriangles <= BUDGET.mainTriangles &&
+      s.mainCalls <= BUDGET.mainCalls &&
+      s.shadowTriangles <= BUDGET.shadowTriangles &&
+      s.shadowCalls <= BUDGET.shadowCalls &&
+      s.tier === tier &&
+      s.shadows;
+    step(
+      `${label}: budget at ${name}`,
+      ok,
+      `main pass ${s.mainTriangles} triangles, ${s.mainCalls} draws (≤ ${BUDGET.mainTriangles}, ${BUDGET.mainCalls}); ` +
+        `shadow pass ${s.shadowTriangles} triangles, ${s.shadowCalls} draws (≤ ${BUDGET.shadowTriangles}, ${BUDGET.shadowCalls}); ` +
+        `tier ${s.tier}, shadows ${s.shadows ? 'on' : 'off'}`,
+    );
   }
+  await game(page, () => window.__game.holdQuality(false));
 }
 
 const browser = await launch();
@@ -305,10 +329,25 @@ const browser = await launch();
     await page.click('.sheet-head button[aria-label="Close"]');
   });
 
-  await budgets(page, 'Laptop', [
+  await attempt('Laptop: a close-up on flat ground stays low', async () => {
+    const asked = 0.25;
+    await setCamera(page, -300, 255, 15, -1.2, asked);
+    await sleep(800);
+    const drawn = await game(page, () => {
+      const c = window.__game.camera;
+      const p = c.camera.position;
+      return Math.atan2(p.y - c.target.y, Math.hypot(p.x - c.target.x, p.z - c.target.z));
+    });
+    const deg = (r) => ((r * 180) / Math.PI).toFixed(1);
+    step('Laptop: a close-up on the flat cay stays low (never lifted into a top-down view)', Math.abs(drawn - asked) < 0.035, `asked for ${deg(asked)}°, drew ${deg(drawn)}°`);
+    await page.screenshot({ path: join(out, 'bc-laptop-low-cay.png') });
+  });
+
+  await budgets(page, 'Laptop', 2, [
     ['the whole zone', [-20, 40, 1600, -0.3, 1.25]],
     ['the volcano', [40, -20, 420, -0.6, 0.9]],
-    ['a low close-up', [60, -10, 40, 0.9, 0.3]],
+    ['a low close-up on the volcano', [60, -10, 40, 0.9, 0.3]],
+    ['a low close-up on the flat cay, facing the horizon', [-300, 255, 15, -1.2, 0.25]],
     ['the cay', [-260, 250, 150, -1.2, 0.6]],
   ]);
   step('Laptop: no page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
@@ -419,10 +458,41 @@ const browser = await launch();
     step('Phone: the journal opens and closes', !(await game(page, () => window.__game.journalOpen)));
   });
 
-  await budgets(page, 'Phone', [
+  await budgets(page, 'Phone', 1, [
     ['the volcano', [40, -20, 420, -0.6, 0.9]],
-    ['a low close-up', [60, -10, 40, 0.9, 0.3]],
+    ['a low close-up on the volcano', [60, -10, 40, 0.9, 0.3]],
+    ['a low close-up on the flat cay, facing the horizon', [-300, 255, 15, -1.2, 0.25]],
   ]);
+
+  // Last on the phone, because it stops the game's frame loop: the frame cap often skips
+  // frames, and a canvas resized while no frame is drawn would show an empty screen. With the
+  // loop held still, a rotation-like window change and a sharpness change must leave the
+  // picture alone (the page resizes the canvas only right before it draws).
+  await attempt('Phone: resizing between frames never shows an empty screen', async () => {
+    await setCamera(page, 40, -20, 260, -0.6, 1.1);
+    await sleep(1200);
+    await game(page, () => {
+      const raf = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (cb) => raf(() => undefined);
+    });
+    await sleep(500);
+    await page.setViewportSize({ width: 412, height: 860 });
+    await game(page, () => window.__game.holdQuality(true));
+    await sleep(400);
+    const png = await page.screenshot({ path: join(out, 'bc-phone-resize-held.png') });
+    // How much of the middle of the screen is the bare page background, #bfe3f2 (an empty canvas)?
+    const bare = await game(page, async (b64) => {
+      const img = await createImageBitmap(await (await fetch('data:image/png;base64,' + b64)).blob());
+      const c = new OffscreenCanvas(img.width, img.height);
+      const g = c.getContext('2d');
+      g.drawImage(img, 0, 0);
+      const d = g.getImageData(0, Math.floor(img.height * 0.3), img.width, Math.floor(img.height * 0.4)).data;
+      let n = 0;
+      for (let p = 0; p < d.length; p += 4) if (Math.abs(d[p] - 191) < 4 && Math.abs(d[p + 1] - 227) < 4 && Math.abs(d[p + 2] - 242) < 4) n++;
+      return n / (d.length / 4);
+    }, png.toString('base64'));
+    step('Phone: resizing between frames never shows an empty screen', bare < 0.5, `${(bare * 100).toFixed(1)}% of the middle of the screen is bare background`);
+  });
   step('Phone: no page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
   await ctx.close();
 }

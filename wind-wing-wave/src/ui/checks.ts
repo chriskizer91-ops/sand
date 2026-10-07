@@ -1,12 +1,15 @@
 /**
  * "Run the checks on this device": the same land and life checks as `npm test` (run by the
  * engine), plus checks only the real device can answer: 3D graphics, the background thread,
- * saving, how smooth it runs, and whether the screen can stay awake. Everything is reported
+ * saving, how smooth it runs, whether the screen can stay awake (asked for for real, since a
+ * browser can have the feature and still say no), and the detail level. Everything is reported
  * in plain words so the owner can send a screenshot if something fails.
  */
 import type { CheckResult } from '../checks/registry';
 import type { StorageTest } from '../storage/storage';
 import { el, text } from './dom';
+import { capitalise } from './text';
+import type { WakeProbe } from './watch';
 
 export interface CheckRow {
   label: string;
@@ -25,10 +28,22 @@ export interface PageFacts {
   fps: number;
   /** The frame rate the game aims for on this device. */
   fpsTarget: number;
-  wakeLock: boolean;
+  /** What happened when the checks asked to keep the screen on. */
+  wakeLock: WakeProbe;
   pixelRatio: number;
   screen: string;
+  /** The detail tier drawn now, and the one the Graphics setting asks for (0 light .. 2 rich). */
+  tier: 0 | 1 | 2;
+  chosenTier: 0 | 1 | 2;
 }
+
+const TIER_WORDS = ['light', 'standard', 'rich'] as const;
+
+const WAKE_WORDS: Record<WakeProbe, string> = {
+  granted: 'Yes: the browser agreed to keep the screen on.',
+  refused: 'The browser said no just now (battery saver, or not allowed for a page opened this way). The screen may dim while you watch.',
+  unavailable: 'Not in this browser: the screen may dim while you watch.',
+};
 
 export function pageCheckRows(f: PageFacts): CheckRow[] {
   const mb = (f.storage.bytes / (1 << 20)).toFixed(1);
@@ -67,7 +82,15 @@ export function pageCheckRows(f: PageFacts): CheckRow[] {
     {
       label: 'The screen can stay on while you watch',
       pass: null,
-      detail: f.wakeLock ? 'Yes.' : 'Not in this browser: the screen may dim while you watch.',
+      detail: WAKE_WORDS[f.wakeLock],
+    },
+    {
+      label: 'Detail level',
+      pass: null,
+      detail:
+        f.tier === f.chosenTier
+          ? `${capitalise(TIER_WORDS[f.tier])}, as the Graphics setting asks.`
+          : `${capitalise(TIER_WORDS[f.tier])} for now: lowered from ${TIER_WORDS[f.chosenTier]} to keep things smooth. It goes back up by itself when the device keeps up.`,
     },
     {
       label: 'Graphics chip and screen',

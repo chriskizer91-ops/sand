@@ -32,6 +32,8 @@ const MOSS = [118, 158, 72];
 const GRASS = [150, 176, 88];
 const FOREST = [62, 106, 56];
 const LAVA = [236, 112, 52];
+/** Half the camera mark's size on the chart (px; see .chart-cam in index.html), plus a little air. */
+const MARK_R = 10;
 
 /**
  * Paint the zone into an RGBA buffer of NX x NZ pixels (one per column; north at the top,
@@ -152,6 +154,8 @@ export class ChartPage {
   private renaming = false;
   /** What the name labels were last built from (rebuilt only when islands change, so a tap is never lost). */
   private namesKey = '';
+  /** Each name label and where it sits on the chart (fractions across and down). */
+  private labels: { b: HTMLButtonElement; fx: number; fz: number }[] = [];
 
   constructor(
     private fields: WorldFields,
@@ -177,7 +181,8 @@ export class ChartPage {
     );
     const east = el('div', 'chart-east');
     east.textContent = 'Old islands, upwind →';
-    wrap.append(this.canvas, this.names, this.camMark, compass, east);
+    // The camera mark sits under the names, so a name (and its rename tap) is never covered.
+    wrap.append(this.canvas, this.camMark, this.names, compass, east);
     this.root.append(wrap, text('p', 'chart-caption', 'Tap the sea or an island to fly there. Tap a name to rename it.'));
   }
 
@@ -199,22 +204,42 @@ export class ChartPage {
     this.camMark.style.transform = `translate(-50%, -50%) rotate(${(-camYaw * 180) / Math.PI}deg)`;
     if (this.renaming) return;
     const key = islands.map((i) => `${i.id}:${i.name}:${Math.round(i.centroid[0])}:${Math.round(i.centroid[1])}`).join('|');
-    if (key === this.namesKey) return;
-    this.namesKey = key;
-    this.names.textContent = '';
-    for (const isl of islands) {
-      const p = worldToChart(isl.centroid[0], isl.centroid[1]);
-      const b = el('button', 'chart-name');
-      b.type = 'button';
-      b.textContent = isl.name;
-      b.title = 'Rename this island';
-      b.style.left = `${(p.fx * 100).toFixed(2)}%`;
-      b.style.top = `${(p.fz * 100).toFixed(2)}%`;
-      b.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.startRename(b, isl);
-      });
-      this.names.appendChild(b);
+    if (key !== this.namesKey) {
+      this.namesKey = key;
+      this.names.textContent = '';
+      this.labels.length = 0;
+      for (const isl of islands) {
+        const p = worldToChart(isl.centroid[0], isl.centroid[1]);
+        const b = el('button', 'chart-name');
+        b.type = 'button';
+        b.textContent = isl.name;
+        b.title = 'Rename this island';
+        b.style.left = `${(p.fx * 100).toFixed(2)}%`;
+        b.style.top = `${(p.fz * 100).toFixed(2)}%`;
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.startRename(b, isl);
+        });
+        this.names.appendChild(b);
+        this.labels.push({ b, fx: p.fx, fz: p.fz });
+      }
+    }
+    this.clearMark(cam.fx, cam.fz);
+  }
+
+  /**
+   * The camera usually looks at an island's middle, which is where its name sits: slide any
+   * name the mark would hide down just below it, so both can be seen.
+   */
+  private clearMark(fx: number, fz: number): void {
+    const size = this.canvas.clientWidth;
+    for (const { b, fx: lx, fz: lz } of this.labels) {
+      const dx = (lx - fx) * size;
+      const dy = (lz - fz) * size;
+      const halfW = b.offsetWidth / 2 + MARK_R;
+      const halfH = b.offsetHeight / 2 + MARK_R;
+      const shift = size > 0 && Math.abs(dx) < halfW && Math.abs(dy) < halfH ? halfH - dy + 2 : 0;
+      b.style.transform = shift ? `translate(-50%, calc(-50% + ${shift.toFixed(1)}px))` : '';
     }
   }
 

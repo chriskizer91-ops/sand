@@ -369,6 +369,39 @@ describe('camera', () => {
     expect(sightY).toBeGreaterThan(60);
   });
 
+  it('close-ups over flat ground stay low: the drawn tilt is the asked-for tilt', () => {
+    // Flat land at 20 m (a beach or a cooled lava plain) and flat sea: nothing is in the way,
+    // so the sight-line lift must leave the low, cinematic close-up alone.
+    for (const ground of [() => 20, () => -30]) {
+      const cam = makeCam(ground);
+      for (const dist of [8, 12, 15, 20, 30, 60]) {
+        for (const yaw of [0, 1.3, -2.4]) {
+          cam.state = [-300, 0, 255, dist, yaw, autoPitch(dist)];
+          for (let i = 0; i < 30; i++) cam.update(1 / 30);
+          const t = cam.target;
+          const pos = cam.camera.position;
+          const drawn = Math.atan2(pos.y - t.y, Math.hypot(pos.x - t.x, pos.z - t.z));
+          expect(Math.abs(drawn - autoPitch(dist))).toBeLessThan((1 * Math.PI) / 180);
+        }
+      }
+    }
+  });
+
+  it('a slope rising toward the camera lifts it just enough to see over the slope', () => {
+    // Ground rising 0.5 m per metre toward the south (+z), where a yaw-0 camera sits.
+    const cam = makeCam((_x, z) => Math.max(0, z * 0.5));
+    cam.state = [0, 0, 0, 20, 0, autoPitch(20)];
+    for (let i = 0; i < 30; i++) cam.update(1 / 30);
+    const pos = cam.camera.position;
+    // Every point of ground between the camera and the target is under the line of sight.
+    for (let s = 0.2; s < 1; s += 0.05) {
+      const z = pos.z * s;
+      expect(cam.target.y + (pos.y - cam.target.y) * s).toBeGreaterThan(z * 0.5);
+    }
+    // ...but not by much: the view still looks along the slope, not straight down.
+    expect(Math.atan2(pos.y - cam.target.y, pos.z)).toBeLessThan(Math.atan(0.5) + 0.25);
+  });
+
   it('never sits below the sea', () => {
     const cam = makeCam(() => -30);
     cam.state = [0, 0, 0, 8, 0, 0.06];
