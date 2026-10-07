@@ -4,7 +4,7 @@
 
 ## In plain words (for the owner)
 - **The game is designed, and all ten parts have been built by a team of AI builders working in parallel.** Each part was then checked by a separate reviewer and fixed.
-- **Status of the parts:** see the merge table below. Every part's work is saved on GitHub, either merged into the main working branch or on its own branch waiting to be merged.
+- **Status of the parts:** all ten are merged into the main working branch and saved on GitHub. The whole game typechecks and builds into one file (about 1.7 MB).
 - **Not done yet:**
   - **Joining.** All ten parts haven't been joined into one playable game yet. This is the next big step.
   - **Pacing.** How fast life arrives hasn't been tuned.
@@ -39,28 +39,68 @@ Each part was built on its own branch `wp/<name>`, then reviewed and fixed on th
 | terrain | `wp/terrain` | GPU-displaced CDLOD land and ground shader (rock, sand, soil, lava glow, cover), ponds | **Merged** |
 | water | `wp/water` | Ocean, waves (`seaHeight`), steam and pour effects, brush ring, code-made hands | **Merged** |
 | content | `wp/content` | About 90 real species with facts, hints and needs, plus every journal line and the Look sentences | **Merged** |
-| ecology | `wp/ecology` | The life simulation: climate, soil, succession, arrivals, animals, storms, places, journal, director | STATE_ECOLOGY |
-| plants | `wp/plants` | Code-made plant archetypes, vegetation instancing, pop and death animations | STATE_PLANTS |
-| animals | `wp/animals` | Code-made animal body plans, behaviours at real pace, arrival scenes | STATE_ANIMALS |
+| ecology | `wp/ecology` | The life simulation: climate, soil, succession, arrivals, animals, storms, places, journal, director | **Merged** |
+| plants | `wp/plants` | Code-made plant archetypes, vegetation instancing, pop and death animations | **Merged** |
+| animals | `wp/animals` | Code-made animal body plans, behaviours at real pace, arrival scenes | **Merged** |
 
 ## Known issues right now
-- **Three engine tests fail since the real geology was merged.** The hub's tests were written against the do-nothing geology stand-in:
-  - `tests/engine.test.ts` › "streams quiet ground changes": real sand now slides off the test spikes.
-  - `tests/engine.test.ts` › "empty strokes are not counted": real Hands now smooths ground.
-  - `checks/engineChecks.ts` › "If the life simulation fails…": the screen copy differs. This may be a real stream-flush issue while lava is still active; investigate.
-- **The tray** (shell) is wide while only Lava shows. This was seen before the shell's review fixes; check again.
+The last test run had **470 tests passing and 24 failing** (`npx vitest run`). All 24 are joining issues, expected at this stage; no part is known to be broken on its own.
+- **17 arrival-scene tests in `tests/fauna.test.ts`.** They look up the stand-in species keys (`anole`, `booby`, `palm`, …). The real catalogue (`content/species.ts`) uses different keys. Point the tests at real species, or have the tests build their own small catalogue.
+- **4 engine tests in `tests/engine.test.ts`.** They were written against the do-nothing geology and ecology stand-ins:
+  - "streams quiet ground changes": real sand now slides off the test spikes; set their sediment to 0.
+  - "empty strokes are not counted": real Hands now smooths ground; use a stroke at the zone edge, where tools fade to nothing.
+  - "pause…": check against the real ecology clock.
+  - one more.
+- **2 engine checks (`checks/engineChecks.ts`):**
+  - "A saved sea reloads exactly…": now includes real ecology state.
+  - "If the life simulation fails…": the screen copy differs. This may be a real stream-flush issue while lava is still active; investigate.
+- **The full list of failing tests:**
+```
+tests/checks.test.ts > checks > engine: A saved sea reloads exactly, with the same ground, life and years
+tests/checks.test.ts > checks > engine: If the life simulation fails, the ground keeps updating and undo still works exactly
+tests/engine.test.ts > engine messages > pause: the year clock stops when paused, physics stops when hidden, pace follows settings
+tests/engine.test.ts > engine messages > streams quiet ground changes to the page copy
+tests/engine.test.ts > undo records > through messages: empty strokes are not counted, and cancelling one keeps the stroke before it
+tests/fauna.test.ts > arrival scenes > a coconut that stays rolls up onto the beach; one that cannot stay washes back out
+tests/fauna.test.ts > arrival scenes > a far arrival plays when the camera glides there while its marker still glows
+tests/fauna.test.ts > arrival scenes > anole by raft (leaves) plays a calm scene that ends quietly
+tests/fauna.test.ts > arrival scenes > anole by raft (stays) plays a calm scene that ends quietly
+tests/fauna.test.ts > arrival scenes > arrival actors never pop: each starts out of sight or fades in, fades only gradually, and goes only unseen
+tests/fauna.test.ts > arrival scenes > booby by flight (leaves) plays a calm scene that ends quietly
+tests/fauna.test.ts > arrival scenes > booby by flight (stays) plays a calm scene that ends quietly
+tests/fauna.test.ts > arrival scenes > butterfly by flight (stays) plays a calm scene that ends quietly
+tests/fauna.test.ts > arrival scenes > ghostcrab by sea (stays) plays a calm scene that ends quietly
+tests/fauna.test.ts > arrival scenes > palm by sea (leaves) plays a calm scene that ends quietly
+tests/fauna.test.ts > arrival scenes > palm by sea (stays) plays a calm scene that ends quietly
+tests/fauna.test.ts > arrival scenes > turtle by sea (stays) plays a calm scene that ends quietly
+tests/fauna.test.ts > arrival scenes > vine by sea (stays) plays a calm scene that ends quietly
+tests/fauna.test.ts > arrival scenes > whale by flight (leaves) plays a calm scene that ends quietly
+tests/fauna.test.ts > fauna simulation > cliff day laptop: speeds stay within each species' range
+tests/fauna.test.ts > fauna simulation > forest day laptop: speeds stay within each species' range
+tests/fauna.test.ts > fauna simulation > night brings bats and fireflies; day birds are gone and seabirds roost
+tests/fauna.test.ts > fauna simulation > overview day laptop: speeds stay within each species' range
+tests/fauna.test.ts > fauna simulation > reef day laptop: speeds stay within each species' range
+```
 - **Contract requests are not yet applied.** See `docs/handoff-contract-requests.md`. The main ones:
-  - `PondInfo.island`;
-  - `PageSaveHeader.dayCount` (so the season and moon survive a reload);
-  - units for the steam strength and `sliding`;
-  - `FrameCtx.paused` (the sky clock keeps running while the journal is open);
-  - the sun light in `FrameCtx` (terrain shadow culling);
-  - ARCHITECTURE doc fixes: `lavaStats` shape, `reefSand` meaning, clouds living in `sky.ts`.
-- **The local-only `.claude/` folder** holds the builders' old git worktrees. It is ignored via `.git/info/exclude` and is safe to delete with `git worktree prune` after removing the folders. The `wp/*` branches hold everything that matters.
+  - Engine and ecology:
+    - `takeDirty` should return several rectangles or tiles, not one big box.
+    - The hub must route `markChanged` to `ecology.onTerrainChanged`, call `setClock` on focus, pause and settings, call `restore()` after loading the PatchGrid arrays, and follow undo with `undoMerge` and then `markChanged(Geom)`.
+    - New seas should start in the dry season, so the first storm lands at 15–20 minutes, not 33–40.
+  - Protocol and frame data:
+    - `PondInfo.island`;
+    - `PageSaveHeader.dayCount` (so the season and moon survive a reload);
+    - units for the steam strength and `sliding`;
+    - `FrameCtx.paused` (the sky clock keeps running while the journal is open);
+    - the sun light in `FrameCtx` (terrain shadow culling).
+  - Plants: a `takePops()` event so plant pops can reach the sound and watch mode.
+  - ARCHITECTURE doc fixes: the `lavaStats` shape, the `reefSand` meaning, clouds living in `sky.ts`, the plant instance layout and caps, and the ecology constructor's `species` argument.
+- **Pacing with the real catalogue is uneven.** The life builder reports 16 of 44 beats arriving early. Tune with `npm run simulate`, which takes `--catalogue real` (see `tools/simulate.ts`), and `RATE_SCALE` in `src/eco/arrivals.ts`.
+- **Phone speed has never been measured.** Each piece was built to the budgets in ARCHITECTURE §7, but the parts haven't been measured running together.
+- **The local-only `.claude/` folder** holds the builders' old git worktrees. It is ignored via `.git/info/exclude` and is safe to delete with `git worktree prune` after removing the folders. The `wp/*` branches hold everything that matters, and all of them are merged.
 
 ## Next steps (in order)
 1. **Join** (one agent, in the main checkout):
-   1. Merge any remaining `wp/*` branches.
+   1. All `wp/*` branches are already merged.
    2. Apply the sensible contract requests.
    3. Fix the failing tests.
    4. Make `npx tsc --noEmit`, `npx vitest run`, `node build.mjs` and `npm run browser-check` all pass.

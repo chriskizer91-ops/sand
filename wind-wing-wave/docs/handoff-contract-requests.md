@@ -50,6 +50,52 @@ Each section is one builder or fixer report (workflow run id :: first line). App
 7. WP-D catalogue: follow `SLOT_GUIDE` in animals.ts for the meaning of each of the three species colours per body plan.
 8. Integration: the debug hooks listed above exist on the groups named `fauna` and `vignettes`.
 
+## wf_43e4fea3-d34 :: All ten review findings are fixed on `wp/plants` (commit `7e86941`, on top of the interrupted WIP commit `4356974`). Typ
+.
+9. **Fixed 45/35/20 split of the triangle cap.** Fixed. It is now one shared pool filled nearest first, with 15% kept back for the mid level and 8% for the far canopy.
+10. **Every plant drawn double-sided.** Fixed. Closed shapes draw front faces only; thin leaves in those models get a reversed copy, and leafy plants stay double-sided.
+
+## Also fixed, beyond the findings
+- **Deaths drawn with the wrong model.** A dying plant now plays its death with the model it was drawn with. Before, deaths near the camera always used the full-detail model, so ferns that were never drawn appeared just to die, and a block that emptied could switch models mid-death.
+- **A plant surviving at zero cover.** A spot whose threshold was under 0.05 never hid, even at cover 0. Cover 0 now hides every plant in that layer.
+- **Camera inside a tree crown.** The screenshots showed the camera sitting inside fig crowns, filling the screen with flat green. Plants the camera is inside or right against now shrink out of the way; their shadows stay. A camera low over dense forest still sees a wall of canopy, which is a camera question for WP-H.
+
+## How I verified it
+- `npx tsc --noEmit`: passes.
+- `npx vitest run`: 71 passed, 2 files. New tests cover the death level, the fixed buffer order and the zero-cover hide; every other finding already had a test from the WIP.
+- `node build.mjs --out dist/plants.html`: builds, 680 KB.
+- Phone budgets, measured in the page for plants only:
+
+| View | Plant triangles | Plant draws | Shadow triangles | Shadow draws |
+|---|---|---|---|---|
+| Dense forest | 94k–96k | ≤14 | ≤36k | ≤6 |
+| Volcano at 120 m | 79k | 9 | 0 | 0 |
+| Volcano at 400 m | 42k | 3 | 0 | 0 |
+| Cay | 71k | 15 | 21k | 6 |
+
+Budgets: plants 120k of the main pass, shadow pass 100k triangles and 20 draws.
+
+## Screenshots
+All in `/home/user/sand/.claude/worktrees/wf_43e4fea3-d34-5/wind-wing-wave/e2e/output/`:
+- **Volcano:** `plants-volcano-400.png`, `plants-volcano-400-phone.png`, `plants-volcano-120.png`, `plants-volcano-120-phone.png`, `plants-forest-40.png`, `plants-forest-120.png`.
+- **Cloud forest near the peak:** `plants-cloudforest-40.png`, `plants-peak-60.png`.
+- **Cay and beach:** `plants-cay-90.png`, `plants-beach-40.png`.
+- **Pop sequence:** `plants-pop-a.png`, `plants-pop-b.png`, `plants-pop-c.png`. A pandanus trunk rises, the limbs carry an upright spear, then it opens like an umbrella.
+- **Storm:** `plants-storm-topple-a.png`, `plants-storm-topple-b.png`, `plants-storm-logs.png`. Trees topple across the wind and logs linger.
+
+## Known gaps and risks
+- Not tested: real Pixel frame time, how sway and cross-fades read in motion, and the dry-season look.
+- The screenshot helper uses a target height that pushes cameras into the slope on the high volcano flanks; I framed those views from the downhill side.
+- In the demo, the crater pond's level sits well below most of its pond patches, so no reeds show on its rim. That is the demo data, not the rule.
+
+## Contract requests
+- **ARCHITECTURE §6.6, pops:** record "Pops within 130 m (full detail, plus trees and shrubs at the simple level), at most 4/s", or tell me to set `POP_RANGE` back to 60.
+- **§6.6, instance data:** add the third per-instance `vec4` (five packed species colours). This is the builder's earlier request.
+- **§6.6, caps:** record how the caps are filled (one shared pool, nearest first, 15% kept for the mid level and 8% for the far canopy). Also record that cross-fades may briefly exceed the caps by up t
+
+## wf_43e4fea3-d34 :: WP-F2 review fixes: all 10 findings are fixed except that half of finding 7 was wrong (explained below). Committed as `3
+None needed. Optionally, `main.ts` could call `renderer.compileAsync(scene, camera)` at load as ARCHITECTURE §7 asks; that would build the lit and points programs even earlier.
+
 ## wf_80ff46a6-275 :: WP-D2 is done and committed on `wp/content` as 34c9d29, and the worktree is detached. Typecheck, tests and build all pas
 1. **`src/eco/needs.ts`, EcoNeeds:** add `food?: ('fruit' | 'nectar' | 'seeds' | 'insects')[]`, meaning "any species on the island that gives this". At the moment fruit doves, flying foxes and bees have to `requires` one particular plant (fig, naupaka).
 2. **`src/eco/needs.ts`, doc comments:** put the semantics from point 2 of the risks above into the field comments.
@@ -79,6 +125,61 @@ Each section is one builder or fixer report (workflow run id :: first line). App
      - hints (`params.hint`): `island-east`, `more-islands`, `sound`, or a buildable reason code
      - entry params: `params.first` = 1 on each species' first-arrival entry, `params.reason` on visits, `params.after = 'lost'` on returns after a loss, `params.name` on joined or lost islands
      - storm summary: `{fallen, great, raft, gentle}`
+
+## wf_80ff46a6-275 :: I checked all nine review findings against the real consumer code on the wp/ecology and wp/animals branches. All nine we
+). Typecheck, tests (47/47, up from 41) and the build all pass. The work is committed as 4f47332 on wp/content, and the branch is detached for the reviewer.
+
+## What I changed, by finding
+
+**1. Iguana told as "far off its course"** (`stories.ts`, `cameByRaft`). An animal whose roads include none of flight, storm or wind is now always told as rafted in, whatever road the ecology sends. The test now expects "raft of branches" for the iguana on road `storm`. A new check covers the night heron, which follows the ecology's road (storm or raft).
+
+**2. Storm road effectively empty** (`species.ts`). Silvereye, night heron and pea blue butterfly now also arrive by the `storm` road. The cattle egret no longer needs tortoises: it hunts insects in any open grass. Its mainNeed is now `no-grass`, its lines are rewritten, and its rarity is now uncommon. So storms have four castaways that can stay on a young island, three of them birds. I also softened the silvereye fact to "a storm is thought to have swept a flock… in 1856", which is what the sources support.
+
+**3. Lava cricket can't be seen or heard.** It now:
+- uses the Spider body (it is wingless and long-legged) with pale legs that show against black rock;
+- uses `scuttle` (no wetness gate) and is active at `dusk`;
+- shows up to 6 at once instead of 3;
+- has a hint that says to look closely at dusk.
+
+I re-checked the facts (wingless, about 9 mm, nocturnal, can arrive within months, gone once plants cover the flow). The new, stricter test also caught the Hawaiian tree snail, which was silent, 2 cm and night-only, so it is now active at `dusk` too. The test rule: a silent animal under 3 cm must be out by day or at dusk, or make its own light.
+
+**4. Bee told "no ripe fruit".** Naupaka no longer gives fruit, so a missing naupaka now reads as `no-flowers`.
+
+**5. Species' own "couldn't stay" lines rarely shown.** I aligned mainNeed with what the ecology actually computes, and rewrote lines to match:
+
+| Species | Old mainNeed | New mainNeed |
+|---|---|---|
+| Black noddy | no-trees | no-cliff |
+| White tern | no-trees | no-forest |
+| Shearwater | thin-soil | no-dune |
+| Albatross | no-open-ground | too-tall |
+| Coquí | too-far | needs-island-nearby |
+| Pea blue | no-host | no-flowers (it lays eggs on flower buds) |
+| Lava lizard | no-open-ground | no-rock-shore |
+
+The lava lizard was not in the review but had the same problem. A new test checks that every animal's mainNeed is a reason its own needs can produce. That test copies WP-D1's current reason tables, so it needs updating if they change.
+
+**6. Look sentences with double colons.** I rewrote `inspectText`:
+- If the ecology's reason names a species, it follows our description after a semicolon, with its own colon turned into a comma.
+- Species names are written as they read mid-sentence ("koa", but "Pisonia" and "ʻōhiʻa lehua" keep their capitals).
+- The first word is lowercased only when it is a common word.
+- If the reason names no species, it is about the ground itself ("Fresh rock: lichens come first…"), so it stands alone instead of repeating our description.
+
+**7. Seabird colonies can't live on an islet.** The sooty tern now fits on an islet (minArea 2,000 m², minPatches 25), and its hints say islet. The albatross deliberately still needs a low, real island, since it needs room for a running take-off.
+
+**8. Odd generated lines.** The Krakatau milestone now reads "Your islands now grow {n} kinds of plants; Krakatau had 26, three years after it er
+
+## wf_80ff46a6-275 :: WP-D1 review-fix pass, finished. I checked all 13 reviewer findings, found every one valid, and fixed them all. The work
+1. src/eco/needs.ts: add a ReasonCode `'no-rock'`. Rock-only plants on sand currently get `'no-rock-shore'`, the closest existing code.
+2. WP-D2: the island-lost entry text should read `params.name`, or the lead should add an island name field to JournalEntry. It is ignored today.
+3. WP-D2: render `params.more` on arrival cards ("...and N more arrived").
+4. Optional: a variant of `takeDirty` that returns several rectangles or tiles, so a change on two islands doesn't re-send the sea between them.
+5. Notes for WP-D2 and catalogue tuning:
+   - The ending entry is `kind 'ending'` with first `'first-whale'`.
+   - Milestones come through `params.milestone` ∈ {kinds, rakata, hawaii, half, islands} plus `params.count`.
+   - A kīpuka is reported as `'lava-buried'` with `params.kipuka=1`.
+   - A visit carries `params.reason`.
+   - Suggested catalogue changes: raise the silvereye's scrub threshold, and add late-game needs so the plateau comes later.
 
 ## wf_b51588f6-956 :: WP-H (the shell) is built and committed on `wp/shell` (7380c89), and the worktree is now detached. Typecheck, unit tests
 1. **`src/engine/protocol.ts`, stroke `phase`:** please document `'cancel'` as "end this stroke and undo it". That is how Sandcastle Cays and `architecture-draft.md` treat it, and the shell relies on it when a second finger lands or a quick tap is taken back.
