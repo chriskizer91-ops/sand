@@ -1,11 +1,12 @@
 /** Unit tests for the life simulation's building blocks (the big behaviours are in src/checks/ecoChecks.ts). */
 import { describe, expect, it } from 'vitest';
-import { NP } from '../src/config';
+import { NP, NX, NZ } from '../src/config';
 import { Habitat, Substrate } from '../src/content/speciesTypes';
-import { Columns } from '../src/engine/columns';
+import { ChangeFlag, Columns } from '../src/engine/columns';
 import { SpeciesTable, habitatReason, requireReason, substrateReason } from '../src/eco/catalog';
+import { Dirty, LocalDerive } from '../src/eco/derive';
 import { Ecology } from '../src/eco/ecology';
-import { EcoFields, Flag, NPATCH } from '../src/eco/fields';
+import { EcoFields, Flag, NPATCH, type ZoneFields } from '../src/eco/fields';
 import { Hydro } from '../src/eco/hydro';
 import { IslandLabeller, characterName, type IslandRec } from '../src/eco/islands';
 import { JournalBook } from '../src/eco/journal';
@@ -83,8 +84,11 @@ describe('catalogue', () => {
   });
   it('prefers a buildable main need for stories', () => {
     expect(habitatReason(t, id('pintail'))).toBe('no-fresh-water');
-    expect(substrateReason(t, id('coconut'), false)).toBe('no-beach');
-    expect(substrateReason(t, id('coconut'), true)).toBe('hot-lava');
+    expect(substrateReason(t, id('coconut'), Substrate.Basalt)).toBe('no-beach');
+    expect(substrateReason(t, id('coconut'), Substrate.HotLava)).toBe('hot-lava');
+  });
+  it('tells a rock plant on all-sand ground that there is no rock, not that the ground is crowded', () => {
+    expect(substrateReason(t, id('lichen'), Substrate.Sand)).toBe('no-rock-shore');
   });
 });
 
@@ -100,17 +104,27 @@ describe('journal pacing', () => {
     expect(b.add({ year: 5, kind: 'visit' }, 'visit', 90, 5)?.headline).toBe(false);
     expect(b.add({ year: 6, kind: 'visit' }, 'visit', 101, 6)?.headline).toBe(true);
   });
-  it('stamps always get their card, at least 5 s apart, written in order with the year they are shown', () => {
+  it('stamps always get their card, at least 15 s apart, written in order with the year they are shown', () => {
     const b = new JournalBook();
     b.openedAt = -1000;
     expect(b.add({ year: 10, kind: 'first', first: 'first-tree' }, 'normal', 0, 10)?.headline).toBe(true);
     expect(b.add({ year: 11, kind: 'age', age: 'green' }, 'always', 2, 11)).toBeNull();
-    b.tick(4, 14);
+    b.tick(14, 14);
     expect(b.entries.length).toBe(1);
-    b.tick(5, 15);
+    b.tick(15, 15);
     expect(b.entries.length).toBe(2);
     expect(b.entries[1].headline).toBe(true);
     expect(b.entries[1].year).toBe(15);
+  });
+  it('cards wait in the order things happened', () => {
+    const b = new JournalBook();
+    b.openedAt = 0;
+    b.add({ year: 1, kind: 'arrival', species: 1 }, 'first', 1, 1);
+    expect(b.add({ year: 2, kind: 'arrival', species: 2 }, 'first', 2, 2)).toBeNull();
+    expect(b.add({ year: 3, kind: 'first', first: 'first-tree', species: 2 }, 'always', 3, 3)).toBeNull();
+    b.tick(16, 16);
+    b.tick(31, 31);
+    expect(b.entries.map((e) => e.kind)).toEqual(['arrival', 'arrival', 'first']);
   });
   it('a visitor coming back always gets a card, waiting for a quiet moment', () => {
     const b = new JournalBook();
@@ -138,19 +152,29 @@ describe('journal pacing', () => {
     b.tick(82, 82);
     expect(b.entries[b.entries.length - 1].headline).toBe(false);
   });
-  it('every first arrival is a card in the opening minutes, 5 s apart', () => {
+  it('in the opening minutes a first arrival needs only 15 s; those that wait too long are folded into the next card', () => {
     const b = new JournalBook();
     b.openedAt = 0;
     expect(b.add({ year: 1, kind: 'arrival' }, 'first', 1, 1)?.headline).toBe(true);
     expect(b.add({ year: 2, kind: 'arrival' }, 'first', 2, 2)).toBeNull();
-    b.tick(6, 6);
+    b.tick(16, 16);
     expect(b.entries[1].headline).toBe(true);
+    // Four arrive at once: a card each 15 s (at 31 and 46); the last two wait past their 40 s
+    // and are written journal-only, and the next arrival card says two more came.
+    for (let i = 0; i < 4; i++) b.add({ year: 20, kind: 'arrival', species: 10 + i }, 'first', 20, 20);
+    for (let now = 21; now <= 70; now++) b.tick(now, now);
+    expect(b.entries.filter((e) => e.headline).length).toBe(4);
+    expect(b.entries.filter((e) => !e.headline).length).toBe(2);
+    expect(b.folded).toBe(2);
+    b.add({ year: 80, kind: 'arrival', species: 30 }, 'first', 80, 80);
+    expect(b.entries[b.entries.length - 1].params?.more).toBe(2);
+    expect(b.folded).toBe(0);
   });
 });
 
 describe('islands', () => {
   const grid = new PatchGrid();
-  const f = new EcoFields(grid);
+  const f: ZoneFields = { ...new EcoFields(grid), life: new Uint8Array(NPATCH) };
   const lab = new IslandLabeller();
   const prev = new Uint16Array(NPATCH);
   const out = new Uint16Array(NPATCH);
@@ -211,9 +235,9 @@ describe('islands', () => {
 });
 
 describe('ponds', () => {
-  const bowl = (floor: number): { hydro: Hydro; f: EcoFields } => {
+  const bowl = (floor: number): { hydro: Hydro; f: ZoneFields } => {
     const grid = new PatchGrid();
-    const f = new EcoFields(grid);
+    const f: ZoneFields = { ...new EcoFields(grid), life: new Uint8Array(NPATCH) };
     const isl = new Uint16Array(NPATCH);
     f.h.fill(-10);
     for (let k = 100; k < 156; k++) {
@@ -230,7 +254,7 @@ describe('ponds', () => {
       }
     }
     const hydro = new Hydro();
-    const job = hydro.run(f, isl, 0, () => 30);
+    const job = hydro.run(f, isl, 0, () => 30, new Float32Array(NPATCH));
     while (!job.next().done);
     hydro.commit();
     return { hydro, f };
@@ -244,6 +268,25 @@ describe('ponds', () => {
     const { hydro } = bowl(Substrate.Sand);
     expect(hydro.ponds.length).toBe(0);
     expect(hydro.basinAt(128 + 128 * NP)?.dry).toBe('sand');
+  });
+});
+
+describe('reshaped ground', () => {
+  it('is re-derived in slices that keep to a deadline, oldest first, and the rest waits', () => {
+    const cols = new Columns();
+    flatSea(cols, 12);
+    cone(cols, 0, 0, 80, 30);
+    const f = new EcoFields(new PatchGrid());
+    const d = new LocalDerive();
+    d.all(cols, f);
+    const sink = { year: 0, touch: () => undefined, burned: () => undefined, reset: () => undefined };
+    d.mark(0, 0, NX - 1, NZ - 1, Dirty.Geom | Dirty.Tool);
+    expect(d.pending).toBe(NPATCH);
+    // A deadline already past: one slice, no more.
+    const left = d.apply(cols, f, sink, -Infinity, () => 0);
+    expect(left).toBeGreaterThan(NPATCH - 1000);
+    expect(left).toBeLessThan(NPATCH);
+    expect(d.apply(cols, f, sink, Infinity, () => 0)).toBe(0);
   });
 });
 
@@ -272,8 +315,39 @@ describe('ecology facade', () => {
     eco.packEco(104, 104, 48, 48, out);
     expect(out.habitat.some((h) => h !== Habitat.None)).toBe(true);
     expect(out.a.some((v) => v > 0)).toBe(true);
-    expect(eco.takeDirty()).not.toBeNull();
   }, 60_000);
+  it('hands over everything changed in one rectangle, and forgets it', () => {
+    eco.takeDirty();
+    expect(eco.isDirtyRect()).toBeNull();
+    // A stroke on two far-apart spots: one rectangle covering both.
+    eco.onTerrainChanged(100, 100, 103, 103, ChangeFlag.Geom | ChangeFlag.Tool);
+    eco.onTerrainChanged(400, 300, 401, 301, ChangeFlag.Geom | ChangeFlag.Tool);
+    const r = eco.isDirtyRect();
+    expect(r).not.toBeNull();
+    const d = eco.takeDirty() as [number, number, number, number];
+    expect(d[0]).toBeLessThanOrEqual(50);
+    expect(d[1]).toBeLessThanOrEqual(50);
+    expect(d[2]).toBeGreaterThanOrEqual(200);
+    expect(d[3]).toBeGreaterThanOrEqual(150);
+    expect(eco.isDirtyRect()).toBeNull();
+    expect(eco.takeDirty()).toBeNull();
+  });
+  it("tells the sea's own slow work from the player's (sand slumping long after a stroke is not urgent)", () => {
+    eco.takeDirty();
+    // Ground moving without a tool, seconds after the last stroke: the sea's work.
+    eco.setClock({ paused: true, yps: 2, dayPhase: 0.3, season: 'dry', gentleStorms: false });
+    eco.advance(10);
+    eco.onTerrainChanged(200, 200, 210, 210, ChangeFlag.Geom);
+    expect(eco.isDirtyRect()).toBeNull();
+    // The same change from a tool is the player's: the page hears of it at once.
+    eco.onTerrainChanged(200, 200, 210, 210, ChangeFlag.Geom | ChangeFlag.Tool);
+    expect(eco.isDirtyRect()).not.toBeNull();
+    // And what it sets moving straight after still counts as theirs.
+    eco.takeDirty();
+    eco.advance(0.5);
+    eco.onTerrainChanged(220, 220, 225, 225, ChangeFlag.Geom);
+    expect(eco.isDirtyRect()).not.toBeNull();
+  });
   it('renames islands but keeps the id', () => {
     const life = eco.takeLife();
     const id = life?.islands[0]?.id ?? 0;

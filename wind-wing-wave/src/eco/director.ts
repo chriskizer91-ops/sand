@@ -60,18 +60,20 @@ const PLACE_FIRSTS: Partial<Record<PlaceKind, FirstKey>> = {
 };
 
 /** Found share of the catalogue needed (with the Sound and 3 forested islands) for the whales. */
-export const ENDING_SHARE = 0.6;
+export const ENDING_SHARE = 0.65;
 /** A new Age waits at least this long (play seconds) after the last, so each chapter is felt. */
 export const AGE_GAP = 150;
 /** Real-forest patches (on real soil) on one island for the first-forest stamp (1,600 m²). */
 const FIRST_FOREST = 100;
 /** Real-forest patches across the zone for the Age of Forests. */
 const AGE_FOREST = 300;
-/** An island ringing the Sound counts as forested with this much real forest (patches, and share of its land). */
-const ENDING_FOREST = 60;
-const ENDING_FOREST_SHARE = 0.15;
+/** An island ringing the Sound counts as forested with this much real forest (patches, and share of its land)… */
+const ENDING_FOREST = 150;
+const ENDING_FOREST_SHARE = 0.3;
+/** …kept for this long (play seconds): a mature forest, not a first flush of trees. */
+const FOREST_SETTLE = 900;
 /** The Sound has to have been there this long (play seconds) before the whales find it. */
-const SOUND_SETTLE = 120;
+const SOUND_SETTLE = 2700;
 /** Hints: only after this much play, after this long without a new species, and this far apart (play s). */
 const HINT_AFTER = 1800;
 const HINT_PLATEAU = 360;
@@ -86,7 +88,7 @@ export interface EstablishInfo {
   first: boolean;
   /** A visitor that couldn't stay came back and stayed. */
   returned: boolean;
-  /** Back after being lost from every island. */
+  /** Back after being lost from every island (only the first time is told). */
   afterLost: boolean;
   /** Island it hopped from (0: from the old islands). */
   hopFrom: number;
@@ -139,6 +141,8 @@ export interface DirectorSave {
   /** Field-guide hint level given per species key. */
   hintLevels: Record<string, number>;
   soundSince: number;
+  /** Island id and the play time its forest became mature enough for the ending. */
+  forestSince: [number, number][];
 }
 
 export class Director {
@@ -156,6 +160,8 @@ export class Director {
   private hintLevels = new Map<string, number>();
   /** Play time the Sound was first seen (-1: no Sound now). */
   private soundSince = -1;
+  /** Per island id: play time its forest has been big enough for the ending since. */
+  private forestSince = new Map<number, number>();
   /** Set by the ecology once the arrivals exist. */
   source: HintSource | null = null;
   /** Lava burned living ground since the last zone job: per island id -> [patches, forest, x sum, z sum]. */
@@ -200,7 +206,8 @@ export class Director {
       if (yes && !this.firsts.has(k)) keys.push(k);
     };
     if (info.first) {
-      want('first-life', true);
+      // First life is something the player can see on their land, not a coral under the sea.
+      want('first-life', !t.marine[s] && !t.marineAnimal[s]);
       want('first-animal', !t.isPlant[s]);
       want('first-drift-seed', t.isPlant[s] === 1 && (road === 'sea' || road === 'raft'));
       want('first-fern', t.isFern[s] === 1);
@@ -215,6 +222,9 @@ export class Director {
     const back = info.returned || info.afterLost;
     // Only news is told: a first arrival, a return, a castaway, or a species new to this island.
     if (!info.first && !back && !info.castaway && !info.newHere && keys.length === 0) return;
+    // A visitor coming back is the payoff the player built for: always told as a card, in turn.
+    // A species back after being lost is good news too, told when the moment is quiet.
+    const card: Want = info.returned ? 'return' : info.afterLost ? 'normal' : info.first || info.castaway ? 'first' : 'never';
     const params: Record<string, string | number> = { first: info.first ? 1 : 0 };
     if (info.hopFrom > 0) params.from = info.hopFrom;
     const lead = keys.shift();
@@ -222,8 +232,7 @@ export class Director {
     const draft: EntryDraft = { year: this.w.year, kind: back ? 'return' : 'arrival', species: s, island, x, z, road, params };
     if (info.place) draft.place = info.place;
     if (lead) draft.first = lead;
-    // A visitor coming back is the payoff the player built for: always told as a card, in turn.
-    this.add(draft, back ? 'return' : info.first || info.castaway ? 'first' : 'never');
+    this.add(draft, card);
     // At most one more stamp from the same moment, as its own entry.
     const extra = keys.shift();
     if (extra) this.firstEntry(extra, x, z, island, s);
@@ -442,20 +451,29 @@ export class Director {
   }
 
   /**
-   * The ending: the Sound (there a little while), three or more of the islands around it under
-   * real forest, and most of the catalogue found. Returns true once, when the whales come.
+   * The ending: the Sound, standing for 45 minutes of play; three or more of the islands
+   * around it under mature real forest (a good share of their land, kept for 15 minutes); the
+   * islands' story told through to the Age of Song; and most of the catalogue found. Returns
+   * true once, when the whales come.
    */
   checkEnding(found: number, total: number): boolean {
     if (this.ending) return false;
     const w = this.w;
     const sound = w.features.sound;
-    if (!sound || this.soundSince < 0 || w.realPlay - this.soundSince < SOUND_SETTLE || found < ENDING_SHARE * total) return false;
+    // Which islands carry a big enough forest, and since when.
+    const isl = w.islands;
+    for (let slot = 0; slot < isl.count; slot++) {
+      const id = isl.ids[slot];
+      const real = w.cur.realForest[slot];
+      if (real >= ENDING_FOREST && real >= ENDING_FOREST_SHARE * w.cur.land[slot]) {
+        if (!this.forestSince.has(id)) this.forestSince.set(id, w.realPlay);
+      } else this.forestSince.delete(id);
+    }
+    if (!sound || this.soundSince < 0 || w.realPlay - this.soundSince < SOUND_SETTLE || found < ENDING_SHARE * total || this.age !== 'song') return false;
     let forested = 0;
     for (const id of sound.islands) {
-      const slot = w.islands.slotOf[id];
-      if (slot < 0) continue;
-      const real = w.cur.realForest[slot];
-      if (real >= ENDING_FOREST && real >= ENDING_FOREST_SHARE * w.cur.land[slot]) forested++;
+      const since = this.forestSince.get(id);
+      if (since !== undefined && w.realPlay - since >= FOREST_SETTLE) forested++;
     }
     if (forested < 3) return false;
     this.ending = true;
@@ -517,6 +535,7 @@ export class Director {
       hints: [...this.hints],
       hintLevels,
       soundSince: this.soundSince,
+      forestSince: [...this.forestSince.entries()],
     };
   }
 
@@ -536,6 +555,7 @@ export class Director {
     this.hints = new Set(s.hints);
     this.hintLevels = new Map(Object.entries(s.hintLevels));
     this.soundSince = s.soundSince;
+    this.forestSince = new Map(s.forestSince);
     this.burns.clear();
     this.burnedSp.clear();
   }

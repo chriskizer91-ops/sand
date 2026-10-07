@@ -63,15 +63,24 @@ export function cone(cols: Columns, x: number, z: number, r: number, peak: numbe
       cols.rock[c] = h;
       cols.sed[c] = 0;
       cols.rockKind[c] = o.rock ?? RockKind.Basalt;
-      if (o.beaches && dx < 0.2 * r && u > 0.84 && u < 1.12) {
-        // A sand apron at the waterline on the lee and south.
-        const t = 1 - Math.abs(u - 0.98) / 0.14;
-        if (t > 0) {
-          cols.rock[c] = Math.min(cols.rock[c], 1.6) - 1.5 * t;
-          cols.sed[c] = 1.5 * t + 0.4;
-          cols.sandKind[c] = 120;
-        }
-      }
+    }
+  }
+  if (o.beaches) beachApron(cols, x, z, r);
+}
+
+/** Sand aprons at the waterline on the lee and south of a cone at (x, z) with shoreline radius r (as if poured). */
+export function beachApron(cols: Columns, x: number, z: number, r: number): void {
+  for (let k = 0; k < NZ; k++) {
+    for (let i = 0; i < NX; i++) {
+      const dx = cols.cx(i) - x;
+      const u = Math.hypot(dx, cols.cz(k) - z) / r;
+      if (dx >= 0.2 * r || u <= 0.84 || u >= 1.12) continue;
+      const t = 1 - Math.abs(u - 0.98) / 0.14;
+      if (t <= 0) continue;
+      const c = i + k * NX;
+      cols.rock[c] = Math.min(cols.rock[c], 1.6) - 1.5 * t;
+      cols.sed[c] = 1.5 * t + 0.4;
+      cols.sandKind[c] = 120;
     }
   }
 }
@@ -143,10 +152,15 @@ export function markAll(cols: Columns, burn = false): void {
 
 // ---------- scenarios ----------
 
-/** The tall volcanic island: crater basin near the summit, beaches on the lee, cliffs to windward. */
-export function highIsland(cols: Columns, scale = 1): void {
+/** The tall volcanic island: crater basin near the summit, beaches on the lee (unless `beaches` is false), cliffs to windward. */
+export function highIsland(cols: Columns, scale = 1, beaches = true): void {
   seabed(cols);
-  cone(cols, 40, -20, 170 * scale, 110 * Math.min(1, 0.4 + 0.6 * scale), { crater: { r: 22 * scale, depth: 9, off: 10 }, beaches: true, cliffs: true });
+  cone(cols, 40, -20, 170 * scale, 110 * Math.min(1, 0.4 + 0.6 * scale), { crater: { r: 22 * scale, depth: 9, off: 10 }, beaches, cliffs: true });
+}
+
+/** The high island's lee beaches, poured later (the simulator's player-paced run). */
+export function highIslandBeaches(cols: Columns, scale = 1): void {
+  beachApron(cols, 40, -20, 170 * scale);
 }
 
 /** A low white-sand cay on the Shallows. */
@@ -158,12 +172,21 @@ export function lowCay(cols: Columns, r = 90): void {
 /** Three islands around deep water: a sound. Plus a small islet for seabirds. */
 export function chain(cols: Columns): void {
   seabed(cols);
-  const D = 205;
-  for (let n = 0; n < 3; n++) {
-    const a = (n / 3) * Math.PI * 2 + Math.PI / 2;
-    cone(cols, 20 + Math.cos(a) * D, Math.sin(a) * D, 150, n === 0 ? 95 : 55, { beaches: true, cliffs: n === 0, crater: n === 0 ? { r: 18, depth: 8, off: 8 } : undefined });
+  for (let n = 0; n < 4; n++) chainIsland(cols, n);
+}
+
+/**
+ * One island of the chain: 0 the big one (crater, windward cliffs), 1 and 2 the two that close
+ * the sound with it, 3 the seabird islet. The simulator's player-paced run raises them in turn.
+ */
+export function chainIsland(cols: Columns, n: number): void {
+  if (n === 3) {
+    cone(cols, 330, -240, 22, 18, { cliffs: true });
+    return;
   }
-  cone(cols, 330, -240, 22, 18, { cliffs: true });
+  const D = 205;
+  const a = (n / 3) * Math.PI * 2 + Math.PI / 2;
+  cone(cols, 20 + Math.cos(a) * D, Math.sin(a) * D, 150, n === 0 ? 95 : 55, { beaches: true, cliffs: n === 0, crater: n === 0 ? { r: 18, depth: 8, off: 8 } : undefined });
 }
 
 /**

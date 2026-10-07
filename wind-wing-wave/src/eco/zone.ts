@@ -18,7 +18,7 @@ import type { PlaceEvent } from '../engine/protocol';
 import { PLACE_KINDS } from './catalog';
 import { coastDistances, smoothClimate, windMarch, windwardness } from './climate';
 import type { Director } from './director';
-import { Flag, LAYERS, NPATCH, type EcoFields, type ZoneFields } from './fields';
+import { Flag, FloodScratch, LAYERS, Life, NPATCH, type EcoFields, type ZoneFields } from './fields';
 import { Hydro } from './hydro';
 import { ISLET_AREA, IslandLabeller, characterName, type IslandLabelResult } from './islands';
 import { Features } from './places';
@@ -38,8 +38,6 @@ class ZoneOut {
   readonly salt = new Float32Array(NPATCH);
   readonly wind = new Float32Array(NPATCH);
   readonly pondLvl = new Float32Array(NPATCH);
-  readonly pondId = new Uint16Array(NPATCH);
-  readonly flow = new Float32Array(NPATCH);
   readonly shelter = new Float32Array(NPATCH);
   readonly flags = new Uint32Array(NPATCH);
   readonly geoMask = new Uint32Array(NPATCH);
@@ -56,16 +54,21 @@ interface Lists {
   sea: Int32Array;
 }
 
-/** Called with the shoreline columns (for the surf and the years-time coast) at install. */
-export type ShoreSink = (cols: Int32Array, isles: Uint16Array, n: number) => void;
+/** What an install hands on: the shoreline columns (for the surf and the years-time coast), and each patch whose surroundings changed. */
+export interface CommitSinks {
+  shore(cols: Int32Array, isles: Uint16Array, n: number): void;
+  envChanged(p: number): void;
+}
 
 export class ZoneJob {
   readonly islNew = new Uint16Array(NPATCH);
   readonly nearNew = new Uint16Array(NPATCH);
+  /** Distance to land while the coast is measured; then scratch for the climate's blur and the streams' flow. */
   private dLand = new Float32Array(NPATCH);
-  readonly labeller = new IslandLabeller();
-  readonly hydro = new Hydro();
-  readonly features = new Features();
+  private readonly scratch = new FloodScratch();
+  readonly labeller = new IslandLabeller(this.scratch);
+  readonly hydro = new Hydro(this.scratch);
+  readonly features = new Features(this.scratch);
   private readonly out = new ZoneOut();
   private view: ZoneFields | null = null;
   private result: IslandLabelResult | null = null;
@@ -75,6 +78,8 @@ export class ZoneJob {
   private envNext = new Uint32Array(NPATCH);
   private list = new Int32Array(NPATCH);
   private listN = 0;
+  /** The life the job reads, as it stood between two steps (see snapshot()). */
+  private readonly life = new Uint8Array(NPATCH);
 
   /** A finished run is waiting to be installed. */
   get ready(): boolean {
@@ -93,24 +98,39 @@ export class ZoneJob {
         sand: f.sand,
         bot: f.bot,
         born: f.born,
-        soil: f.soil,
-        warm: f.warm,
-        sp: f.sp,
-        cov: f.cov,
+        life: this.life,
         coast: o.coast,
         rain: o.rain,
         fog: o.fog,
         salt: o.salt,
         wind: o.wind,
         pondLvl: o.pondLvl,
-        pondId: o.pondId,
-        flow: o.flow,
         shelter: o.shelter,
         flags: o.flags,
         geoMask: o.geoMask,
       };
     }
     return this.view;
+  }
+
+  /**
+   * Take the snapshot of life the job reads. Call between two ecology steps, just before run():
+   * the sweep changes plants and soil patch by patch, so reading them live in the middle of a
+   * step would make the job's answer depend on how the work happened to be sliced.
+   */
+  snapshot(f: EcoFields): void {
+    const life = this.life;
+    const sp = f.sp;
+    const cov = f.cov;
+    for (let p = 0; p < NPATCH; p++) {
+      const o = p * LAYERS;
+      let b = 0;
+      if (sp[o] | sp[o + 1] | sp[o + 2] | sp[o + 3]) b |= Life.Any;
+      if (cov[o] + cov[o + 1] + cov[o + 2] + cov[o + 3] >= 0.5) b |= Life.Cover;
+      if (f.soil[p] > 0.1) b |= Life.Soil;
+      if (f.warm[p] >= 0.25) b |= Life.Warm;
+      life[p] = b;
+    }
   }
 
   *run(w: EcoWorld): Generator<void, void, void> {
@@ -125,7 +145,7 @@ export class ZoneJob {
     yield;
     yield* windMarch(v, this.islNew);
     yield;
-    yield* smoothClimate(v, this.islNew);
+    yield* smoothClimate(v, this.islNew, this.dLand);
     yield;
     yield* windwardness(
       v,
@@ -134,7 +154,7 @@ export class ZoneJob {
       (id) => Math.sqrt((res.recs.get(id)?.area ?? 0) / Math.PI),
     );
     yield;
-    yield* this.hydro.run(v, this.islNew, w.year, (id) => res.recs.get(id)?.peak[1] ?? 0);
+    yield* this.hydro.run(v, this.islNew, w.year, (id) => res.recs.get(id)?.peak[1] ?? 0, this.dLand);
     yield;
     yield* this.features.run(v, this.islNew, this.nearNew, res.recs, w.year);
     this.result = res;
@@ -144,9 +164,9 @@ export class ZoneJob {
    * Install the finished run (between steps), in slices. The first slices only prepare (patch
    * lists, the active set, what changed around each patch); the last two swap the new picture
    * in. Place and island stories go to the director (unless `silent`, for a fresh world or a
-   * loaded save) and the place events into `events`.
+   * loaded save), the place events into `events`, and the shore and changed patches to `sinks`.
    */
-  *commit(w: EcoWorld, sweep: Sweep, director: Director, silent: boolean, events: PlaceEvent[], shore: ShoreSink): Generator<void, void, void> {
+  *commit(w: EcoWorld, sweep: Sweep, director: Director, silent: boolean, events: PlaceEvent[], sinks: CommitSinks): Generator<void, void, void> {
     const res = this.result;
     if (!res) return;
     const f = w.f;
@@ -168,15 +188,14 @@ export class ZoneJob {
     yield* this.signatures();
     const [shoreCols, shoreIsles, shoreN] = this.buildShore(f);
     yield;
-    // ---------- install the derived fields ----------
+    // ---------- install the derived fields (the step waits until the islands are in too) ----------
     f.coast.set(o.coast);
     f.rain.set(o.rain);
     f.fog.set(o.fog);
     f.salt.set(o.salt);
     f.wind.set(o.wind);
     f.pondLvl.set(o.pondLvl);
-    f.pondId.set(o.pondId);
-    f.flow.set(o.flow);
+    yield;
     f.shelter.set(o.shelter);
     f.flags.set(o.flags);
     f.geoMask.set(o.geoMask);
@@ -204,17 +223,23 @@ export class ZoneJob {
     isl.sea = lists.sea;
     isl.placesNow = new Uint32Array(Math.max(1, ids.length));
     for (let slot = 0; slot < ids.length; slot++) isl.placesNow[slot] = this.features.placesNow.get(ids[slot])?.bits ?? 0;
+    // The rest only refreshes what the next step will visit; the picture is already whole.
+    yield;
     this.installActive(f, sweep);
+    yield;
     // Wake the patches whose surroundings changed.
     const sig = this.envSig;
     const next = this.envNext;
     for (let p = 0; p < NPATCH; p++) {
-      if (sig[p] !== next[p]) sweep.wake(p);
+      if (sig[p] !== next[p]) {
+        sweep.wake(p);
+        sinks.envChanged(p);
+      }
     }
     this.envSig = next;
     this.envNext = sig;
     sweep.recountDue = true;
-    shore(shoreCols, shoreIsles, shoreN);
+    sinks.shore(shoreCols, shoreIsles, shoreN);
     this.name(w);
     // ---------- stories ----------
     if (silent) {
@@ -316,8 +341,7 @@ export class ZoneJob {
         const p = pi + pk * NP;
         if (isl[p] === 0 && f.h[p] <= 0) {
           // Shallow sea near an island lives; so does anything still growing where an island was.
-          const o = p * LAYERS;
-          if (flags[p] & Flag.NearSea || f.sp[o] | f.sp[o + 1] | f.sp[o + 2] | f.sp[o + 3]) mask[p] = 1;
+          if (flags[p] & Flag.NearSea || this.life[p] & Life.Any) mask[p] = 1;
           continue;
         }
         for (let dz = -RING; dz <= RING; dz++) {

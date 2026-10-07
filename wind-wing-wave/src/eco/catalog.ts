@@ -14,7 +14,7 @@
  *   pond, reef zone…) plus the vegetation of the patch and its neighbours (forest, scrub…),
  *   so a plant that needs forest can spread along a forest edge.
  */
-import { AnimalModel, Habitat, PlantModel, type PlaceKind, type Road, type SpeciesDef } from '../content/speciesTypes';
+import { AnimalModel, Habitat, PlantModel, Substrate, type PlaceKind, type Road, type SpeciesDef } from '../content/speciesTypes';
 import type { EcoNeeds, ReasonCode } from './needs';
 import { L_CANOPY, L_GROUND, L_HERB, L_SHRUB } from './fields';
 import { growRate } from './maths';
@@ -442,14 +442,21 @@ export function placeReason(t: SpeciesTable, s: number, missing: number): Reason
   return t.mainNeed[s];
 }
 
-/** Reason when the ground material is wrong. */
-export function substrateReason(t: SpeciesTable, s: number, isHotLava: boolean): ReasonCode {
-  if (isHotLava) return 'hot-lava';
+/**
+ * Reason when the ground material `sub` (a Substrate value; the sea bottom for sea plants) is
+ * wrong for species s. A buildable main need wins (it is the story the species tells).
+ * Rock-only plants on all-sand ground are told there is no rock: the nearest buildable reason
+ * the catalogue has is "no rocky shore" (needs.ts has no plain "no rock" yet).
+ */
+export function substrateReason(t: SpeciesTable, s: number, sub: number): ReasonCode {
+  if (sub === Substrate.HotLava) return 'hot-lava';
   if (BUILDABLE.has(t.mainNeed[s])) return t.mainNeed[s];
   const m = t.subMask[s];
   if (t.marine[s]) return m === SUB_SAND ? 'no-seagrass' : 'no-reef';
   if (m === SUB_SAND || (m & SUB_SAND && !(m & SUB_BASALT))) return 'no-beach';
   if (m & SUB_POND) return 'no-fresh-water';
+  if (sub === Substrate.Sand && !(m & SUB_SAND)) return 'no-rock-shore';
+  if (sub === Substrate.Pond) return 'too-wet';
   return 'no-open-ground';
 }
 

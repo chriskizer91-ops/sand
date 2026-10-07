@@ -13,7 +13,7 @@
  * the next step boundary, so one eco step never sees two different island maps.
  */
 import { NP, PATCH_M } from '../config';
-import { NPATCH, patchX, patchZ, type ZoneFields } from './fields';
+import { FloodScratch, NPATCH, patchX, patchZ, type ZoneFields } from './fields';
 
 export const ANNOUNCE_AREA = 400;
 /** Below this area a land component is a rock, not shown on the chart. */
@@ -71,10 +71,10 @@ export interface IslandLabelResult {
  * Writes the new labelling into `out` and returns the new record set and events.
  */
 export class IslandLabeller {
-  private comp = new Int32Array(NPATCH);
-  private queue = new Int32Array(NPATCH);
   nextId = 1;
   private absorbed: Absorbed[] = [];
+
+  constructor(private readonly scratch = new FloodScratch()) {}
 
   /** Label in one go (tests and tools). */
   label(f: ZoneFields, prev: Uint16Array, recs: Map<number, IslandRec>, out: Uint16Array, year: number, sandKindAt: (p: number) => number): IslandLabelResult {
@@ -88,9 +88,9 @@ export class IslandLabeller {
   /** Label, yielding between slices of work (the zone job). */
   *labelSliced(f: ZoneFields, prev: Uint16Array, recs: Map<number, IslandRec>, out: Uint16Array, year: number, sandKindAt: (p: number) => number): Generator<void, IslandLabelResult, void> {
     const h = f.h;
-    const comp = this.comp;
+    const comp = this.scratch.comp;
     comp.fill(0);
-    const q = this.queue;
+    const q = this.scratch.queue;
     // ---------- connected components (4-neighbour) ----------
     interface Comp {
       n: number;
@@ -187,6 +187,7 @@ export class IslandLabeller {
     // ---------- overlap with the previous labelling ----------
     const overlap = new Map<number, number>(); // comp * 65536 + oldId -> patches
     for (let p = 0; p < NPATCH; p++) {
+      if ((p & 16383) === 16383) yield;
       const c = comp[p];
       const o = prev[p];
       if (c !== 0 && o !== 0) {
@@ -256,6 +257,7 @@ export class IslandLabeller {
     yield;
     // ---------- write the staged map and records ----------
     for (let p = 0; p < NPATCH; p++) out[p] = comp[p] === 0 ? 0 : compId[comp[p]];
+    yield;
     for (let c = 1; c < comps.length; c++) {
       const cc = comps[c];
       const id = compId[c];

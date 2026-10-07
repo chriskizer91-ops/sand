@@ -17,7 +17,7 @@ import { Habitat, Substrate, type PlaceKind } from '../content/speciesTypes';
 import type { PeakInfo } from '../engine/protocol';
 import { PLACE_KINDS } from './catalog';
 import { CLOUD_BASE, CLOUD_TOP } from './climate';
-import { Flag, LAYERS, NPATCH, habBit, patchAt, patchX, patchZ, type ZoneFields } from './fields';
+import { Flag, FloodScratch, Life, NPATCH, habBit, patchAt, patchX, patchZ, type ZoneFields } from './fields';
 import { ANNOUNCE_AREA, ISLET_AREA, type IslandRec } from './islands';
 
 const HYDRO_FLAGS = Flag.Pond | Flag.SaltPond | Flag.Marsh | Flag.Stream | Flag.Mouth | Flag.Basin;
@@ -112,12 +112,10 @@ export class Features {
   private rayEast = new Uint8Array(NPATCH);
   private rayDistinct = new Uint8Array(NPATCH);
   private hitIsl = new Int32Array(8);
-  private comp = new Int32Array(NPATCH);
-  private queue = new Int32Array(NPATCH);
-  private oldVeg = new Uint8Array(NPATCH);
-  private areaOf = new Float32Array(65536);
-  private peakOf = new Float32Array(65536);
+  /** Island id -> dense index into the per-island arrays of the current run. */
   private index = new Int32Array(65536);
+  private areaOf = new Float32Array(16);
+  private peakOf = new Float32Array(16);
   sound: SoundRec | null = null;
   peaks: PeakInfo[] = [];
   /** Per island id: recognised places now and where. */
@@ -126,6 +124,8 @@ export class Features {
   kipukas: { key: string; island: number; x: number; z: number }[] = [];
   /** The running job's results, waiting for commit(). */
   private next: FeatureSet = { sound: null, peaks: [], placesNow: new Map(), kipukas: [] };
+
+  constructor(private readonly scratch = new FloodScratch()) {}
 
   /** Make the last finished run current (between ecology steps, with the islands). */
   commit(): void {
@@ -143,12 +143,19 @@ export class Features {
    */
   *run(f: ZoneFields, isl: Uint16Array, near: Uint16Array, recs: Map<number, IslandRec>, year: number): Generator<void, void, void> {
     const h = f.h;
+    const index = this.index;
+    if (this.areaOf.length < recs.size) {
+      this.areaOf = new Float32Array(recs.size + 16);
+      this.peakOf = new Float32Array(recs.size + 16);
+    }
     const areaOf = this.areaOf;
     const peakOf = this.peakOf;
     let bigIslands = 0;
+    let ix = 0;
     for (const r of recs.values()) {
-      areaOf[r.id] = r.area;
-      peakOf[r.id] = r.peak[1];
+      index[r.id] = ix;
+      areaOf[ix] = r.area;
+      peakOf[ix++] = r.peak[1];
       if (r.area >= SOUND_ISLAND_AREA) bigIslands++;
     }
     // ---------- land features ----------
@@ -188,11 +195,12 @@ export class Features {
           if (coast <= 3 * PATCH_M + 0.1 && seaBothSides(h, isl, pi, pk)) fl |= Flag.Spit;
         } else if (rock && coast <= PATCH_M + 0.1 && hp <= 5 && !(fl & Flag.SeaCliff)) fl |= Flag.RockShore;
         if (bot === Substrate.HotLava || (bot === Substrate.Basalt && year - f.born[p] < 50)) freshLava++;
-        if (f.warm[p] >= 0.25) fl |= Flag.Warm;
-        const a = areaOf[id];
+        if (f.life[p] & Life.Warm) fl |= Flag.Warm;
+        const a = areaOf[index[id]];
+        const top = peakOf[index[id]];
         if (a < ISLET_AREA) fl |= Flag.Islet;
-        if (a <= STACK_AREA && peakOf[id] >= 5) fl |= Flag.Stack;
-        if (peakOf[id] >= CLOUD_BASE && f.wind[p] < -0.15 && f.rain[p] < 0.3) fl |= Flag.RainShadow;
+        if (a <= STACK_AREA && top >= 5) fl |= Flag.Stack;
+        if (top >= CLOUD_BASE && f.wind[p] < -0.15 && f.rain[p] < 0.3) fl |= Flag.RainShadow;
       }
       f.flags[p] = fl;
     }
@@ -266,7 +274,7 @@ export class Features {
           let distinct = 0;
           for (let d = 0; d < 8; d++) {
             const id = hitIsl[d];
-            if (id === 0 || areaOf[id] < SOUND_ISLAND_AREA) continue;
+            if (id === 0 || areaOf[index[id]] < SOUND_ISLAND_AREA) continue;
             let seen = false;
             for (let e = 0; e < d; e++) if (hitIsl[e] === id) seen = true;
             if (!seen) distinct++;
@@ -274,7 +282,7 @@ export class Features {
           rayDistinct[p] = distinct;
         }
       }
-      if ((pk & 15) === 12) yield;
+      yield;
     }
     for (let p = 0; p < NPATCH; p++) {
       if ((p & 16383) === 16383) yield;
@@ -330,8 +338,8 @@ export class Features {
 
   /** The largest connected stretch of Sound water, and the islands around it. */
   private findSound(f: ZoneFields, isl: Uint16Array): SoundRec | null {
-    const comp = this.comp;
-    const q = this.queue;
+    const comp = this.scratch.comp;
+    const q = this.scratch.queue;
     comp.fill(0);
     let best: SoundRec | null = null;
     let bestN = 0;
@@ -390,17 +398,16 @@ export class Features {
 
   /** Old living ground ringed by new lava: a kīpuka (a seed source, and a story). */
   private findKipukas(f: ZoneFields, isl: Uint16Array, year: number, out: FeatureSet['kipukas']): void {
-    const comp = this.comp;
-    const q = this.queue;
-    const old = this.oldVeg;
+    const comp = this.scratch.comp;
+    const q = this.scratch.queue;
+    const life = f.life;
+    const born = f.born;
+    /** Old living ground: on land, formed 60 years ago or more, well covered. */
+    const old = (p: number): boolean => isl[p] !== 0 && (life[p] & Life.Cover) !== 0 && year - born[p] >= 60;
     comp.fill(0);
-    for (let p = 0; p < NPATCH; p++) {
-      const o = p * LAYERS;
-      old[p] = isl[p] !== 0 && year - f.born[p] >= 60 && f.cov[o] + f.cov[o + 1] + f.cov[o + 2] + f.cov[o + 3] >= 0.5 ? 1 : 0;
-    }
     let cid = 0;
     for (let p0 = 0; p0 < NPATCH; p0++) {
-      if (comp[p0] || !old[p0]) continue;
+      if (comp[p0] || !old(p0)) continue;
       cid++;
       let head = 0;
       let tail = 0;
@@ -415,7 +422,7 @@ export class Features {
         for (let k = 0; k < 4; k++) {
           const nb = k === 0 ? (pi > 0 ? p - 1 : -1) : k === 1 ? (pi < NP - 1 ? p + 1 : -1) : k === 2 ? (pk > 0 ? p - NP : -1) : pk < NP - 1 ? p + NP : -1;
           if (nb < 0 || comp[nb] === cid) continue;
-          if (old[nb]) {
+          if (old(nb)) {
             if (comp[nb] === 0) {
               comp[nb] = cid;
               q[tail++] = nb;

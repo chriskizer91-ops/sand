@@ -13,15 +13,15 @@
  */
 import { NP, PATCH_M } from '../config';
 import { Substrate } from '../content/speciesTypes';
-import { Flag, NPATCH, patchX, patchZ, type ZoneFields } from './fields';
+import { Flag, FloodScratch, Life, NPATCH, patchX, patchZ, type ZoneFields } from './fields';
 
 /** Rain-patches upstream that make a stream. */
 const STREAM_FLOW = 60;
 const EVAP = 0.4;
 /** A basin holds water when its catchment brings at least this share of what it loses. */
 const HOLD = 0.35;
-/** Work between yields: heap pops in the flood, patches elsewhere. */
-const SLICE = 12000;
+/** Work between yields: heap pops in the flood, patches elsewhere (a slice stays well under a millisecond). */
+const SLICE = 2500;
 
 export interface PondRec {
   id: number;
@@ -100,18 +100,18 @@ class MinHeap {
 export class Hydro {
   readonly filled = new Float32Array(NPATCH);
   private parent = new Int32Array(NPATCH);
-  private order = new Int32Array(NPATCH);
   private seen = new Uint8Array(NPATCH);
   /** Basin index per patch: the committed map, and the one the running job fills. */
   private basinOf = new Int32Array(NPATCH);
   private basinNext = new Int32Array(NPATCH);
-  private queue = new Int32Array(NPATCH);
   private heap = new MinHeap(NPATCH + 8);
   /** Committed ponds and basins (the job builds the next ones, made current by commit()). */
   ponds: PondRec[] = [];
   basins: BasinRec[] = [];
   private pondsNext: PondRec[] = [];
   private basinsNext: BasinRec[] = [];
+
+  constructor(private readonly scratch = new FloodScratch()) {}
 
   /** The basin a patch lies in (for Look), or null. */
   basinAt(p: number): BasinRec | null {
@@ -131,15 +131,17 @@ export class Hydro {
   }
 
   /**
-   * Recompute ponds, streams, basins and marsh into f.flags / f.pondLvl / f.pondId / f.flow
+   * Recompute ponds, streams, basins and marsh into f.flags / f.pondLvl
    * (the zone job's staged copies). `isl` is the (staged) island map; `year` dates fresh lava;
-   * `peakOf` gives an island's peak.
+   * `peakOf` gives an island's peak; `flow` is scratch of NPATCH floats for the water collected
+   * from upslope (it is only needed while the streams are found).
    */
-  *run(f: ZoneFields, isl: Uint16Array, year: number, peakOf: (id: number) => number): Generator<void, void, void> {
+  *run(f: ZoneFields, isl: Uint16Array, year: number, peakOf: (id: number) => number, flow: Float32Array): Generator<void, void, void> {
     const h = f.h;
     const filled = this.filled;
     const parent = this.parent;
-    const order = this.order;
+    // The flood order shares the flood-fill scratch (the basins below only need its queue).
+    const order = this.scratch.comp;
     const seen = this.seen;
     const heap = this.heap;
     const CLEAR = ~(Flag.Pond | Flag.SaltPond | Flag.Marsh | Flag.Stream | Flag.Mouth | Flag.Basin);
@@ -147,9 +149,8 @@ export class Hydro {
     heap.n = 0;
     for (let p = 0; p < NPATCH; p++) {
       f.flags[p] &= CLEAR;
-      f.pondId[p] = 0;
       f.pondLvl[p] = 0;
-      f.flow[p] = 0;
+      flow[p] = 0;
       parent[p] = -1;
       const land = isl[p] !== 0 || h[p] > 0;
       if (!land) {
@@ -157,6 +158,7 @@ export class Hydro {
         filled[p] = 0;
       }
     }
+    yield;
     // Seeds: the sea next to land, and land on the zone edge (water runs off the map).
     for (let pk = 0; pk < NP; pk++) {
       for (let pi = 0; pi < NP; pi++) {
@@ -206,12 +208,12 @@ export class Hydro {
     }
     yield;
     // ---------- flow accumulation (downstream = toward the parent) ----------
-    const flow = f.flow;
     // Water caught per patch: rain, plus fog dripping from the cloud belt.
     for (let i = 0; i < nOrder; i++) {
       const p = order[i];
       if (isl[p] !== 0 || h[p] > 0) flow[p] = f.rain[p] + 0.5 * f.fog[p];
     }
+    yield;
     for (let i = nOrder - 1; i >= 0; i--) {
       const p = order[i];
       const par = parent[p];
@@ -225,7 +227,7 @@ export class Hydro {
     const basins: BasinRec[] = [];
     this.pondsNext = ponds;
     this.basinsNext = basins;
-    const q = this.queue;
+    const q = this.scratch.queue;
     let pondCount = 0;
     let work = 0;
     for (let p0 = 0; p0 < NPATCH; p0++) {
@@ -295,7 +297,7 @@ export class Hydro {
         } else if (b === Substrate.Limestone) k = 0.25;
         else if (b === Substrate.Stone) k = 0.06;
         else k = 0.1;
-        if (f.soil[p] > 0.1) k *= 0.6;
+        if (f.life[p] & Life.Soil) k *= 0.6;
         perm += k;
         pn++;
       }
@@ -335,7 +337,6 @@ export class Hydro {
         pondN++;
         f.flags[p] |= salt ? Flag.Pond | Flag.SaltPond : Flag.Pond;
         f.pondLvl[p] = level;
-        f.pondId[p] = id;
         const x = patchX(p);
         const z = patchZ(p);
         if (x < x0) x0 = x;

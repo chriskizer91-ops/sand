@@ -14,6 +14,11 @@
  * Losses are capped and regrow within about two minutes. At clearing, every storm leaves
  * something: driftwood on the windward beach, sometimes a raft of castaways, sometimes a bird
  * blown off course. The journal tells it once: "the storm of Year N".
+ *
+ * The storm runs on real time, but what it does to living things waits for the gap between two
+ * ecology steps (effects()), so a step's sweep never sees some patches before the storm and some
+ * after it. Only the surf, which moves sand, works in real time: that is the ground changing,
+ * like a stroke.
  */
 import { DAY_SECONDS, type Season } from '../config';
 import type { Road } from '../content/speciesTypes';
@@ -29,6 +34,8 @@ const FIRST_AFTER = 15 * 60;
 const MIN_SHRUBS = 10;
 const PEAK = 60;
 const CLEAR = 30;
+/** Salt spray multiplier at the peak, when the damage pulses are timed. */
+const PEAK_SALT = 3;
 
 export interface StormSave {
   state: StormState;
@@ -37,6 +44,8 @@ export interface StormSave {
   count: number;
   warnLen: number;
   pulses: number;
+  applied: number;
+  aftermathDue: boolean;
   fallen: number;
   told: boolean;
   gentle: boolean;
@@ -54,7 +63,11 @@ export class Storms {
   private plannedThisWet = false;
   private count = 0;
   private warnLen = 38;
+  /** Damage pulses that have come due, and those applied to the living things so far. */
   private pulses = 0;
+  private applied = 0;
+  /** Clearing has begun: driftwood, castaways and the journal line wait for the next gap between steps. */
+  private aftermathDue = false;
   private fallen = 0;
   private told = false;
   private gentle = false;
@@ -77,6 +90,11 @@ export class Storms {
     if (s.phase === 'peak') return 0.1;
     if (s.phase === 'clearing') return 0.1 + (0.9 * s.t) / CLEAR;
     return 1;
+  }
+
+  /** Salt spray multiplier now: storms triple it. The ecology hands it to each step as it begins. */
+  get saltMult(): number {
+    return 1 + 2 * this.state.level;
   }
 
   get active(): boolean {
@@ -107,23 +125,33 @@ export class Storms {
       } finally {
         this.drift.on = false;
       }
-      // Three pulses of damage at 10, 30 and 50 s.
-      while (this.pulses < 3 && s.t >= 10 + 20 * this.pulses) {
-        this.damage(this.pulses);
-        this.pulses++;
-      }
+      // Three pulses of damage at 10, 30 and 50 s (applied between steps).
+      while (this.pulses < 3 && s.t >= 10 + 20 * this.pulses) this.pulses++;
       if (s.t >= PEAK) this.enter('clearing');
     } else {
       s.level = Math.max(0, 1 - s.t / CLEAR);
       if (!this.told) {
         this.told = true;
-        this.aftermath();
+        this.aftermathDue = true;
       }
       if (s.t >= CLEAR) this.enter('none');
     }
-    w.suit.saltMult = 1 + 2 * s.level;
     w.geo.setStorm(s.level * (gentle ? 0.6 : 1));
     this.arrivals.stormPhase = s.phase;
+  }
+
+  /** Has the storm done something to living things that is still to be applied? */
+  get due(): boolean {
+    return this.applied < this.pulses || this.aftermathDue;
+  }
+
+  /** Apply what the storm has done to living things, in slices (between two steps only). */
+  *effects(): Generator<void, void, void> {
+    while (this.applied < this.pulses) yield* this.damage(this.applied++);
+    if (this.aftermathDue) {
+      this.aftermathDue = false;
+      this.aftermath();
+    }
   }
 
   /** Start a storm warning now (debug and checks). */
@@ -167,6 +195,8 @@ export class Storms {
     this.count++;
     this.warnLen = 30 + w.rng.next() * 15;
     this.pulses = 0;
+    this.applied = 0;
+    this.aftermathDue = false;
     this.fallen = 0;
     this.told = false;
     this.state = { phase: 'warning', t: 0, level: 0, great: this.count % 3 === 0 && !this.gentle };
@@ -175,20 +205,20 @@ export class Storms {
   private enter(phase: StormState['phase']): void {
     this.state = { phase, t: 0, level: phase === 'peak' ? 1 : phase === 'clearing' ? 1 : 0, great: this.state.great };
     if (phase === 'none') {
-      this.w.suit.saltMult = 1;
       this.w.geo.setStorm(0);
       this.arrivals.stormPhase = 'none';
     }
   }
 
-  /** One pulse of wind and salt and surf on the living things. */
-  private damage(pulse: number): void {
+  /** One pulse of wind and salt and surf on the living things (sliced over the active patches). */
+  private *damage(pulse: number): Generator<void, void, void> {
     const w = this.w;
     const f = w.f;
     const t = w.t;
     const k = (this.gentle ? 0.5 : 1) * (this.state.great ? 1.3 : 1);
     const act = this.sweep.active;
     for (let i = 0; i < this.sweep.activeN; i++) {
+      if ((i & 2047) === 2047) yield;
       const p = act[i];
       const o = p * LAYERS;
       const h = f.h[p];
@@ -206,9 +236,9 @@ export class Storms {
           if (L === L_CANOPY && c * loss >= 0.06) this.fallen++;
           hit = true;
         }
-        // Salt burn on the second pulse, where spray now outruns what plants can take.
+        // Salt burn on the second pulse, where the peak's spray outruns what plants can take.
         if (pulse === 1 && f.salt[p] >= 0.12) {
-          const se = f.salt[p] * w.suit.saltMult;
+          const se = f.salt[p] * PEAK_SALT;
           for (let L = L_GROUND + 1; L <= L_CANOPY; L++) {
             const s1 = f.sp[o + L];
             if (s1 === 0 || se <= t.saltMax[s1 - 1]) continue;
@@ -329,6 +359,8 @@ export class Storms {
       count: this.count,
       warnLen: this.warnLen,
       pulses: this.pulses,
+      applied: this.applied,
+      aftermathDue: this.aftermathDue,
       fallen: this.fallen,
       told: this.told,
       gentle: this.gentle,
@@ -342,10 +374,11 @@ export class Storms {
     this.count = s.count;
     this.warnLen = s.warnLen;
     this.pulses = s.pulses;
+    this.applied = s.applied;
+    this.aftermathDue = s.aftermathDue;
     this.fallen = s.fallen;
     this.told = s.told;
     this.gentle = s.gentle;
     this.arrivals.stormPhase = this.state.phase;
-    this.w.suit.saltMult = 1 + 2 * this.state.level;
   }
 }

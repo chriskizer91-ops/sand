@@ -3,7 +3,7 @@
  * columns, run the ecology in one-year steps, and test the rules the game promises
  * (ARCHITECTURE §4 and the WP-D1 brief). The quick ones also run on the in-game checks page.
  */
-import { NX, NZ } from '../config';
+import { NP, NX, NZ } from '../config';
 import { Habitat, Substrate, type SpeciesDef } from '../content/speciesTypes';
 import { BLOCKS_X, ChangeFlag, Columns, type ColumnBlock } from '../engine/columns';
 import type { JournalEntry, PlaceEvent } from '../engine/protocol';
@@ -12,6 +12,7 @@ import { Ecology } from '../eco/ecology';
 import { Flag, L_CANOPY, L_GROUND, LAYERS, NPATCH, patchAt, patchX, patchZ } from '../eco/fields';
 import type { EcoNeeds } from '../eco/needs';
 import { PBLOCKS, PatchGrid, type PatchBlock } from '../eco/patches';
+import { MET, STUCK_CAP } from '../eco/arrivals';
 import { ScriptGeo, cay, cone, disc, flatSea, highIsland, sandDisc, seabed } from '../eco/scenarios';
 import { TEST_SPECIES, testCatalogue } from '../eco/testSpecies';
 import { registerChecks } from './registry';
@@ -253,13 +254,16 @@ registerChecks('eco', [
     label: "A coconut on an all-rock shore can't stay (no beach), says so once, and returns within 90 s of a beach",
     quick: false,
     run() {
-      const sp = testCatalogue(['lichen', 'coconut'], (d) => (d.key === 'coconut' ? { ...d, eco: { ...d.eco, rate: 3 } } : d));
+      // A coconut that would take to any sand beach (the lee here is dry and the check is about the return).
+      const sp = testCatalogue(['lichen', 'coconut'], (d) => (d.key === 'coconut' ? { ...d, eco: { ...d.eco, rate: 3, moist: [0.02, 0.05, 1, 1], saltMax: 1 } } : d));
       const { cols, eco } = world((c) => {
         flatSea(c, 10);
         cone(c, 0, 0, 110, 40);
       }, sp);
       const coconut = idOf(sp, 'coconut');
-      eco.debugAdvance(300);
+      // Wait for its first visit (chance decides when it drifts in).
+      for (let y = 0; y < 3000 && !entries(eco).some((e) => e.kind === 'visit' && e.species === coconut); y += 10) eco.debugAdvance(10);
+      eco.debugAdvance(100);
       const visits = entries(eco).filter((e) => e.kind === 'visit' && e.species === coconut);
       const reason = visits[0]?.params?.reason;
       // Build a beach on the lee shore.
@@ -275,6 +279,212 @@ registerChecks('eco', [
       const wait = backAt - builtAt;
       const ok = visits.length === 1 && reason === 'no-beach' && backAt >= 0 && wait <= 90;
       return { pass: ok, detail: `${visits.length} visit entr${visits.length === 1 ? 'y' : 'ies'} (reason ${reason ?? 'none'}); back ${backAt < 0 ? 'never' : `${wait.toFixed(0)} s after the beach`}` };
+    },
+  },
+  {
+    id: 'never-stuck',
+    label: 'Never stuck: once a species could live here, it arrives within 5 minutes (common) to 15 (rare)',
+    quick: false,
+    run() {
+      // Arrival rates all but zero: only the guarantees bring life.
+      const sp = testCatalogue(
+        TEST_SPECIES.map((s) => s.key),
+        (d) => ({ ...d, eco: { ...d.eco, rate: d.eco.rate * 1e-6 } }),
+      );
+      const { eco } = world((c) => highIsland(c, 0.6), sp, 6);
+      const { w, arrivals, sweep } = eco.debug;
+      const t = w.t;
+      const f = w.f;
+      const isl = w.islands;
+      const metAt = new Float64Array(t.n).fill(-1);
+      const cameAt = new Float64Array(t.n).fill(-1);
+      /** Could plant s stay in patch p of island slot (the same rule the guarantee uses: suitability 0.35, room in its layer)? */
+      const stays = (s: number, p: number, slot: number): boolean => {
+        const L = t.layer[s];
+        const pi = p % NP;
+        const pk = (p / NP) | 0;
+        const v = sweep.veg;
+        const veg = v[p] | (pi > 0 ? v[p - 1] : 0) | (pi < NP - 1 ? v[p + 1] : 0) | (pk > 0 ? v[p - NP] : 0) | (pk < NP - 1 ? v[p + NP] : 0);
+        const light = w.suit.light(p, L);
+        const val = w.suit.plant(s, p, slot, light, veg, false);
+        if (val < MET) return false;
+        const o1 = f.sp[p * LAYERS + L];
+        if (o1 === 0) return true;
+        const o = o1 - 1;
+        return o !== s && val * t.rank[s] > w.suit.plant(o, p, slot, light, veg, false) * t.rank[o] * 0.5;
+      };
+      const STEP = 10;
+      const YEARS = 1500;
+      for (let y = 0; y < YEARS; y += STEP) {
+        eco.debugAdvance(STEP);
+        const now = eco.playSeconds;
+        for (let s = 0; s < t.n; s++) {
+          if (t.isWhale[s] || t.stormOnly[s] || cameAt[s] >= 0) continue;
+          if (arrivals.sp[s].found) {
+            cameAt[s] = now;
+            continue;
+          }
+          if (metAt[s] >= 0) continue;
+          for (let slot = 0; slot < isl.count && metAt[s] < 0; slot++) {
+            if (!arrivals.reachable(s, slot)) continue;
+            if (!t.isPlant[s]) {
+              if (eco.debug.fauna.K(s, slot) >= 0.05) metAt[s] = now;
+              continue;
+            }
+            const list = t.marine[s] ? isl.sea : isl.land;
+            const a = t.marine[s] ? isl.seaStart[slot] : isl.landStart[slot];
+            const b = t.marine[s] ? isl.seaStart[slot + 1] : isl.landStart[slot + 1];
+            for (let i = a; i < b; i++) {
+              if (stays(s, list[i], slot)) {
+                metAt[s] = now;
+                break;
+              }
+            }
+          }
+        }
+      }
+      const end = eco.playSeconds;
+      // The scan above runs every STEP years: needs may have been met up to that long before it saw them.
+      const slack = STEP / 2;
+      let tested = 0;
+      let worst = 0;
+      const late: string[] = [];
+      for (let s = 0; s < t.n; s++) {
+        if (metAt[s] < 0) continue;
+        const cap = STUCK_CAP[t.rarity[s]];
+        const waited = (cameAt[s] >= 0 ? cameAt[s] : end) - metAt[s];
+        if (cameAt[s] < 0 && waited < cap) continue;
+        tested++;
+        worst = Math.max(worst, waited / cap);
+        if (waited > cap + slack) late.push(`${t.defs[s].key} waited ${Math.round(waited)} s (cap ${cap} s)`);
+      }
+      return {
+        pass: tested >= 10 && late.length === 0,
+        detail: `${tested} species measured from the moment their needs were met; longest wait ${(worst * 100).toFixed(0)}% of its cap${late.length ? `; late: ${late.join(', ')}` : ''}`,
+      };
+    },
+  },
+  {
+    id: 'sand-burial',
+    label: 'Trees live through sand poured a little at a time (and keep their soil); deep burial ends them',
+    quick: false,
+    run() {
+      // A tree that roots in rock (as ʻōhiʻa does), happy anywhere else on the island.
+      const sp = testCatalogue(['crust', 'ohia'], (d) =>
+        d.key === 'ohia'
+          ? { ...d, eco: { ...d.eco, rate: 0, substrate: [Substrate.Basalt, Substrate.Stone, Substrate.Limestone], moist: [0, 0, 1, 1], saltMax: 1, soil: [0.05, 0.1] } }
+          : { ...d, eco: { ...d.eco, rate: 0 } },
+      );
+      const ohia = idOf(sp, 'ohia');
+      const { cols, eco } = world((c) => {
+        flatSea(c, 12);
+        cone(c, 0, 0, 120, 30);
+      }, sp);
+      const f = eco.debug.w.f;
+      // A grown forest on good soil, in three test rings.
+      const ring = (x: number): number[] => {
+        const out: number[] = [];
+        for (let p = 0; p < NPATCH; p++) if (Math.hypot(patchX(p) - x, patchZ(p)) <= 10 && f.h[p] > 4) out.push(p);
+        return out;
+      };
+      const rings = [ring(-40), ring(40), ring(0)];
+      for (const r of rings) {
+        for (const p of r) {
+          f.sp[p * LAYERS + L_CANOPY] = ohia + 1;
+          f.cov[p * LAYERS + L_CANOPY] = 1;
+          f.soil[p] = 0.2;
+        }
+      }
+      eco.debugAdvance(5);
+      const state = (r: number[]): [number, number] => {
+        let c = 0;
+        let s = 0;
+        for (const p of r) {
+          c += f.sp[p * LAYERS + L_CANOPY] === ohia + 1 ? f.cov[p * LAYERS + L_CANOPY] : 0;
+          s += f.soil[p];
+        }
+        return [c / r.length, s / r.length];
+      };
+      const before = rings.map(state);
+      // Pour sand on each ring in 2 cm layers: 0.4 m, 1.0 m and 4 m.
+      const depths = [0.4, 1.0, 4];
+      const xs = [-40, 40, 0];
+      for (let k = 0; k < 3; k++) {
+        for (let d = 0; d < depths[k] - 1e-6; d += 0.02) {
+          sandDisc(cols, xs[k], 0, 12, 0.02);
+          cols.markChanged(0, 0, NX - 1, NZ - 1, ChangeFlag.Geom | ChangeFlag.Tool);
+          eco.flushJobs();
+        }
+      }
+      eco.debugAdvance(60);
+      const after = rings.map(state);
+      const ok =
+        after[0][0] >= 0.8 * before[0][0] && after[0][1] >= 0.8 * before[0][1] && after[1][0] >= 0.8 * before[1][0] && after[1][1] >= 0.8 * before[1][1] && after[2][0] < 0.1;
+      const fmtR = (i: number): string => `${depths[i]} m: canopy ${before[i][0].toFixed(2)}→${after[i][0].toFixed(2)}, soil ${before[i][1].toFixed(2)}→${after[i][1].toFixed(2)} m`;
+      return { pass: ok, detail: [0, 1, 2].map(fmtR).join('; ') };
+    },
+  },
+  {
+    id: 'undo-sea-plants',
+    label: 'Undoing new land leaves no land plants standing under the sea',
+    quick: false,
+    run() {
+      const sp = eager(['searocket', 'glory'], 400);
+      const { cols, grid, eco } = world((c) => {
+        seabed(c);
+        cay(c, -260, 250, 60, 4);
+      }, sp);
+      eco.debugAdvance(100);
+      // Open an undo record and pour a sand spit out from the cay.
+      const colSnaps = new Map<number, ColumnBlock>();
+      const patchSnaps = new Map<number, PatchBlock>();
+      cols.recordId = 1;
+      grid.recordId = 1;
+      cols.beforeModify = (b) => {
+        colSnaps.set(b, cols.snapshotBlock(b));
+        const pb = (b % BLOCKS_X) + ((b / BLOCKS_X) | 0) * PBLOCKS;
+        if (!patchSnaps.has(pb)) patchSnaps.set(pb, grid.snapshotBlock(pb));
+        grid.blockStamp[pb] = grid.recordId;
+      };
+      grid.beforeModify = (b) => {
+        if (!patchSnaps.has(b)) patchSnaps.set(b, grid.snapshotBlock(b));
+      };
+      for (let x = -200; x <= -140; x += 4) {
+        for (let k = 0; k < NZ; k++) {
+          for (let i = 0; i < NX; i++) {
+            if (Math.hypot(cols.cx(i) - x, cols.cz(k) - 250) > 10) continue;
+            const c = i + k * NX;
+            cols.touch(c);
+            cols.sed[c] = Math.max(cols.sed[c], 1.5 - cols.rock[c]);
+          }
+        }
+      }
+      cols.markChanged(0, 0, NX - 1, NZ - 1, ChangeFlag.Geom | ChangeFlag.Tool);
+      eco.debugAdvance(150);
+      const f = eco.debug.w.f;
+      const t = eco.debug.w.t;
+      const spitPlants = (): number => {
+        let n = 0;
+        for (let p = 0; p < NPATCH; p++) {
+          if (patchX(p) < -205 || patchX(p) > -135 || Math.abs(patchZ(p) - 250) > 12) continue;
+          for (let L = 0; L < LAYERS; L++) if (f.sp[p * LAYERS + L] !== 0 && !t.marine[f.sp[p * LAYERS + L] - 1]) n++;
+        }
+        return n;
+      };
+      const grown = spitPlants();
+      // Undo: the ground exactly, life merged; the hub then reports the restored ground.
+      for (const s of colSnaps.values()) cols.restoreBlock(s);
+      for (const s of patchSnaps.values()) grid.restoreBlock(s, (name, a, b) => eco.undoMerge(name, a, b));
+      cols.recordId = -1;
+      grid.recordId = -1;
+      cols.markChanged(0, 0, NX - 1, NZ - 1, ChangeFlag.Geom | ChangeFlag.Look);
+      eco.flushJobs();
+      let drowned = 0;
+      for (let p = 0; p < NPATCH; p++) {
+        if (f.h[p] > 0) continue;
+        for (let L = 0; L < LAYERS; L++) if (f.sp[p * LAYERS + L] !== 0 && !t.marine[f.sp[p * LAYERS + L] - 1]) drowned++;
+      }
+      return { pass: grown > 5 && drowned === 0, detail: `${grown} plant layers grew on the spit; ${drowned} land-plant layers left under the sea after undo` };
     },
   },
   {
@@ -378,16 +588,24 @@ registerChecks('eco', [
     label: 'A storm fells windward trees (more than twice the lee) and the forest grows back',
     quick: false,
     run() {
-      const sp = testCatalogue(['crust', 'lichen', 'moss', 'amau', 'pili', 'aalii', 'ohia'], (d) => ({
+      // A grown forest of a tree that is happy all over the island (so only the storm decides).
+      const sp = testCatalogue(['crust', 'ohia'], (d) => ({
         ...d,
-        eco: { ...d.eco, rate: d.eco.rate * 30, moist: d.key === 'ohia' ? [0.2, 0.3, 1, 1] : d.eco.moist, soil: d.key === 'ohia' ? [0.01, 0.03] : d.eco.soil, saltMax: 1 },
+        eco: { ...d.eco, rate: 0, moist: d.key === 'ohia' ? [0, 0, 1, 1] : d.eco.moist, soil: d.key === 'ohia' ? [0.05, 0.1] : d.eco.soil, saltMax: 1 },
       }));
+      const ohia = idOf(sp, 'ohia');
       const { eco } = world((c) => {
         flatSea(c, 14);
         cone(c, 0, 0, 120, 40);
       }, sp);
-      eco.debugAdvance(1800);
       const f = eco.debug.w.f;
+      for (let p = 0; p < NPATCH; p++) {
+        if (f.h[p] <= 3) continue;
+        f.sp[p * LAYERS + L_CANOPY] = ohia + 1;
+        f.cov[p * LAYERS + L_CANOPY] = 1;
+        f.soil[p] = 0.2;
+      }
+      eco.debugAdvance(20);
       const canopy = (side: number): number => {
         let s = 0;
         for (let p = 0; p < NPATCH; p++) if (f.h[p] > 3 && Math.sign(patchX(p)) === side && Math.abs(patchX(p)) > 20) s += f.cov[p * LAYERS + L_CANOPY];

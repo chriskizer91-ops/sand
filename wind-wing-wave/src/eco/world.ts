@@ -14,7 +14,7 @@ import { Rng } from '../engine/noise';
 import type { ReasonCode } from './needs';
 import { REASONS, habitatReason, isBuildableReason, substrateReason, type SpeciesTable } from './catalog';
 import { Dirt } from './dirt';
-import { EcoFields, Flag, L_CANOPY, LAYERS } from './fields';
+import { EcoFields, Flag, L_CANOPY, L_SHRUB, LAYERS } from './fields';
 import type { IslandRec } from './islands';
 import { band, trapezoid } from './maths';
 import type { PatchGrid } from './patches';
@@ -22,6 +22,9 @@ import type { Features } from './places';
 
 /** Perch samples kept per island for bird-carried arrivals. */
 export const PERCH_N = 24;
+/** Soil (m) a shrub or a tree needs in the cracks to root on rock, whatever its catalogue minimum. */
+const SHRUB_ROOT_SOIL = 0.02;
+const TREE_ROOT_SOIL = 0.05;
 
 /**
  * Per-island sums of what lives where: habitat patches, plant cover per species, land, forest
@@ -246,7 +249,7 @@ export class Suit {
       x = t.subMask[s] & (1 << f.bot[p]) && f.bot[p] !== Substrate.HotLava ? 1 : 0;
       if (explain) {
         fx[k] = x;
-        fr[k++] = f.bot[p] === Substrate.HotLava ? 'hot-lava' : substrateReason(t, s, false);
+        fr[k++] = substrateReason(t, s, f.bot[p]);
       } else if (x === 0) return 0;
       if (t.hasAlt[s]) x = band(h, t.altMin[s], t.altMax[s], 0.5);
       else if (t.hasDepth[s]) x = band(-h, t.depMin[s], t.depMax[s], 0.75);
@@ -259,9 +262,11 @@ export class Suit {
     } else {
       const sub = f.sub[p];
       x = t.subMask[s] & (1 << sub) ? 1 : 0;
+      // Shrubs and trees that lived through a shallow burial still root in the rock under the sand.
+      if (x === 0 && sub === Substrate.Sand && f.buried[p] > 0 && t.layer[s] >= L_SHRUB && t.subMask[s] & (1 << f.under[p])) x = 1;
       if (explain) {
         fx[k] = x;
-        fr[k++] = sub === Substrate.HotLava ? 'hot-lava' : substrateReason(t, s, false);
+        fr[k++] = substrateReason(t, s, sub);
       } else if (x === 0) return 0;
       if (t.hasAlt[s]) {
         const lo = t.altMin[s];
@@ -285,10 +290,19 @@ export class Suit {
     // ---------- soil ----------
     // EcoNeeds.soil is [minimum, comfortable]: none below the minimum, a struggling 0.35 at it,
     // rising to 1 at "comfortable". A minimum of 0 (beach she-oak: [0, 0.1]) still has a
-    // comfortable depth, so on bare rock it only manages a third of its cover.
-    const sok = t.soilOk[s];
+    // comfortable depth, so on bare ground it only manages a third of its cover. And whatever the
+    // catalogue says, a shrub or a tree on rock needs something to root in: a crack's worth of
+    // soil (on sand the roots go into the sand itself).
+    let smin = t.soilMin[s];
+    let sok = t.soilOk[s];
+    if (!t.marine[s] && t.layer[s] >= L_SHRUB && f.sub[p] !== Substrate.Sand && f.sub[p] !== Substrate.Pond) {
+      const crack = t.layer[s] === L_CANOPY ? TREE_ROOT_SOIL : SHRUB_ROOT_SOIL;
+      if (smin < crack) {
+        smin = crack;
+        if (sok < crack + 0.01) sok = crack + 0.01;
+      }
+    }
     if (sok > 0) {
-      const smin = t.soilMin[s];
       const so = f.soil[p];
       if (so < smin) x = 0;
       else x = so >= sok ? 1 : 0.35 + (0.65 * (so - smin)) / (sok - smin);

@@ -43,11 +43,16 @@ const QUIET_AFTER = 3;
 const MAX_DT = 16;
 const MAXP = 12;
 /** Seed rain per patch-year at full island abundance, by road. */
-const RAIN_WIND = 0.0005;
-const RAIN_BIRD = 0.0004;
-const RAIN_SEA = 0.001;
+const RAIN_WIND = 0.00012;
+const RAIN_BIRD = 0.0001;
+const RAIN_SEA = 0.00025;
+/** Share of the plants' organic matter (EcoGives.soil) kept as soil, on dry and on wet ground. */
+const SOIL_KEPT_DRY = 0.12;
+const SOIL_KEPT_WET = 0.36;
 /** Soil that makes a closed canopy a real forest (not a grove on bare sand or new lava). */
 export const REAL_FOREST_SOIL = 0.1;
+/** One step of the cover each patch adds to its island's tally. */
+const COV_UNIT = 1 / 65535;
 /** Count everything afresh at least this often (steps), so the running sums never drift. */
 const RECOUNT_EVERY = 64;
 
@@ -189,7 +194,8 @@ export class Sweep {
   private readonly tMask = new Uint32Array(NPATCH);
   private readonly tBits = new Uint16Array(NPATCH);
   private readonly tSp = new Uint8Array(NPATCH * LAYERS);
-  private readonly tCov = new Float32Array(NPATCH * LAYERS);
+  /** Cover added, in 1/65535 steps (added and taken away as exactly the same number). */
+  private readonly tCov = new Uint16Array(NPATCH * LAYERS);
   /** Per island slot: how wide the island is, for its fresh-water lens (set each step). */
   private wide = new Float32Array(8);
   private cursor = 0;
@@ -553,7 +559,7 @@ export class Sweep {
     // Weathering: rain, warmth and lichens crumble rock; old basalt fastest, placed stone slowest,
     // sand none. It is a little cooler (slower) up high.
     const warmth = 1 - 0.4 * Math.min(1, f.h[p] / 180);
-    const weather = 1.1e-5 * kSub * (0.25 + m) * warmth * (1 + 1.5 * g) * Math.max(0, 1 - soil / 0.6);
+    const weather = 0.5e-5 * kSub * (0.25 + m) * warmth * (1 + 1.5 * g) * Math.max(0, 1 - soil / 0.6);
     // Organic matter from the plants (their own `gives.soil` when the catalogue sets it).
     let organic = 0;
     let fix = 0;
@@ -565,7 +571,10 @@ export class Sweep {
       organic += (t.givesSoil[s] > 0 ? t.givesSoil[s] / 100 : 3.5e-5 * (L === 0 ? 0.3 : L === 1 ? 0.5 : L === 2 ? 0.8 : 1)) * c;
       fix += t.givesN[s] * c;
     }
-    organic *= 0.4 + 0.6 * m;
+    // Only part of what the plants shed stays as soil (the rest rots away, washes off or blows
+    // away): more in the wet, where it lies damp and keeps. This retention is what sets the
+    // pace of the soil ladder against the beat sheet (tools/simulate.ts).
+    organic *= SOIL_KEPT_DRY + (SOIL_KEPT_WET - SOIL_KEPT_DRY) * m;
     const total = g + herb + shrub + can;
     const sl = f.slope[p];
     const erosion = sl > 30 ? 6e-5 * ((sl - 30) / 30) * ((sl - 30) / 30) * (0.3 + f.rain[p]) * Math.max(0, 1 - total) : 0;
@@ -684,10 +693,10 @@ export class Sweep {
     }
     for (let L = 0; L < LAYERS; L++) {
       const s1 = f.sp[o + L];
-      const c = f.cov[o + L];
+      const q = Math.round(f.cov[o + L] * 65535);
       this.tSp[o + L] = s1;
-      this.tCov[o + L] = c;
-      if (s1 !== 0) T.cover[slot * nS + s1 - 1] += c;
+      this.tCov[o + L] = q;
+      if (s1 !== 0) T.cover[slot * nS + s1 - 1] += q * COV_UNIT;
     }
     const land = f.h[p] > 0;
     const can = f.cov[o + 3];
@@ -738,7 +747,7 @@ export class Sweep {
     const o = p * LAYERS;
     for (let L = 0; L < LAYERS; L++) {
       const s1 = this.tSp[o + L];
-      if (s1 !== 0) T.cover[slot * nS + s1 - 1] -= this.tCov[o + L];
+      if (s1 !== 0) T.cover[slot * nS + s1 - 1] -= this.tCov[o + L] * COV_UNIT;
     }
     const bits = this.tBits[p];
     if (bits !== 0) addBits(T, slot, bits, -1);
@@ -774,9 +783,9 @@ export class Sweep {
     }
   }
 
-  /** Tell the page this patch looks different (urgent: the player is likely watching it). */
-  markChanged(p: number, urgent = false): void {
-    this.w.dirt.markPatch(p % NP, (p / NP) | 0, urgent);
+  /** Tell the page this patch looks different. */
+  markChanged(p: number): void {
+    this.w.dirt.markPatch(p % NP, (p / NP) | 0);
   }
 }
 

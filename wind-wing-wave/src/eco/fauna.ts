@@ -30,6 +30,8 @@ const CLIFF_BIT = habBit(Habitat.Cliff);
 const NEST_GROUND = CLIFF_BIT | habBit(Habitat.RockShore) | habBit(Habitat.BareRock) | habBit(Habitat.Beach) | habBit(Habitat.Grass) | habBit(Habitat.Crust) | habBit(Habitat.Dune);
 /** Cliffs a seabird can nest on: at the sea, on a stack or on an islet. */
 const SEA_CLIFF_FLAGS = Flag.SeaCliff | Flag.Stack | Flag.Islet;
+/** A required species (EcoNeeds.requires) counts once it is this abundant on the island. */
+const REQUIRE_MIN = 0.15;
 /** Colony sites are re-chosen this often (steps), and whenever the islands change. */
 const SITE_EVERY = 8;
 
@@ -77,7 +79,8 @@ export function computeGates(w: EcoWorld): void {
       else {
         for (let k = t.reqStart[s]; k < t.reqStart[s + 1]; k++) {
           const r = t.req[k];
-          if (!w.present[slot * nS + r]) {
+          // Food, hosts and partners have to be there in some numbers, not as a single seedling.
+          if (!w.present[slot * nS + r] || abundance(w, slot, r) < REQUIRE_MIN) {
             why = requireReason(t, r);
             break;
           }
@@ -190,7 +193,11 @@ export class Fauna {
         w.pop[i] = next;
       }
     }
-    if (this.sitesDue || w.step % SITE_EVERY === 0) this.placeColonies();
+  }
+
+  /** Time to choose the colony sites again (the islands changed, or every few steps). */
+  get coloniesDue(): boolean {
+    return this.sitesDue || this.w.step % SITE_EVERY === 0;
   }
 
   /** Does a nearby island still hold this species (slows losses). */
@@ -205,8 +212,11 @@ export class Fauna {
     return false;
   }
 
-  /** Seabird colonies: each kind at its own nest site on each island, with guano painted round it. */
-  placeColonies(): void {
+  /**
+   * Seabird colonies: each kind at its own nest site on each island, with guano painted round it
+   * (a generator, one island per slice; the new list replaces the old one when it is complete).
+   */
+  *placeColonies(): Generator<void, void, void> {
     const w = this.w;
     const t = w.t;
     const isl = w.islands;
@@ -215,9 +225,10 @@ export class Fauna {
     // Clear the old rasters.
     for (let i = 0; i < this.painted.length; i += 3) this.raster(this.painted[i], this.painted[i + 1], this.painted[i + 2], 0, true);
     this.painted.length = 0;
-    this.colonies = [];
-    this.colonyIslands = [];
+    const colonies: ColonyInfo[] = [];
+    const colonyIslands: number[] = [];
     for (let slot = 0; slot < isl.count; slot++) {
+      yield;
       const rec = isl.rec(slot);
       let biggest = -1;
       let biggestN = 0;
@@ -229,8 +240,8 @@ export class Fauna {
         if (site < 0) continue;
         const x = patchX(site);
         const z = patchZ(site);
-        this.colonies.push({ species: s, x, z, r: Math.min(60, 10 + 30 * Math.sqrt(P)), n: Math.min(1, P) });
-        this.colonyIslands.push(rec.id);
+        colonies.push({ species: s, x, z, r: Math.min(60, 10 + 30 * Math.sqrt(P)), n: Math.min(1, P) });
+        colonyIslands.push(rec.id);
         if (P > biggestN) {
           biggestN = P;
           biggest = s;
@@ -244,6 +255,8 @@ export class Fauna {
       }
       rec.colonySp = biggest;
     }
+    this.colonies = colonies;
+    this.colonyIslands = colonyIslands;
   }
 
   /**

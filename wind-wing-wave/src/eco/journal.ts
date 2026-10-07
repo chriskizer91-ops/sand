@@ -8,9 +8,11 @@
  *   other card): a species' first failed visit is always written, but most are journal-only;
  * - first stamps, storms, Ages and the ending always get a card, and so does a visitor coming
  *   back (the payoff the player built for); they wait their turn instead of being dropped;
- * - a species' first arrival is a card in the opening minutes; later it waits up to 40 s for
- *   a gap, and is written journal-only if none comes;
- * - even the cards that always come are at least 5 s apart.
+ * - a species' first arrival waits up to 40 s for its card (in the opening minutes it needs
+ *   only the short gap below, later a quiet moment), and is written journal-only if none comes:
+ *   the next arrival card then says how many more came meanwhile (params.more);
+ * - every card is at least 15 s after the one before, so even the busy opening of a new island
+ *   shows at most four a minute.
  * A card that waits is written when it is shown, with the year it is shown in, so the journal
  * always reads in order. Times are play seconds (real, unpaused seconds), so the pacing is the
  * same whatever the pace of the years.
@@ -22,8 +24,8 @@ export type Want = 'always' | 'return' | 'first' | 'normal' | 'visit' | 'never';
 
 /** Gap after any card before an ordinary story, a waiting first arrival or a return gets one. */
 export const CARD_GAP = 35;
-/** Gap even the cards that always come keep. */
-export const MIN_GAP = 5;
+/** Gap every card keeps after the last one, even those that always come. */
+export const MIN_GAP = 15;
 const NORMAL_GAP = 40;
 const VISIT_GAP = 60;
 /** How long a first arrival and a return wait for their card (play s). */
@@ -42,11 +44,6 @@ export interface HeldEntry {
   until: number;
 }
 
-/** Waiting order: stamps and the like first, then returns, then first arrivals. */
-function rank(want: Want): number {
-  return want === 'always' ? 0 : want === 'return' ? 1 : 2;
-}
-
 export class JournalBook {
   entries: JournalEntry[] = [];
   /** New entries not yet taken by the engine stream. */
@@ -57,6 +54,8 @@ export class JournalBook {
   lastVisitCard = -1e9;
   /** Play time of first land (for the opening). */
   openedAt = 0;
+  /** First arrivals written journal-only since the last arrival card ("and N more" on the next one). */
+  folded = 0;
 
   /** Add an entry now (play time `now`, current `year`); returns it, or null while it waits for its card. */
   add(d: EntryDraft, want: Want, now: number, year: number): JournalEntry | null {
@@ -86,6 +85,7 @@ export class JournalBook {
       const h = this.held[i];
       if (now >= h.until) {
         this.held.splice(i, 1);
+        if (h.want === 'first' && h.e.kind === 'arrival') this.folded++;
         this.push(h.e, false, now, year);
       } else i++;
     }
@@ -103,15 +103,18 @@ export class JournalBook {
     return CARD_GAP;
   }
 
+  /** Cards wait in the order things happened, so the story never runs ahead of itself. */
   private hold(h: HeldEntry): void {
-    let i = this.held.length;
-    while (i > 0 && rank(this.held[i - 1].want) > rank(h.want)) i--;
-    this.held.splice(i, 0, h);
+    this.held.push(h);
   }
 
   private push(d: EntryDraft, headline: boolean, now: number, year: number): JournalEntry {
     const e: JournalEntry = { ...d, year: Math.max(d.year, year), id: this.nextId++, headline };
     if (headline) this.lastCard = now;
+    if (headline && d.kind === 'arrival' && this.folded > 0) {
+      e.params = { ...d.params, more: this.folded };
+      this.folded = 0;
+    }
     this.entries.push(e);
     this.pending.push(e);
     return e;

@@ -86,20 +86,41 @@ export function patchAt(x: number, z: number): number {
   return pi + pk * NP;
 }
 
+/**
+ * Flood-fill scratch (component labels and a queue) shared by the zone job's stages: islands,
+ * ponds and places run one after another, so one pair of arrays serves them all.
+ */
+export class FloodScratch {
+  readonly comp = new Int32Array(NPATCH);
+  readonly queue = new Int32Array(NPATCH);
+}
+
 const f32 = (n: number): Float32Array => new Float32Array(n);
 const u8 = (n: number): Uint8Array => new Uint8Array(n);
 const u16 = (n: number): Uint16Array => new Uint16Array(n);
 const u32 = (n: number): Uint32Array => new Uint32Array(n);
 
+/** Bits of the life snapshot the zone job reads (ZoneFields.life). */
+export const Life = {
+  /** Something grows here (any layer). */
+  Any: 1,
+  /** Plant cover of 0.5 or more in all (old living ground, for kīpuka). */
+  Cover: 2,
+  /** Real soil (0.1 m or more): a pond floor that holds water. */
+  Soil: 4,
+  /** Warmth left in thick new lava (0.25 or more). */
+  Warm: 8,
+} as const;
+
 /**
- * What the zone job (zone.ts) works on: the ground and the life it reads straight from the
- * live fields, and the derived fields it writes. The job writes those into its own staged
- * copies (ZoneOut) and they replace the live ones in one go between ecology steps, so nobody
- * ever sees a half-finished picture (no streams vanishing for a moment, no coast at 400 m).
- * EcoFields fits this shape too.
+ * What the zone job (zone.ts) works on: the ground, a snapshot of the life it needs (taken
+ * between two ecology steps, so a half-finished sweep never leaks into it), and the derived
+ * fields it writes. The job writes those into its own staged copies (ZoneOut) and they replace
+ * the live ones in one go between ecology steps, so nobody ever sees a half-finished picture
+ * (no streams vanishing for a moment, no coast at 400 m). EcoFields fits the ground part too.
  */
 export interface ZoneFields {
-  // ---------- read (live) ----------
+  // ---------- read (the ground, live; the life, as snapshotted) ----------
   readonly h: Float32Array;
   readonly hmin: Float32Array;
   readonly hmax: Float32Array;
@@ -107,10 +128,8 @@ export interface ZoneFields {
   readonly sand: Float32Array;
   readonly bot: Uint8Array;
   readonly born: Float32Array;
-  readonly soil: Float32Array;
-  readonly warm: Float32Array;
-  readonly sp: Uint8Array;
-  readonly cov: Float32Array;
+  /** Life bits per patch (see Life). */
+  readonly life: Uint8Array;
   // ---------- written (staged) ----------
   readonly coast: Float32Array;
   readonly rain: Float32Array;
@@ -118,14 +137,12 @@ export interface ZoneFields {
   readonly salt: Float32Array;
   readonly wind: Float32Array;
   readonly pondLvl: Float32Array;
-  readonly pondId: Uint16Array;
-  readonly flow: Float32Array;
   readonly shelter: Float32Array;
   readonly flags: Uint32Array;
   readonly geoMask: Uint32Array;
 }
 
-export class EcoFields implements ZoneFields {
+export class EcoFields {
   // ---------- live state (persistent) ----------
   /** Species id + 1 per layer (0 = empty), LAYERS per patch. */
   readonly sp: Uint8Array;
@@ -145,6 +162,11 @@ export class EcoFields implements ZoneFields {
   readonly char: Float32Array;
   /** Warmth left in thick new lava 0..1. */
   readonly warm: Float32Array;
+  /**
+   * How deep the shrubs and trees standing here have been buried since they rooted (m). Sand
+   * poured a little at a time adds up: woody plants survive shallow burial, not deep.
+   */
+  readonly buried: Float32Array;
   /** Year this surface last formed (lava cooled, sand laid, ground dug). */
   readonly born: Float32Array;
   /** Height when the surface last formed: small changes against it never reset life. */
@@ -163,8 +185,8 @@ export class EcoFields implements ZoneFields {
   readonly slope: Float32Array;
   /** Mean sand depth (m). */
   readonly sand: Float32Array;
-  /** Mean molten lava depth (m). */
-  readonly lava: Float32Array;
+  /** The rock under any sand (Basalt, Stone or Limestone): deep roots reach it through thin sand. */
+  readonly under: Uint8Array;
   /** Substrate (speciesTypes.Substrate): Sea underwater, Pond in ponds. */
   readonly sub: Uint8Array;
   /** Bottom material ignoring water (Basalt, Stone, Limestone, Sand or HotLava). */
@@ -183,9 +205,6 @@ export class EcoFields implements ZoneFields {
   readonly moist: Float32Array;
   /** Pond water level (m) where flagged Pond. */
   readonly pondLvl: Float32Array;
-  readonly pondId: Uint16Array;
-  /** Rain collected from upslope (flow accumulation). */
-  readonly flow: Float32Array;
   /** Sea patches: how enclosed by land, 0 open .. 1 ringed. */
   readonly shelter: Float32Array;
   /** Flag bits. */
@@ -209,6 +228,7 @@ export class EcoFields implements ZoneFields {
     this.logs = grid.add('eco.logs', f32);
     this.char = grid.add('eco.char', f32);
     this.warm = grid.add('eco.warm', f32);
+    this.buried = grid.add('eco.buried', f32);
     this.born = grid.add('eco.born', f32);
     this.refH = grid.add('eco.refH', f32);
     this.refSub = grid.add('eco.refSub', u8);
@@ -219,7 +239,7 @@ export class EcoFields implements ZoneFields {
     this.hmax = grid.add('eco.hmax', f32, false);
     this.slope = grid.add('eco.slope', f32, false);
     this.sand = grid.add('eco.sand', f32, false);
-    this.lava = grid.add('eco.lava', f32, false);
+    this.under = grid.add('eco.under', u8, false);
     this.sub = grid.add('eco.sub', u8, false);
     this.bot = grid.add('eco.bot', u8, false);
     this.wind = grid.add('eco.wind', f32, false);
@@ -230,8 +250,6 @@ export class EcoFields implements ZoneFields {
     this.salt = grid.add('eco.salt', f32, false);
     this.moist = grid.add('eco.moist', f32, false);
     this.pondLvl = grid.add('eco.pondLvl', f32, false);
-    this.pondId = grid.add('eco.pondId', u16, false);
-    this.flow = grid.add('eco.flow', f32, false);
     this.shelter = grid.add('eco.shelter', f32, false);
     this.flags = grid.add('eco.flags', u32, false);
     this.geoMask = grid.add('eco.geoMask', u32, false);

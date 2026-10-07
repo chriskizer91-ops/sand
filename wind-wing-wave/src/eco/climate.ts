@@ -139,13 +139,16 @@ export function* windMarch(f: ZoneFields, isl: Uint16Array): Generator<void, voi
   }
 }
 
-/** Soften the march's streaks (a 3x3 blur of rain and fog over land) and add shore spray. */
-export function* smoothClimate(f: ZoneFields, isl: Uint16Array): Generator<void, void, void> {
+/**
+ * Soften the march's streaks (a 3x3 blur of rain and fog over land) and add shore spray.
+ * `tmp` is scratch of NPATCH floats.
+ */
+export function* smoothClimate(f: ZoneFields, isl: Uint16Array, tmp: Float32Array): Generator<void, void, void> {
   const h = f.h;
   const salt = f.salt;
-  yield* blurLand(f.rain, isl, h);
-  yield* blurLand(f.rain, isl, h);
-  yield* blurLand(f.fog, isl, h);
+  yield* blurLand(f.rain, isl, h, tmp);
+  yield* blurLand(f.rain, isl, h, tmp);
+  yield* blurLand(f.fog, isl, h, tmp);
   // Salt: the windward march plus a little spray on every shore.
   for (let p = 0; p < NPATCH; p++) {
     if (isl[p] === 0 && h[p] <= 0) continue;
@@ -154,8 +157,7 @@ export function* smoothClimate(f: ZoneFields, isl: Uint16Array): Generator<void,
   }
 }
 
-const tmp = new Float32Array(NPATCH);
-function* blurLand(a: Float32Array, isl: Uint16Array, h: Float32Array): Generator<void, void, void> {
+function* blurLand(a: Float32Array, isl: Uint16Array, h: Float32Array, tmp: Float32Array): Generator<void, void, void> {
   tmp.set(a);
   for (let pk = 1; pk < NP - 1; pk++) {
     if (pk % BAND === 0) yield;

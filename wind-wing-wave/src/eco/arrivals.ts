@@ -17,6 +17,15 @@
  * - once that need is met, the visitor returns within 30–90 s (the pity timer);
  * - any species whose needs are met somewhere arrives within 5 minutes (common) or
  *   15 (rare): nothing stays stuck.
+ * "Needs met" is found two ways. Every step, each waiting plant scans its share of every
+ * island's patches in turn (so a niche of a single patch is still found within a minute or so);
+ * and as soon as the land the player just shaped is recognised, every visitor that couldn't stay
+ * is tried on exactly the patches they changed.
+ * Getting there is a need too: a weak traveller (a snail, a frog, a lizard on a log) is only
+ * owed its arrival on an island within its reach: near enough to the old islands upwind, or to
+ * an island in the zone where it already lives. Otherwise the journal hints that stepping stones
+ * to the east would help, and building them is what brings it (a visitor that came once has
+ * shown it can get there).
  */
 import { NP, ORIGIN_X, ZONE_SIZE } from '../config';
 import type { PlaceKind, Road } from '../content/speciesTypes';
@@ -25,7 +34,7 @@ import type { ReasonCode } from './needs';
 import { PLACE_KINDS, ROADS, RoadBit, isBuildableReason, placeAnswers } from './catalog';
 import type { Director, HintSource } from './director';
 import { abundance, islandGap, type Fauna } from './fauna';
-import { LAYERS, patchX, patchZ } from './fields';
+import { L_GROUND, LAYERS, patchX, patchZ } from './fields';
 import { chance } from './maths';
 import { placeOfFlags } from './places';
 import type { Sweep } from './succession';
@@ -36,25 +45,40 @@ const REF_AREA = 90000;
 const REF_PEAK = 110;
 const REF_SHORE = 1100;
 /**
- * Arrival attempts per catalogue "attempt per century". The catalogue writes rates as if a
- * century passed between attempts at the reference island; the game's pacing (the beat sheet,
- * ARCHITECTURE §4, in real minutes) wants about a quarter of that, with the never-stuck
- * guarantee catching the slow ones.
+ * Arrival attempts per catalogue "attempt per century". The catalogue writes rates as attempts
+ * per century at the reference island; tuned with the real catalogue against the beat sheet
+ * (ARCHITECTURE §4, tools/simulate.ts), the game wants about an eighth of that: most life then
+ * comes when its needs are met, a minute or three later (the never-stuck guarantee), and only
+ * the eager travellers (spores, spiders) beat it.
  */
-export const RATE_SCALE = 0.25;
+export const RATE_SCALE = 0.12;
 /** In-zone sources count this much more than the far old islands. */
 const HOP_GAIN = 3;
+/** Below this reach to an island (from the old islands or a hop), arriving there is left to chance. */
+export const REACH_MIN = 0.3;
 /** Cover a plant arrives with (so the first plant shows at once). */
 const ARRIVAL_COVER = 0.4;
 const TAKE = 0.3;
-/** Pity: a near-missed visitor returns this many play seconds after its need is met (30–75 s). */
+/** Pity: a near-missed visitor returns this many play seconds after its need is met (30–70 s). */
 const PITY_MIN = 30;
-const PITY_SPAN = 45;
+const PITY_SPAN = 40;
 /** Never stuck: within this many play seconds once needs are met (common, uncommon, rare). */
-const STUCK_CAP = [300, 600, 900];
-/** Forced arrivals are spread over this share of the cap, so they do not all come at once. */
-const STUCK_LO = 0.45;
-const STUCK_HI = 0.92;
+export const STUCK_CAP = [300, 600, 900];
+/**
+ * Forced arrivals are spread over this share of the cap, so they do not all come at once; the
+ * rest of the cap is room for the scan to notice the needs are met.
+ */
+const STUCK_LO = 0.3;
+const STUCK_HI = 0.6;
+/** A patch suits a species well enough to count as "its needs are met": a natural arrival there would stay. */
+export const MET = 0.3;
+/** Suitability tests the never-stuck scan may spend per step, shared by the plants it watches. */
+const SCAN_BUDGET = 12000;
+const SCAN_MIN = 64;
+/** Patches the player changed, kept for the visitors that couldn't stay… */
+const CHANGED_N = 4096;
+/** …and the suitability tests they may spend on them when the land settles. */
+const SHAPING_TESTS = 12000;
 /** The very first arrival comes this soon after first land. */
 export const FIRST_FLOOR = 14;
 /** "Lost" is told only after this many years gone from every island. */
@@ -74,7 +98,10 @@ export interface SpeciesState {
   deadline: number;
   /** Year it was last seen nowhere (-1 while living somewhere). */
   absentSince: number;
+  /** Counted as lost now (gone from every island for a long time). */
   lostTold: boolean;
+  /** Stories of loss told: 0 none, 1 its "lost" line, 2 its coming back too (later ones are quiet). */
+  lossTold: number;
   /** Lull-guard multiplier on its arrival odds. */
   boost: number;
   /** Island ids it has lived on (its first time on each is news). */
@@ -82,7 +109,7 @@ export interface SpeciesState {
 }
 
 function freshState(): SpeciesState {
-  return { found: false, firstYear: -1, visitTold: false, lastReason: null, lastVisitPlay: -1e9, nearMiss: null, metAt: -1, metIsland: 0, deadline: -1, absentSince: -1, lostTold: false, boost: 1, islands: [] };
+  return { found: false, firstYear: -1, visitTold: false, lastReason: null, lastVisitPlay: -1e9, nearMiss: null, metAt: -1, metIsland: 0, deadline: -1, absentSince: -1, lostTold: false, lossTold: 0, boost: 1, islands: [] };
 }
 
 export type StormPhaseNow = 'none' | 'warning' | 'peak' | 'clearing';
@@ -109,6 +136,14 @@ export class Arrivals implements HintSource {
   private crowded = false;
   /** Per species: a patch where its needs were last seen met (-1 none). */
   private goodSpot: Int32Array;
+  /** Per species: where its scan of the islands' patches goes on from. */
+  private scanAt: Int32Array;
+  /** Per (slot, species): it can get to that island on its own (set each step for the species the guarantees watch). */
+  private reach = new Uint8Array(0);
+  /** Patches the player changed since the land last settled (a ring; the newest overwrite the oldest). */
+  private changed = new Int32Array(CHANGED_N);
+  private changedN = 0;
+  private changedAt = 0;
 
   constructor(
     private w: EcoWorld,
@@ -118,6 +153,7 @@ export class Arrivals implements HintSource {
   ) {
     this.sp = Array.from({ length: w.t.n }, freshState);
     this.goodSpot = new Int32Array(w.t.n).fill(-1);
+    this.scanAt = new Int32Array(w.t.n);
   }
 
   get foundCount(): number {
@@ -144,9 +180,7 @@ export class Arrivals implements HintSource {
     this.computeTargets();
     const storming = this.stormPhase === 'peak' || this.stormPhase === 'clearing';
     for (let slot = 0; slot < isl.count; slot++) {
-      const rec = isl.rec(slot);
       const hasSea = isl.seaStart[slot + 1] > isl.seaStart[slot];
-      const dEast = Math.max(0, Math.min(ZONE_SIZE, ORIGIN_X + ZONE_SIZE - rec.centroid[0]));
       for (let s = 0; s < nS; s++) {
         if (w.present[slot * nS + s] || t.isWhale[s]) continue;
         if ((t.marine[s] || t.marineAnimal[s]) && !hasSea) continue;
@@ -155,7 +189,7 @@ export class Arrivals implements HintSource {
         if (t.stormOnly[s]) stormMul = storming ? 25 : 0;
         else if (r & (RoadBit.raft | RoadBit.storm)) stormMul = storming ? 8 : r & ~(RoadBit.raft | RoadBit.storm) ? 1 : 0.25;
         if (stormMul === 0) continue;
-        const outside = Math.pow(t.reach[s], 0.5 + dEast / ZONE_SIZE);
+        const outside = this.outside(s, slot);
         this.inZone(s, slot);
         const hop = this.hopSum;
         const lam = ((RATE_SCALE * t.rate[s]) / 100) * (outside + hop) * this.target(slot, s) * stormMul * this.sp[s].boost;
@@ -201,6 +235,19 @@ export class Arrivals implements HintSource {
     if (r & (RoadBit.bird | RoadBit.flight)) best = Math.max(best, this.targets[o + 2]);
     if (r & RoadBit.storm) best = Math.max(best, this.targets[o + 3]);
     return best;
+  }
+
+  /** How well species s crosses from the old islands to island slot: weaker for islands further west. */
+  private outside(s: number, slot: number): number {
+    const dEast = Math.max(0, Math.min(ZONE_SIZE, ORIGIN_X + ZONE_SIZE - this.w.islands.rec(slot).centroid[0]));
+    return Math.pow(this.w.t.reach[s], 0.5 + dEast / ZONE_SIZE);
+  }
+
+  /** Can species s get to island slot on its own (from the old islands, or hopping within the zone)? */
+  reachable(s: number, slot: number): boolean {
+    if (this.outside(s, slot) >= REACH_MIN) return true;
+    this.inZone(s, slot);
+    return this.hopSum >= REACH_MIN;
   }
 
   /** Hops from islands in the zone where it already lives (sets hopSum and hopFrom). */
@@ -292,7 +339,7 @@ export class Arrivals implements HintSource {
         w.f.sp[o] = s + 1;
         w.f.cov[o] = Math.min(ARRIVAL_COVER, best);
         this.sweep.wake(bestP);
-        this.sweep.markChanged(bestP, true);
+        this.sweep.markChanged(bestP);
         ok = true;
       } else if (crowded && why === null) return false;
       else reason = why ?? t.mainNeed[s];
@@ -312,7 +359,9 @@ export class Arrivals implements HintSource {
       w.present[slot * t.n + s] = 1;
       const first = !st.found;
       const returned = first && st.nearMiss !== null;
-      const afterLost = !first && st.lostTold;
+      // Back after being lost: told once (a species that comes and goes at the margin stays quiet).
+      const afterLost = !first && st.lostTold && st.lossTold === 1;
+      if (afterLost) st.lossTold = 2;
       const newHere = !st.islands.includes(rec.id);
       if (newHere) st.islands.push(rec.id);
       if (first) {
@@ -327,7 +376,7 @@ export class Arrivals implements HintSource {
       st.deadline = -1;
       st.boost = 1;
       this.director.onEstablish(s, rec.id, x, z, road, { first, returned, afterLost, hopFrom, castaway, place, newHere });
-      this.events.push({ species: s, road, x, z, island: rec.id, ok: true, first, returned: returned || afterLost });
+      this.events.push({ species: s, road, x, z, island: rec.id, ok: true, first, returned });
       return true;
     }
     if (!st.found && reason) {
@@ -494,7 +543,7 @@ export class Arrivals implements HintSource {
 
   // ---------- guarantees ----------
 
-  /** Could species s stay somewhere right now? The island slot, or -1. */
+  /** Could species s stay somewhere right now (a quick sampled look)? The island slot, or -1. */
   needsMet(s: number): number {
     const w = this.w;
     const t = w.t;
@@ -504,7 +553,7 @@ export class Arrivals implements HintSource {
     const good = this.goodSpot[s];
     if (t.isPlant[s] && good >= 0) {
       const slot = w.slotOfPatch(good);
-      if (slot >= 0 && this.spotValue(s, good, slot, squeeze) >= 0.35) return slot;
+      if (slot >= 0 && this.spotValue(s, good, slot, squeeze) >= MET) return slot;
     }
     for (let slot = 0; slot < isl.count; slot++) {
       if ((t.marine[s] || t.marineAnimal[s]) && isl.seaStart[slot + 1] === isl.seaStart[slot]) continue;
@@ -514,7 +563,7 @@ export class Arrivals implements HintSource {
         for (let b = 0; b < 6; b++) {
           if (!(r & (1 << b))) continue;
           const spot = this.findSpot(s, slot, ROADS[b], 24, true, squeeze, false);
-          if (spot.v >= 0.35) {
+          if (spot.v >= MET) {
             this.goodSpot[s] = spot.p;
             return slot;
           }
@@ -524,55 +573,184 @@ export class Arrivals implements HintSource {
     return -1;
   }
 
+  /** Patch p changed (by the player, or its surroundings did): tried for the visitors that couldn't stay once the land settles. */
+  noteChanged(p: number): void {
+    this.changed[this.changedAt] = p;
+    this.changedAt = (this.changedAt + 1) % CHANGED_N;
+    if (this.changedN < CHANGED_N) this.changedN++;
+  }
+
+  /**
+   * The land the player shaped has just been recognised: try every waiting visitor that couldn't
+   * stay on the patches that changed (newest first, within a fixed number of tests), so the pity
+   * timer starts at once.
+   */
+  afterShaping(): void {
+    const w = this.w;
+    const t = w.t;
+    const changed = this.changedN;
+    this.changedN = 0;
+    let waiting = 0;
+    for (let s = 0; s < t.n; s++) if (t.isPlant[s] && this.sp[s].nearMiss && this.sp[s].deadline < 0 && this.watched(s)) waiting++;
+    const n = Math.min(changed, Math.ceil(SHAPING_TESTS / Math.max(1, waiting)));
+    for (let s = 0; s < t.n; s++) {
+      const st = this.sp[s];
+      if (!st.nearMiss || st.deadline >= 0 || !this.watched(s)) continue;
+      if (!t.isPlant[s]) {
+        const slot = this.animalMet(s, false);
+        if (slot >= 0) this.met(s, slot);
+        continue;
+      }
+      for (let k = 0; k < n; k++) {
+        const p = this.changed[(this.changedAt - 1 - k + CHANGED_N) % CHANGED_N];
+        const slot = w.slotOfPatch(p);
+        if (slot < 0 || !w.suit.gate[slot * t.n + s]) continue;
+        if (this.spotValue(s, p, slot, !st.found) >= MET) {
+          this.goodSpot[s] = p;
+          this.met(s, slot);
+          break;
+        }
+      }
+    }
+  }
+
+  /** Watched by the guarantees: not living anywhere, and able to come in ordinary weather. */
+  private watched(s: number): boolean {
+    const t = this.w.t;
+    return !t.isWhale[s] && !t.stormOnly[s] && !this.living(s);
+  }
+
+  /** Needs met on island slot: start the countdown to a forced arrival. */
+  private met(s: number, slot: number): void {
+    const w = this.w;
+    const st = this.sp[s];
+    const u = w.rng.next();
+    st.metAt = w.realPlay;
+    st.metIsland = w.islands.ids[slot];
+    st.deadline = st.nearMiss ? w.realPlay + PITY_MIN + PITY_SPAN * u : w.realPlay + STUCK_CAP[w.t.rarity[s]] * (STUCK_LO + (STUCK_HI - STUCK_LO) * u);
+  }
+
+  /**
+   * An island where animal s could live now (island-level needs and enough habitat), or -1.
+   * With `reach`, only islands it can get to count.
+   */
+  private animalMet(s: number, reach: boolean): number {
+    const w = this.w;
+    const t = w.t;
+    const isl = w.islands;
+    for (let slot = 0; slot < isl.count; slot++) {
+      if (t.marineAnimal[s] && isl.seaStart[slot + 1] === isl.seaStart[slot]) continue;
+      if (reach && !this.reach[slot * t.n + s]) continue;
+      if (this.fauna.K(s, slot) >= 0.05) return slot;
+    }
+    return -1;
+  }
+
+  /**
+   * Go on scanning the islands' patches (land, or the shallow sea for sea plants) for one where
+   * plant s would stay, `n` patches on from where it stopped last step, on islands it can reach.
+   * The island slot, or -1.
+   */
+  private scan(s: number, n: number): number {
+    const w = this.w;
+    const t = w.t;
+    const isl = w.islands;
+    const squeeze = !this.sp[s].found;
+    const good = this.goodSpot[s];
+    if (good >= 0) {
+      const slot = w.slotOfPatch(good);
+      if (slot >= 0 && this.reach[slot * t.n + s] && this.spotValue(s, good, slot, squeeze) >= MET) return slot;
+    }
+    const list = t.marine[s] ? isl.sea : isl.land;
+    const N = list.length;
+    if (N === 0) return -1;
+    let at = this.scanAt[s] % N;
+    const gate = w.suit.gate;
+    const reach = this.reach;
+    const nS = t.n;
+    for (let k = Math.min(n, N); k > 0; k--) {
+      const p = list[at];
+      at = at + 1 === N ? 0 : at + 1;
+      const slot = w.slotOfPatch(p);
+      if (slot < 0 || !gate[slot * nS + s] || !reach[slot * nS + s]) continue;
+      if (this.spotValue(s, p, slot, squeeze) >= MET) {
+        this.goodSpot[s] = p;
+        this.scanAt[s] = at;
+        return slot;
+      }
+    }
+    this.scanAt[s] = at;
+    return -1;
+  }
+
   /** Watch for needs being met; force the arrival when its time comes. */
   private *pity(): Generator<void, void, void> {
     const w = this.w;
     const t = w.t;
     const nS = t.n;
     const isl = w.islands;
-    // Check an eighth of the catalogue per step (each species every ~4 s at normal pace).
-    let checked = 0;
-    for (let s = w.step & 7; s < nS; s += 8) {
-      const st = this.sp[s];
-      if (t.isWhale[s] || t.stormOnly[s] || this.living(s)) {
-        st.metAt = -1;
-        st.deadline = -1;
-        continue;
+    const gate = w.suit.gate;
+    // Which islands each waiting species can get to; share the scan among the plants still
+    // waiting that some island's own needs let in.
+    if (this.reach.length < isl.count * nS) this.reach = new Uint8Array(Math.max(1, isl.count) * nS + 64 * nS);
+    let waiting = 0;
+    for (let s = 0; s < nS; s++) {
+      if (this.sp[s].deadline >= 0 || !this.watched(s)) continue;
+      // A visitor that came once has shown it can get there.
+      const came = this.sp[s].nearMiss !== null;
+      let open = false;
+      for (let slot = 0; slot < isl.count; slot++) {
+        const r = came || this.reachable(s, slot) ? 1 : 0;
+        this.reach[slot * nS + s] = r;
+        if (r && gate[slot * nS + s]) open = true;
       }
-      const slot = this.needsMet(s);
-      if (++checked % 4 === 0) yield;
-      if (slot < 0) {
-        st.metAt = -1;
-        st.deadline = -1;
-        continue;
-      }
-      if (st.deadline < 0) {
-        st.metAt = w.realPlay;
-        st.metIsland = isl.ids[slot];
-        const u = w.rng.next();
-        const cap = STUCK_CAP[t.rarity[s]];
-        st.deadline = st.nearMiss ? w.realPlay + PITY_MIN + PITY_SPAN * u : w.realPlay + cap * (STUCK_LO + (STUCK_HI - STUCK_LO) * u);
-      }
+      if (open && t.isPlant[s]) waiting++;
     }
+    const stride = Math.max(SCAN_MIN, Math.ceil(SCAN_BUDGET / Math.max(1, waiting)));
+    let spent = 0;
+    for (let s = 0; s < nS; s++) {
+      const st = this.sp[s];
+      if (!this.watched(s)) {
+        st.metAt = -1;
+        st.deadline = -1;
+        continue;
+      }
+      if (st.deadline >= 0) continue;
+      let slot: number;
+      if (t.isPlant[s]) {
+        slot = this.scan(s, stride);
+        spent += stride;
+        if (spent >= 2000) {
+          spent = 0;
+          yield;
+        }
+      } else slot = this.animalMet(s, true);
+      if (slot >= 0) this.met(s, slot);
+    }
+    // Forced arrivals whose time has come.
     for (let s = 0; s < nS; s++) {
       const st = this.sp[s];
       if (st.deadline < 0 || w.realPlay < st.deadline) continue;
       const slot = isl.slotOf[st.metIsland];
       st.deadline = -1;
+      st.metAt = -1;
       if (slot < 0) continue;
       this.attempt(s, slot, this.pickRoad(s, false), true, -1, false);
     }
   }
 
-  /** The very first arrival: a wind traveller within 20 s of first land. */
+  /** The very first life on land: a wind traveller within 20 s of first land. */
   private firstFloor(): void {
     const w = this.w;
-    if (this.foundCount > 0 || w.realPlay - this.director.book.openedAt < FIRST_FLOOR || w.islands.count === 0) return;
+    if (w.realPlay - this.director.book.openedAt < FIRST_FLOOR || w.islands.count === 0) return;
     const t = w.t;
-    // Wind travellers, most eager first.
+    for (let s = 0; s < t.n; s++) if (this.sp[s].found && !t.marine[s] && !t.marineAnimal[s]) return;
+    // Wind travellers: spores of the rock pioneers first (they frost the rock where the player
+    // can see it), then the rest, most eager first.
     const order: number[] = [];
     for (let s = 0; s < t.n; s++) if (t.roads[s] & RoadBit.wind && !t.marine[s] && !t.stormOnly[s]) order.push(s);
-    order.sort((a, b) => t.rate[b] * t.reach[b] - t.rate[a] * t.reach[a]);
+    const spore = (s: number): number => (t.isPlant[s] && t.layer[s] === L_GROUND ? 1 : 0);
+    order.sort((a, b) => spore(b) - spore(a) || t.rate[b] * t.reach[b] - t.rate[a] * t.reach[a]);
     let bigSlot = 0;
     for (let slot = 1; slot < w.islands.count; slot++) if (w.islands.rec(slot).area > w.islands.rec(bigSlot).area) bigSlot = slot;
     for (const s of order) {
@@ -597,7 +775,10 @@ export class Arrivals implements HintSource {
       if (st.absentSince < 0) st.absentSince = w.year;
       if (!st.lostTold && w.year - st.absentSince >= LOST_AFTER) {
         st.lostTold = true;
-        this.director.onLost(s);
+        if (st.lossTold === 0) {
+          st.lossTold = 1;
+          this.director.onLost(s);
+        }
       }
     }
   }
@@ -634,8 +815,20 @@ export class Arrivals implements HintSource {
   }
 
   farWait(): number {
-    const t = this.w.t;
-    for (let s = 0; s < t.n; s++) if (!this.sp[s].found && t.reach[s] < 0.3 && this.sp[s].metAt >= 0) return s;
+    const w = this.w;
+    const t = w.t;
+    const isl = w.islands;
+    for (let s = 0; s < t.n; s++) {
+      if (this.sp[s].found || t.isWhale[s] || t.stormOnly[s]) continue;
+      // A weak traveller some island would take, but none it can reach.
+      let take = false;
+      let reach = false;
+      for (let slot = 0; slot < isl.count; slot++) {
+        if (w.suit.gate[slot * t.n + s]) take = true;
+        if (this.reachable(s, slot)) reach = true;
+      }
+      if (take && !reach) return s;
+    }
     return -1;
   }
 
