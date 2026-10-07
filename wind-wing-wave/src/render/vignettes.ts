@@ -16,16 +16,19 @@
  *   - A visitor that could not stay (ok = false) leaves again: the coconut washes back out, the motes
  *     blow on past, the bird circles and goes.
  *
- * Nothing pops: things start out of view or far (and small), under the water, or fade in as light
- * (motes, silk); they end the same quiet ways. The simulation (`VignetteSim`) is plain arrays,
- * tested in tests/fauna.test.ts; createVignettes draws it with the shared creature material.
+ * Nothing pops: things start out of view or too far to see, or else fade in (the creature shader's
+ * screen-door presence: a swimmer rising from deeper water, a raft out of the glare, a crab out of
+ * the surf); motes and silk fade in as light. They end the same quiet ways, and an actor is only let
+ * go once it is out of view, too small to see, or faded right out. The simulation (`VignetteSim`) is
+ * plain arrays, tested in tests/fauna.test.ts; createVignettes draws it with the shared creature
+ * material.
  */
 import * as THREE from 'three';
 import { WIND_TO_X, WIND_TO_Z } from '../config';
 import { AnimalModel, PlantModel, roadFamily, type Road, type SpeciesDef } from '../content/speciesTypes';
 import { Rng } from '../engine/noise';
 import { PLANT_BYTES, type ArrivalEvent, type FromEngine } from '../engine/protocol';
-import { apparentPx, displaySize, plantTop, setOrientation, viewFromCamera, type FaunaView } from './fauna';
+import { apparentPx, displaySize, hyp, hyp3, plantTop, setOrientation, viewFromCamera, type FaunaView } from './fauna';
 import type { WorldFields } from './fields';
 import { CreatureBatch, PAINT, PLAN_COUNT, Part, PointKind, Shape, SoftPoints, UP, backBelly, buildAnimalGeometries, creatureMaterials, hexToLinear, shade, type Vec3 } from './models/animals';
 import type { FrameCtx, PageSystem, SystemDeps } from './shared';
@@ -41,6 +44,17 @@ export const SCENE_MAX_DIST = 650;
 export const MARKER_SECONDS = 30;
 
 const TAU = Math.PI * 2;
+/** Where an arriving bird may start: distance upwind and offset across the wind (m), nearest first. */
+const BIRD_STARTS: readonly (readonly [number, number])[] = [
+  [260, 0],
+  [260, 90],
+  [260, -90],
+  [320, 0],
+  [300, 160],
+  [300, -160],
+];
+/** Bearings (rad) either side of straight out to sea that seaStart tries, nearest first. */
+const FAN = [0, 0.45, -0.45, 0.9, -0.9, 1.3, -1.3] as const;
 const MAX_SCENES = 3;
 const MAX_WAITING = 4;
 const MAX_ACTORS = 4;
@@ -148,6 +162,9 @@ function seedShape(): Shape {
   return sh;
 }
 
+/** Top of the raft's log above its axis, in log lengths (the log's radius, see raftShape). */
+const LOG_TOP = 0.072;
+
 function raftShape(): Shape {
   const sh = new Shape();
   // A storm-broken log (1 unit = its length) with a leafy branch still attached.
@@ -197,7 +214,7 @@ function raftShape(): Shape {
         [x + dx * 0.5 + dz * 0.25, y + 0.01, z + dz * 0.5 - dx * 0.25],
       ],
       PAINT.SEC,
-      (p) => Math.hypot(p[0] - x, p[2] - z) / 0.12,
+      (p) => hyp(p[0] - x, p[2] - z) / 0.12,
       UP,
     );
   }
@@ -224,7 +241,7 @@ interface Marker {
 }
 
 /** One arrival scene. All storage is preallocated; scenes are reused. */
-class Scene {
+export class Scene {
   on = false;
   /** Waiting for the camera to come near (the marker is still glowing). */
   waiting = false;
@@ -246,6 +263,9 @@ class Scene {
   lx = 0;
   lz = 0;
   hasShore = false;
+  /** Where seaStart put the start out at sea. */
+  bx = 0;
+  bz = 0;
   n = 0;
   readonly plan = new Int16Array(MAX_ACTORS);
   readonly x0 = new Float64Array(MAX_ACTORS);
@@ -265,7 +285,10 @@ class Scene {
   readonly aux = new Float32Array(MAX_ACTORS);
   readonly scale = new Float32Array(MAX_ACTORS);
   readonly speed = new Float32Array(MAX_ACTORS);
+  /** 0 shown .. 1 hidden (buried, sunk, tucked under leaves, not set off yet). */
   readonly hide = new Float32Array(MAX_ACTORS);
+  /** Entrance fade: 1 = just appeared in view (drawn see-through) .. 0 fully there. */
+  readonly ent = new Float32Array(MAX_ACTORS);
   readonly gone = new Uint8Array(MAX_ACTORS);
   readonly st2 = new Uint8Array(MAX_ACTORS);
   readonly tm2 = new Float32Array(MAX_ACTORS);
@@ -285,7 +308,16 @@ class Scene {
   glintY = 0;
   glintZ = 0;
   glintT = -1;
+
+  /** How much of an actor is drawn, 0..1 (the creature shader's presence). */
+  presence(i: number): number {
+    return (1 - this.hide[i]) * (1 - this.ent[i]);
+  }
 }
+
+/** Entrance fades last this long (s): slow for things rising out of the sea, quicker for the rest. */
+const FADE_IN_SEA = 3;
+const FADE_IN = 1.5;
 
 export interface VignetteClock {
   t: number;
@@ -345,7 +377,7 @@ export class VignetteSim {
   }
 
   private isNear(v: FaunaView, sc: Scene): boolean {
-    return Math.hypot(sc.x - v.tx, sc.z - v.tz) < SCENE_RANGE && v.dist < SCENE_MAX_DIST;
+    return hyp(sc.x - v.tx, sc.z - v.tz) < SCENE_RANGE && v.dist < SCENE_MAX_DIST;
   }
 
   activeScenes(): number {
@@ -398,29 +430,61 @@ export class VignetteSim {
     sc.glintT = -1;
     sc.gone.fill(0);
     sc.hide.fill(0);
+    sc.ent.fill(0);
     sc.st2.fill(0);
     this.findShore(sc);
     const s = this.species[sc.sp];
     const a = s.animal;
     switch (sc.kind) {
       case 'motes':
-        return this.setupMotes(sc, a ? a.colors[0] : 0xfff6d0);
+        this.setupMotes(sc, a ? a.colors[0] : 0xfff6d0);
+        break;
       case 'silk':
-        return this.setupSilk(sc, s);
+        this.setupSilk(sc, s);
+        break;
       case 'coconut':
       case 'seeds':
-        return this.setupFloaters(sc);
+        this.setupFloaters(sc);
+        break;
       case 'raft':
-        return this.setupRaft(sc, s);
+        this.setupRaft(sc, s);
+        break;
       case 'bird':
-        return this.setupBird(sc, s);
+        this.setupBird(sc, s);
+        break;
       case 'flyers':
-        return this.setupFlyers(sc, s);
+        this.setupFlyers(sc, s);
+        break;
       case 'swim':
-        return this.setupSwim(sc, s);
+        this.setupSwim(sc, s);
+        break;
       case 'crab':
-        return this.setupCrab(sc, s);
+        this.setupCrab(sc, s);
+        break;
     }
+    // Whatever would be seen where it starts fades in instead of appearing (see `ent`).
+    for (let i = 0; i < sc.n; i++) if (sc.hide[i] < 1 && this.inSight(sc, i)) sc.ent[i] = 1;
+  }
+
+  /** Could actor i be seen where it is now (at full presence)? */
+  private inSight(sc: Scene, i: number): boolean {
+    return apparentPx(this.view, this.sphere, sc.x0[i], sc.y0[i], sc.z0[i], this.extent(sc, i) * 1.3) >= 0.5;
+  }
+
+  /** On-screen size (px) of actor i in the last stepped view, times its presence if `faded`. */
+  visiblePx(sc: Scene, i: number, faded: boolean): number {
+    const px = apparentPx(this.view, this.sphere, sc.x0[i], sc.y0[i], sc.z0[i], this.extent(sc, i));
+    return faded ? px * sc.presence(i) : px;
+  }
+
+  /** The biggest visible extent of an actor (m): wingspan, the log and its branch, a silk thread. */
+  private extent(sc: Scene, i: number): number {
+    const plan = sc.plan[i];
+    if (plan === AnimalModel.Spider) return sc.fold[i] > 0.02 ? 1.6 : sc.scale[i];
+    if (plan === PROP_RAFT) return sc.scale[i];
+    if (plan === AnimalModel.Seabird || plan === AnimalModel.Frigatebird || plan === AnimalModel.Wader || plan === AnimalModel.Shorebird || plan === AnimalModel.Duck || plan === AnimalModel.Bat || plan === AnimalModel.Ray || plan === AnimalModel.Crab) return sc.scale[i] * 2.6;
+    if (plan === AnimalModel.SmallBird) return sc.scale[i] * 1.4;
+    return sc.scale[i];
   }
 
   /**
@@ -475,23 +539,33 @@ export class VignetteSim {
   }
 
   /**
-   * A start point out at sea along the shore line: the nearest one out of view, or else the near end,
-   * where the thing rises out of the water (callers start it below the surface).
+   * A start point out at sea for something swimming or drifting in to the shore (written to bx, bz):
+   * the nearest spot out of view, first straight out from the waterline, then fanning out to either
+   * side, between minD and maxD from the waterline (how far it can travel in the scene) and in water
+   * at least `depth` deep. When every candidate is in view (the camera looks out to sea), the near
+   * end: the actor fades in there instead (see `ent`), rising from below or out of the glare.
    */
-  private seaStart(sc: Scene, minD: number, maxD: number, size: number): void {
-    let bx = sc.wx + sc.sx * minD;
-    let bz = sc.wz + sc.sz * minD;
-    for (let d = minD; d <= maxD; d += (maxD - minD) / 6 + 1e-3) {
-      const x = sc.wx + sc.sx * d + (this.rng.next() - 0.5) * 6;
-      const z = sc.wz + sc.sz * d + (this.rng.next() - 0.5) * 6;
-      if (apparentPx(this.view, this.sphere, x, 0, z, size) < 1) {
-        bx = x;
-        bz = z;
-        break;
+  private seaStart(sc: Scene, minD: number, maxD: number, size: number, depth: number): void {
+    sc.bx = sc.wx + sc.sx * minD;
+    sc.bz = sc.wz + sc.sz * minD;
+    const steps = 8;
+    for (let n = 0; n <= steps; n++) {
+      const d = minD + ((maxD - minD) * n) / steps;
+      for (let b = 0; b < FAN.length; b++) {
+        const c = Math.cos(FAN[b]);
+        const sn = Math.sin(FAN[b]);
+        const ux = sc.sx * c - sc.sz * sn;
+        const uz = sc.sz * c + sc.sx * sn;
+        const x = sc.wx + ux * d;
+        const z = sc.wz + uz * d;
+        if (-this.fields.heightAt(x, z) < depth) continue;
+        if (apparentPx(this.view, this.sphere, x, 0, z, size * 1.3) < 0.5) {
+          sc.bx = x;
+          sc.bz = z;
+          return;
+        }
       }
     }
-    sc.x0[0] = bx;
-    sc.z0[0] = bz;
   }
 
   private addActor(sc: Scene, plan: number, scale: number, colors: ArrayLike<number>): number {
@@ -560,9 +634,9 @@ export class VignetteSim {
   private setupFloaters(sc: Scene): void {
     const coconut = sc.kind === 'coconut';
     const count = coconut ? 1 : 3 + this.rng.int(2);
-    this.seaStart(sc, 25, 70, coconut ? 0.3 : 0.06);
-    const bx = sc.x0[0];
-    const bz = sc.z0[0];
+    this.seaStart(sc, 25, 80, coconut ? 0.3 : 0.06, 0.3);
+    const bx = sc.bx;
+    const bz = sc.bz;
     for (let n = 0; n < count; n++) {
       const i = this.addActor(sc, coconut ? PROP_COCONUT : PROP_SEED, coconut ? 0.3 : 0.05 + this.rng.next() * 0.02, coconut ? COCONUT_COLORS : SEED_COLORS);
       const side = (n - (count - 1) / 2) * 1.6;
@@ -577,8 +651,10 @@ export class VignetteSim {
   }
 
   private setupRaft(sc: Scene, s: SpeciesDef): void {
-    this.seaStart(sc, 35, 90, 2.5);
+    this.seaStart(sc, 35, 100, 2.6, 0.5);
     const r = this.addActor(sc, PROP_RAFT, 2.6, RAFT_COLORS);
+    sc.x0[r] = sc.bx;
+    sc.z0[r] = sc.bz;
     sc.y0[r] = -0.5;
     sc.yaw[r] = Math.atan2(sc.sz, -sc.sx); // lies along the shore
     sc.tx[r] = sc.wx;
@@ -591,6 +667,9 @@ export class VignetteSim {
         sc.aux[i] = (n - (riders - 1) / 2) * 0.55; // place along the log (m)
         sc.speed[i] = a.speed;
         sc.yaw[i] = sc.yaw[r] + (this.rng.next() < 0.5 ? 0 : Math.PI);
+        sc.x0[i] = sc.x0[r] + Math.sin(sc.yaw[r]) * sc.aux[i];
+        sc.z0[i] = sc.z0[r] + Math.cos(sc.yaw[r]) * sc.aux[i];
+        sc.y0[i] = sc.y0[r] + sc.scale[r] * LOG_TOP;
       }
     }
   }
@@ -602,11 +681,21 @@ export class VignetteSim {
     const size = a ? displaySize(a) : CARRIER_SIZE;
     const i = this.addActor(sc, plan, size, a ? a.colors.map((c) => c & 0xffffff) : CARRIER_COLORS);
     sc.speed[i] = a ? Math.min(12, Math.max(6, a.speed)) : 10;
-    // In from the horizon, upwind (the old islands are east).
-    const off = (this.rng.next() - 0.5) * 120;
-    sc.x0[i] = sc.x - WIND_TO_X * 260 - WIND_TO_Z * off;
-    sc.z0[i] = sc.z - WIND_TO_Z * 260 + WIND_TO_X * off;
+    // In from the horizon, upwind (the old islands are east): from somewhere out of view if there is
+    // such a place along that way (else it fades in, a speck far out over the sea).
     sc.y0[i] = Math.max(0, this.fields.heightAt(sc.x, sc.z)) + 35;
+    const jitter = (this.rng.next() - 0.5) * 40;
+    let found = false;
+    for (let n = 0; n < BIRD_STARTS.length && !found; n++) {
+      const [d, off] = BIRD_STARTS[n];
+      sc.x0[i] = sc.x - WIND_TO_X * d - WIND_TO_Z * (off + jitter);
+      sc.z0[i] = sc.z - WIND_TO_Z * d + WIND_TO_X * (off + jitter);
+      found = !this.inSight(sc, i);
+    }
+    if (!found) {
+      sc.x0[i] = sc.x - WIND_TO_X * 260 - WIND_TO_Z * jitter;
+      sc.z0[i] = sc.z - WIND_TO_Z * 260 + WIND_TO_X * jitter;
+    }
     sc.yaw[i] = Math.atan2(sc.x - sc.x0[i], sc.z - sc.z0[i]);
     sc.v[i] = sc.speed[i];
     // Perch: the highest ground (or plant top) near the spot.
@@ -659,11 +748,14 @@ export class VignetteSim {
     const a = s.animal;
     if (!a) return;
     const big = a.model === AnimalModel.Whale || a.model === AnimalModel.Dolphin;
-    const swim = a.model === AnimalModel.SeaTurtle ? 0.5 : a.model === AnimalModel.Seal ? 1.6 : a.model === AnimalModel.Tortoise ? 0.25 : Math.max(0.5, a.speed);
+    const tortoise = a.model === AnimalModel.Tortoise;
+    const swim = a.model === AnimalModel.SeaTurtle ? 0.5 : a.model === AnimalModel.Seal ? 1.6 : tortoise ? 0.25 : Math.max(0.5, a.speed);
     const fishes = a.model === AnimalModel.FishShoal ? MAX_ACTORS : 1;
-    this.seaStart(sc, Math.min(60, swim * 8) + (big ? 30 : 4), Math.min(110, swim * 25) + (big ? 60 : 6), a.size);
-    const bx = sc.x0[0];
-    const bz = sc.z0[0];
+    // Whales come up from well below; the rest from a little under the surface (a tortoise floats).
+    const startDepth = a.model === AnimalModel.Whale ? 8 : big ? 3 : tortoise ? 0 : 1.2;
+    this.seaStart(sc, Math.min(60, swim * 8) + (big ? 30 : 4), Math.min(110, swim * 25) + (big ? 60 : 6), displaySize(a), tortoise ? 0.4 : startDepth + a.size * 0.3);
+    const bx = sc.bx;
+    const bz = sc.bz;
     // Where to swim to: shallows near the shore (deeper water for whales and dolphins).
     const want = big ? Math.max(5, a.size * 0.4) : a.model === AnimalModel.Tortoise ? 0.2 : 0.9;
     let tx = sc.wx;
@@ -682,7 +774,8 @@ export class VignetteSim {
       sc.speed[i] = swim;
       sc.x0[i] = bx + (this.rng.next() - 0.5) * (fishes > 1 ? 2 : 0);
       sc.z0[i] = bz + (this.rng.next() - 0.5) * (fishes > 1 ? 2 : 0);
-      sc.y0[i] = a.model === AnimalModel.Tortoise ? -a.size * 0.12 : -Math.min(3, Math.max(0.6, -this.fields.heightAt(bx, bz) - a.size * 0.2));
+      // As deep as asked, but clear of the bottom where the water is shallower.
+      sc.y0[i] = tortoise ? -a.size * 0.12 : -Math.min(startDepth, Math.max(0.6, -this.fields.heightAt(bx, bz) - a.size * 0.3));
       sc.tx[i] = tx + (fishes > 1 ? (this.rng.next() - 0.5) * 2 : 0);
       sc.tz[i] = tz + (fishes > 1 ? (this.rng.next() - 0.5) * 2 : 0);
       sc.yaw[i] = Math.atan2(sc.tx[i] - sc.x0[i], sc.tz[i] - sc.z0[i]);
@@ -709,6 +802,8 @@ export class VignetteSim {
   // ---------- playing a scene ----------
 
   private stepScene(sc: Scene, dt: number): void {
+    const fadeRate = dt / (sc.kind === 'swim' || sc.kind === 'raft' || sc.kind === 'coconut' || sc.kind === 'seeds' ? FADE_IN_SEA : FADE_IN);
+    for (let i = 0; i < sc.n; i++) if (sc.ent[i] > 0) sc.ent[i] = Math.max(0, sc.ent[i] - fadeRate);
     switch (sc.kind) {
       case 'motes':
         this.stepMotes(sc);
@@ -743,7 +838,7 @@ export class VignetteSim {
       if (sc.glintT > 6) sc.glintT = -1;
     }
     // Long over: anything still lingering goes as soon as nobody sees it.
-    if (sc.t > SCENE_LINGER) for (let i = 0; i < sc.n; i++) if (!sc.gone[i]) this.retire(sc, i, sc.scale[i] * 2);
+    if (sc.t > SCENE_LINGER) for (let i = 0; i < sc.n; i++) if (!sc.gone[i]) this.retire(sc, i);
     // Finished when every actor is gone and the motes have faded.
     let alive = sc.glintT >= 0 || (sc.kind === 'motes' && sc.t < 40);
     for (let i = 0; i < sc.n; i++) if (!sc.gone[i]) alive = true;
@@ -751,11 +846,11 @@ export class VignetteSim {
   }
 
   /**
-   * Remove an actor only when nobody can see it: out of view, too small, or hidden (`hide` 1 = buried
-   * or sunk out of sight; in between, deep water dims it).
+   * Remove an actor only when nobody can see it: out of view, too small, or faded right out
+   * (`hide` 1 = buried, sunk or tucked away; on the way there it is drawn thinning out).
    */
-  private retire(sc: Scene, i: number, size: number): void {
-    if (sc.hide[i] >= 0.99 || apparentPx(this.view, this.sphere, sc.x0[i], sc.y0[i], sc.z0[i], size * (1 - sc.hide[i])) < 1) sc.gone[i] = 1;
+  private retire(sc: Scene, i: number): void {
+    if (this.visiblePx(sc, i, true) < 1) sc.gone[i] = 1;
   }
 
   /** How much leafy cover a spot has, 0..1 (a small animal can slip out of sight under it). */
@@ -788,7 +883,7 @@ export class VignetteSim {
   private glide(sc: Scene, i: number, tx: number, tz: number, speed: number, dt: number, turn = 1.5): number {
     const dx = tx - sc.x0[i];
     const dz = tz - sc.z0[i];
-    const d = Math.hypot(dx, dz);
+    const d = hyp(dx, dz);
     if (d < 1e-3) return 0;
     const want = Math.atan2(dx, dz);
     const err = wrap(want - sc.yaw[i]);
@@ -825,7 +920,7 @@ export class VignetteSim {
       sc.fold[i] = Math.min(1, sc.fold[i] + dt * 0.5);
       const d = this.glide(sc, i, sc.tx[i], sc.tz[i], 1.8, dt, 10);
       sc.yaw[i] = 0;
-      const total = Math.hypot(sc.tx[i] - sc.x0[i], sc.tz[i] - sc.z0[i]) + 1e-3;
+      const total = hyp(sc.tx[i] - sc.x0[i], sc.tz[i] - sc.z0[i]) + 1e-3;
       sc.y0[i] += (sc.ty[i] - sc.y0[i]) * Math.min(1, (1.8 * dt) / total);
       sc.y0[i] += Math.sin(this.clock.t * 1.1) * 0.15 * dt;
       sc.roll[i] = 0.65 + Math.sin(this.clock.t * 0.8) * 0.08;
@@ -847,7 +942,7 @@ export class VignetteSim {
       sc.y0[i] += 0.4 * dt;
       sc.fold[i] = Math.max(0, 1 - sc.tm / 14);
     }
-    if (sc.st > 0) this.retire(sc, i, sc.fold[i] > 0.02 ? 1.5 : sc.scale[i]);
+    if (sc.st > 0) this.retire(sc, i);
   }
 
   private stepFloaters(sc: Scene, dt: number): void {
@@ -860,7 +955,7 @@ export class VignetteSim {
           // Bob shoreward on the swell (about 20 s).
           const tx = sc.ok ? sc.wx + (sc.tx[i] - sc.lx) : sc.wx + sc.sx * 4 + (sc.tx[i] - sc.lx);
           const tz = sc.ok ? sc.wz + (sc.tz[i] - sc.lz) : sc.wz + sc.sz * 4 + (sc.tz[i] - sc.lz);
-          const far = Math.hypot(tx - sc.x0[i], tz - sc.z0[i]);
+          const far = hyp(tx - sc.x0[i], tz - sc.z0[i]);
           const speed = Math.max(0.6, far / Math.max(1, 20 - sc.tm2[i])) * sc.speed[i];
           const d = this.glide(sc, i, tx, tz, Math.min(speed, 2.5), dt, 0);
           sc.yaw[i] += dt * 0.2;
@@ -887,18 +982,18 @@ export class VignetteSim {
         case 2: {
           // Rest, then settle into the sand as it takes root.
           const g = this.fields.heightAt(sc.x0[i], sc.z0[i]);
-          const sink = Math.max(0, sc.tm2[i] - 6) / 10;
+          const sink = Math.min(1, Math.max(0, sc.tm2[i] - 6) / 10);
           sc.y0[i] = g + size * 0.4 - sink * size * 1.1;
-          if (sink >= 1) sc.hide[i] = 1;
-          this.retire(sc, i, size * 2);
+          sc.hide[i] = smooth01(0.6, 1, sink); // the last of it goes under the sand
+          this.retire(sc, i);
           break;
         }
         case 3: {
           // Washed back out to sea and away; sinks from view far out.
           this.glide(sc, i, sc.wx + sc.sx * 200, sc.wz + sc.sz * 200, 0.9, dt, 0);
           this.float(sc, i, size * 0.12 + Math.max(0, sc.tm2[i] - 25) * 0.05, dt);
-          if (sc.tm2[i] > 40) sc.hide[i] = 1;
-          this.retire(sc, i, size * 2);
+          sc.hide[i] = smooth01(30, 40, sc.tm2[i]); // waterlogged, it slips under
+          this.retire(sc, i);
           break;
         }
       }
@@ -913,7 +1008,7 @@ export class VignetteSim {
       // Drifting in, slow and heavy.
       const tx = sc.ok ? sc.wx : sc.wx + sc.sx * 6 - sc.sz * 30;
       const tz = sc.ok ? sc.wz : sc.wz + sc.sz * 6 + sc.sx * 30;
-      const far = Math.hypot(tx - sc.x0[r], tz - sc.z0[r]);
+      const far = hyp(tx - sc.x0[r], tz - sc.z0[r]);
       const d = this.glide(sc, r, tx, tz, Math.min(2.5, Math.max(0.5, far / Math.max(1, 26 - sc.t))), dt, 0);
       this.float(sc, r, 0.04, dt);
       if (d < 0.4 || !sc.hasShore) {
@@ -929,18 +1024,18 @@ export class VignetteSim {
       sc.pitch[r] *= 1 - dt;
       if (sc.tm > 60) sc.st = 2;
     } else if (sc.st === 2) {
-      // Long after: the beach slowly buries the driftwood.
+      // Long after: the beach slowly buries the driftwood, branch and all (a third of its length).
       sc.y0[r] -= dt * 0.025;
-      // Hidden once even the branch (up to a third of the log's length above it) is under the sand.
-      if (sc.y0[r] < this.fields.heightAt(sc.x0[r], sc.z0[r]) - log * 0.35) sc.hide[r] = 1;
-      this.retire(sc, r, log);
+      const buried = (this.fields.heightAt(sc.x0[r], sc.z0[r]) - sc.y0[r]) / (log * 0.35);
+      sc.hide[r] = smooth01(0.7, 1, buried);
+      this.retire(sc, r);
     } else {
       // Couldn't land: carried along the shore and back out.
       this.glide(sc, r, sc.wx + sc.sx * 200 - sc.sz * 60, sc.wz + sc.sz * 200 + sc.sx * 60, 0.8, dt, 0);
       const sink = 0.04 + Math.max(0, sc.tm - 40) * 0.02;
       this.float(sc, r, sink, dt);
-      if (sink > log * 0.4) sc.hide[r] = 1; // waterlogged and gone under, branch and all
-      this.retire(sc, r, log);
+      sc.hide[r] = smooth01(log * 0.25, log * 0.4, sink); // waterlogged and gone under, branch and all
+      this.retire(sc, r);
     }
     // Riders.
     const sy = Math.sin(sc.yaw[r]);
@@ -948,13 +1043,16 @@ export class VignetteSim {
     for (let i = 1; i < sc.n; i++) {
       if (sc.gone[i]) continue;
       if (sc.st2[i] === 0) {
-        // Clinging to the log.
+        // Clinging to the log: seen (or not) with it.
         sc.x0[i] = sc.x0[r] + sy * sc.aux[i];
         sc.z0[i] = sc.z0[r] + cy * sc.aux[i];
-        sc.y0[i] = sc.y0[r] + log * 0.06;
+        sc.y0[i] = sc.y0[r] + log * LOG_TOP;
         sc.pitch[i] = sc.pitch[r];
         sc.roll[i] = sc.roll[r];
         sc.amp[i] = 0;
+        sc.hide[i] = sc.hide[r];
+        sc.ent[i] = sc.ent[r];
+        if (sc.gone[r]) sc.gone[i] = 1;
         if (sc.st === 1 && sc.tm > 2 + i * 0.9) {
           sc.st2[i] = 1;
           sc.tm2[i] = 0;
@@ -968,7 +1066,7 @@ export class VignetteSim {
         // Dash, pause, dash (lizards) or trundle (snails); then slip into cover.
         sc.tm2[i] += dt;
         const pause = sc.tm2[i] % 2.4 > 1.6;
-        const d = pause ? Math.hypot(sc.tx[i] - sc.x0[i], sc.tz[i] - sc.z0[i]) : this.glide(sc, i, sc.tx[i], sc.tz[i], sc.speed[i], dt, 8);
+        const d = pause ? hyp(sc.tx[i] - sc.x0[i], sc.tz[i] - sc.z0[i]) : this.glide(sc, i, sc.tx[i], sc.tz[i], sc.speed[i], dt, 8);
         sc.y0[i] = this.fields.heightAt(sc.x0[i], sc.z0[i]);
         sc.pitch[i] = 0;
         sc.roll[i] = 0;
@@ -976,9 +1074,9 @@ export class VignetteSim {
         sc.ph[i] = (sc.ph[i] + (pause ? 0 : 9) * TAU * dt) % (TAU * 2);
         if (d < 0.1) {
           sc.amp[i] = 0;
-          if (this.coverAt(sc.x0[i], sc.z0[i]) > 0.4) sc.hide[i] = Math.min(1, sc.hide[i] + dt * 2); // under the leaves
+          if (this.coverAt(sc.x0[i], sc.z0[i]) > 0.4) sc.hide[i] = Math.min(1, sc.hide[i] + dt); // under the leaves
         }
-        this.retire(sc, i, sc.scale[i]);
+        this.retire(sc, i);
       }
     }
   }
@@ -994,7 +1092,7 @@ export class VignetteSim {
     switch (sc.st) {
       case 0: {
         // The long straight line in from the horizon, flapping in bouts.
-        const d = this.fly(sc, i, sc.tx[i], sc.ty[i] + Math.min(12, Math.hypot(sc.tx[i] - sc.x0[i], sc.tz[i] - sc.z0[i]) * 0.15), sc.tz[i], sp, dt);
+        const d = this.fly(sc, i, sc.tx[i], sc.ty[i] + Math.min(12, hyp(sc.tx[i] - sc.x0[i], sc.tz[i] - sc.z0[i]) * 0.15), sc.tz[i], sp, dt);
         sc.amp[i] = (this.clock.t * 0.3 + sc.ph[i]) % 1 < 0.5 ? 0.9 : 0.08;
         sc.fold[i] = 0;
         if (!sc.ok && d < 18) {
@@ -1011,7 +1109,7 @@ export class VignetteSim {
         const dx = sc.tx[i] - sc.x0[i];
         const dy = sc.ty[i] - sc.y0[i];
         const dz = sc.tz[i] - sc.z0[i];
-        const d = Math.hypot(dx, dy, dz);
+        const d = hyp3(dx, dy, dz);
         const v = Math.max(1, Math.min(sp, d * 1.2));
         const step = Math.min(d, v * dt);
         if (d > 1e-3) {
@@ -1058,7 +1156,7 @@ export class VignetteSim {
         this.fly(sc, i, sc.tx[i], sc.ty[i], sc.tz[i], sp, dt);
         sc.fold[i] = Math.max(0, sc.fold[i] - dt * 3);
         sc.amp[i] = 0.9;
-        this.retire(sc, i, sc.scale[i] * 2);
+        this.retire(sc, i);
         break;
       }
       case 4: {
@@ -1082,7 +1180,7 @@ export class VignetteSim {
   private fly(sc: Scene, i: number, tx: number, ty: number, tz: number, speed: number, dt: number): number {
     const dx = tx - sc.x0[i];
     const dz = tz - sc.z0[i];
-    const dh = Math.hypot(dx, dz);
+    const dh = hyp(dx, dz);
     const want = Math.atan2(dx, dz);
     const rate = Math.min(3, Math.max(0.6, (1.6 * speed) / Math.max(dh, 1)));
     const err = wrap(want - sc.yaw[i]);
@@ -1108,7 +1206,11 @@ export class VignetteSim {
         sc.hide[i] = 1; // not set off yet (far out over the sea, unseen)
         continue;
       }
-      sc.hide[i] = 0;
+      if (sc.hide[i] > 0) {
+        // Setting off now: in sight already, it fades in as it comes in low over the water.
+        sc.hide[i] = 0;
+        if (this.inSight(sc, i)) sc.ent[i] = 1;
+      }
       const insectHz = sc.plan[i] === AnimalModel.Butterfly ? 8 : 25;
       sc.ph[i] = (sc.ph[i] + insectHz * TAU * dt) % (TAU * 2);
       if (sc.st2[i] === 0) {
@@ -1137,7 +1239,7 @@ export class VignetteSim {
       } else {
         this.fly(sc, i, sc.tx[i], this.fields.heightAt(sc.x0[i], sc.z0[i]) + 3, sc.tz[i], sc.speed[i], dt);
         sc.amp[i] = sc.plan[i] === AnimalModel.Butterfly ? 1.1 : 0.4;
-        this.retire(sc, i, sc.scale[i] * 1.5);
+        this.retire(sc, i);
       }
     }
   }
@@ -1183,16 +1285,16 @@ export class VignetteSim {
         const deep = Math.max(g + size * 0.1, s - 3);
         sc.y0[i] += (deep - sc.y0[i]) * Math.min(1, dt * 0.2);
         sc.pitch[i] = -0.1;
-        // Deep water hides most of it (as with the fauna's diving whales).
-        sc.hide[i] = Math.min(0.95, Math.max(0, (s - sc.y0[i] - 1) / 2.5));
-        this.retire(sc, i, size);
+        // It fades into the deep as it goes down (as the fauna's diving whales do).
+        sc.hide[i] = Math.min(1, Math.max(0, (s - sc.y0[i] - 1) / 2));
+        this.retire(sc, i);
       } else {
         // A tortoise wades out and plods inland.
         const d = this.glide(sc, i, sc.lx - sc.sx * 6, sc.lz - sc.sz * 6, 0.08, dt, 0.5);
         sc.y0[i] = Math.max(this.fields.heightAt(sc.x0[i], sc.z0[i]), s - size * 0.12);
         sc.amp[i] = d < 0.05 ? 0 : 0.8;
         sc.ph[i] = (sc.ph[i] + (d < 0.05 ? 0 : 0.4) * TAU * dt) % (TAU * 2);
-        this.retire(sc, i, size);
+        this.retire(sc, i);
       }
     }
   }
@@ -1205,7 +1307,7 @@ export class VignetteSim {
     const sprint = moving && sc.tm % 1.3 < 0.4;
     sc.ph[i] = (sc.ph[i] + (sprint ? 14 : 0) * TAU * dt) % (TAU * 2);
     sc.amp[i] = sprint ? 1 : 0;
-    const d = sprint ? this.crabDash(sc, i, sc.tx[i], sc.tz[i], dt) : Math.hypot(sc.tx[i] - sc.x0[i], sc.tz[i] - sc.z0[i]);
+    const d = sprint ? this.crabDash(sc, i, sc.tx[i], sc.tz[i], dt) : hyp(sc.tx[i] - sc.x0[i], sc.tz[i] - sc.z0[i]);
     if (sc.st === 0 && d < 0.05) {
       // Out of the surf: freeze and look about, with a wave of the claws.
       sc.st = 1;
@@ -1225,9 +1327,9 @@ export class VignetteSim {
         }
       }
     } else if (sc.st === 2) {
-      // Couldn't stay: back into the sea.
-      if (this.sea(sc.x0[i], sc.z0[i]) - this.fields.heightAt(sc.x0[i], sc.z0[i]) > sc.scale[i] * 2) sc.hide[i] = 1;
-      this.retire(sc, i, sc.scale[i]);
+      // Couldn't stay: back into the sea, fading as the surf takes it.
+      if (this.sea(sc.x0[i], sc.z0[i]) - this.fields.heightAt(sc.x0[i], sc.z0[i]) > sc.scale[i] * 0.5) sc.hide[i] = Math.min(1, sc.hide[i] + dt);
+      this.retire(sc, i);
     } else if (sc.st === 3 && d < 0.05) {
       sc.st = 4;
       sc.tm = 0;
@@ -1237,8 +1339,8 @@ export class VignetteSim {
     } else if (sc.st === 5) {
       // Dig in and disappear into the new burrow.
       sc.y0[i] -= dt * sc.scale[i];
-      if (sc.tm > 0.8) sc.hide[i] = 1;
-      this.retire(sc, i, sc.scale[i]);
+      sc.hide[i] = Math.min(1, sc.tm / 0.8);
+      this.retire(sc, i);
       return;
     }
     sc.y0[i] = this.fields.heightAt(sc.x0[i], sc.z0[i]);
@@ -1247,7 +1349,7 @@ export class VignetteSim {
   private crabDash(sc: Scene, i: number, tx: number, tz: number, dt: number): number {
     const dx = tx - sc.x0[i];
     const dz = tz - sc.z0[i];
-    const d = Math.hypot(dx, dz);
+    const d = hyp(dx, dz);
     if (d < 1e-3) return 0;
     const step = Math.min(d, sc.speed[i] * dt);
     sc.x0[i] += (dx / d) * step;
@@ -1272,6 +1374,11 @@ export class VignetteSim {
       this.puffs[o + 7] = 2.2 + this.rng.next() * 1.2;
     }
   }
+}
+
+function smooth01(a: number, b: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
 }
 
 function wrap(a: number): number {
@@ -1331,11 +1438,12 @@ export function createVignettes(deps: SystemDeps): PageSystem {
     for (const sc of sim.scenes) {
       if (!sc.on || sc.waiting) continue;
       for (let i = 0; i < sc.n; i++) {
-        if (sc.gone[i] || sc.hide[i] >= 0.99) continue;
+        const presence = sc.presence(i);
+        if (sc.gone[i] || presence < 0.001) continue;
         const b = batch(sc.plan[i]);
         if (!b) continue;
         setOrientation(q, e, sc.yaw[i], sc.pitch[i], sc.roll[i]);
-        b.add(sc.x0[i], sc.y0[i], sc.z0[i], sc.scale[i], q, sc.ph[i], sc.amp[i], sc.fold[i], sc.aux[i], sc.colors, i * 3);
+        b.add(sc.x0[i], sc.y0[i], sc.z0[i], sc.scale[i], q, sc.ph[i], sc.amp[i], sc.fold[i], sc.aux[i], sc.colors, i * 3, presence);
       }
       for (let m = 0; m < sc.m; m++) {
         const a = sc.malpha[m] * (0.6 + 0.4 * Math.sin(f.t * 7 + sc.mphase[m] * 5));

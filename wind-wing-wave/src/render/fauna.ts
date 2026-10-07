@@ -15,12 +15,16 @@
  * - Spawn points are patches near the camera whose habitat is in the species' `where` list.
  * - Nothing pops in or out in view. Animals arrive from out of view (birds fly in, fish swim in),
  *   or by a natural entrance (a crab climbs out of its burrow, a lizard steps out from under a shrub,
- *   fireflies light up, a spider lowers itself on silk). They leave the same quiet ways. The only
- *   exception is a "cut" (the camera jumped somewhere new), when there is nothing to break.
+ *   fireflies light up, a spider lowers itself on silk). They leave the same quiet ways. Entrances
+ *   and exits in view are drawn as a short screen-door fade (the creature shader's presence), never a
+ *   jump. The only exception is a "cut" (the camera jumped somewhere new), when there is nothing to break.
  * - Every behaviour is a small state machine with pauses (see the Behaviour list in speciesTypes.ts),
  *   using real speeds from `SpeciesDef.animal.speed` and never exceeding `speedLimit()`.
- * - Animals calmly move away from the active brush, shelter in storms (birds to the lee side,
- *   crabs into burrows, insects into cover) and never die on screen.
+ * - Animals calmly move away from the active brush and from molten lava (birds lift off, walkers
+ *   hurry to safe ground, crabs dig in elsewhere), shelter in storms (birds to the lee side, crabs
+ *   into burrows, insects into cover) and never die on screen.
+ * - Work is spread over frames: the habitat census is taken a few rows of patches per frame, and a
+ *   colony's nesting ledges are only looked for again when the ground inside it changes.
  *
  * The simulation (`FaunaSim`) is plain typed arrays with no WebGL, so it is unit-tested in Node
  * (tests/fauna.test.ts). `createFauna` draws it: one instanced mesh per body plan in view (shared
@@ -28,9 +32,9 @@
  * No per-frame allocations in the hot paths.
  */
 import * as THREE from 'three';
-import { DAY_PARTS, NP, NX, ORIGIN_X, ORIGIN_Z, PATCH, PATCH_M, WIND_TO_X, WIND_TO_Z } from '../config';
+import { CELL, DAY_PARTS, NP, NX, ORIGIN_X, ORIGIN_Z, PATCH, PATCH_M, WIND_TO_X, WIND_TO_Z } from '../config';
 import { AnimalModel, Habitat, HABITAT_COUNT, PlantModel, type AnimalLook, type Behaviour, type SpeciesDef } from '../content/speciesTypes';
-import { Rng } from '../engine/noise';
+import { Rng, hash2 } from '../engine/noise';
 import { PLANT_BYTES, type FromEngine, type LifeInfo, type StormState } from '../engine/protocol';
 import type { WorldFields } from './fields';
 import { CreatureBatch, HATCHLING_PLAN, PLAN_COUNT, PointKind, SoftPoints, buildAnimalGeometries, creatureMaterials, hexToLinear, planTriangles } from './models/animals';
@@ -43,12 +47,28 @@ import { seaHeight } from './waves';
 export const NEAR_RANGE = 250;
 /** Birds that fly high and far (seabirds, frigatebirds) live within this distance. */
 export const BIRD_RANGE = 600;
+/**
+ * A colony's 3D birds thin out between these distances from the eye (m), and its speck flock (far
+ * birds as dots) takes over across the same band.
+ */
+const COLONY_NEAR = 250;
+const COLONY_FAR = 450;
+/** World size of a speck (about a booby's wingspan, m). */
+export const SPECK_SIZE = 1.5;
 /** Members per group agent (a fish shoal, a firefly swarm, a clutch of hatchlings). */
 export const GROUP_SIZE = 16;
 /** An animal out of view this long (s) is quietly let go, so new ones can come where the camera looks. */
 export const UNSEEN_RECYCLE = 25;
 /** Most triangles all animals may draw (ARCHITECTURE §7: animals 15k on the phone). */
 export const TRI_BUDGET = 15000;
+/** An entrance fade (stepping out from cover) wears off at this rate per second. */
+const ENTRANCE_RATE = 0.8;
+/** Each agent looks for lava every this many frames. */
+const LAVA_CHECK_FRAMES = 4;
+/** Molten lava closer than this (m) sends an animal away, and the refuge it heads for is this clear of it. */
+const LAVA_ALARM = 7;
+/** A ledge, perch or landing spot must have no molten lava within this (m). */
+const LAVA_SAFE = 4;
 
 const TAU = Math.PI * 2;
 const PHASE_WRAP = Math.PI * 4;
@@ -69,7 +89,7 @@ export const SPEED_LIMIT: Record<Behaviour, readonly [number, number]> = {
   'night-fly': [1.3, 0],
   scuttle: [1.2, 0],
   bask: [1.2, 0],
-  graze: [1.5, 0],
+  graze: [1.5, 0.3], // hurrying away from lava
   'nest-beach': [1.5, 0.75], // swimming
   shoal: [1.6, 0], // scattering
   'glide-sea': [1.4, 0],
@@ -138,12 +158,44 @@ export function allowedMask(look: AnimalLook): number {
   return maskOf(look.where) | maskOf(EXTRA[look.behaviour]);
 }
 
+/** Length of (a, b) and (a, b, c). Math.hypot allocates on every call in V8, so the hot paths use these. */
+export function hyp(a: number, b: number): number {
+  return Math.sqrt(a * a + b * b);
+}
+export function hyp3(a: number, b: number, c: number): number {
+  return Math.sqrt(a * a + b * b + c * c);
+}
+
 function smooth(a: number, b: number, x: number): number {
   const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 }
 function clamp(x: number, a: number, b: number): number {
   return x < a ? a : x > b ? b : x;
+}
+/** Copy a frustum's six planes into a flat array (nx, ny, nz, constant per plane) for sphereClass. */
+function packPlanes(f: THREE.Frustum, out: Float64Array): void {
+  for (let k = 0; k < 6; k++) {
+    const p = f.planes[k];
+    out[k * 4] = p.normal.x;
+    out[k * 4 + 1] = p.normal.y;
+    out[k * 4 + 2] = p.normal.z;
+    out[k * 4 + 3] = p.constant;
+  }
+}
+
+/**
+ * Where a sphere is against the view frustum (packed by packPlanes): 1 wholly inside, -1 wholly
+ * outside, 0 across an edge. Plain arithmetic, so the census can call it thousands of times a frame.
+ */
+function sphereClass(pl: Float64Array, x: number, y: number, z: number, r: number): number {
+  let across = 0;
+  for (let k = 0; k < 24; k += 4) {
+    const d = pl[k] * x + pl[k + 1] * y + pl[k + 2] * z + pl[k + 3];
+    if (d < -r) return -1;
+    if (d < r) across = 1;
+  }
+  return across === 1 ? 0 : 1;
 }
 function wrapAngle(a: number): number {
   a = (a + Math.PI) % TAU;
@@ -403,8 +455,14 @@ export class Agents {
   readonly scale: Float32Array;
   /** Individual speed factor (animals differ a little). */
   readonly spd: Float32Array;
-  /** 0 visible .. 1 hidden (in a burrow, not glowing, thread not catching light). */
+  /** 0 visible .. 1 hidden (in a burrow, not glowing, thread not catching light, deep under water). */
   readonly hide: Float32Array;
+  /** Entrance fade: 1 just stepped out (drawn see-through) .. 0 fully there. Wears off by itself. */
+  readonly ent: Float32Array;
+  /** Seconds left hurrying away from lava (0 = not escaping). */
+  readonly esc: Float32Array;
+  /** The colony a seabird belongs to (its uid), or -1. */
+  readonly col: Int32Array;
   /** Startle timer (the brush came close). */
   readonly flee: Float32Array;
   /** Group: member block (shoals, swarms, hatchlings) or pod leader slot (dolphins); -1 none. */
@@ -449,6 +507,9 @@ export class Agents {
     this.scale = f32();
     this.spd = f32();
     this.hide = f32();
+    this.ent = f32();
+    this.esc = f32();
+    this.col = new Int32Array(cap).fill(-1);
     this.flee = f32();
     this.group = new Int16Array(cap).fill(-1);
     this.members = new Uint8Array(cap);
@@ -468,6 +529,8 @@ export class Agents {
       this.tm[i] = this.tm2[i] = 0;
       this.ph[i] = this.amp[i] = this.fold[i] = this.aux[i] = 0;
       this.hide[i] = this.flee[i] = this.unseen[i] = 0;
+      this.ent[i] = this.esc[i] = 0;
+      this.col[i] = -1;
       this.scale[i] = 1;
       this.spd[i] = 1;
       this.group[i] = -1;
@@ -482,6 +545,12 @@ export class Agents {
     this.kind[i] = -1;
     this.group[i] = -1;
     this.members[i] = 0;
+    this.col[i] = -1;
+  }
+
+  /** How much of the agent is drawn, 0..1 (the creature shader's presence). */
+  presence(i: number): number {
+    return (1 - this.hide[i]) * (1 - this.ent[i]);
   }
 
   count(): number {
@@ -684,20 +753,62 @@ function makeCensus(): Census {
   };
 }
 
-/** A nesting ledge in a seabird colony. */
+function resetCensus(c: Census): void {
+  c.count.fill(0);
+  c.kept.fill(0);
+  c.inView.fill(0);
+  c.vkept.fill(0);
+  c.nearest.fill(Infinity);
+}
+
+/**
+ * A census being taken a few rows of patches per frame, so no single frame pays for the whole scan
+ * (about 12,500 patches within 250 m). Finished censuses are swapped in whole.
+ */
+interface ScanJob {
+  c: Census;
+  cx: number;
+  cz: number;
+  /** Radius in patches, and the patch stride (the far census samples every 4th patch). */
+  pr: number;
+  stride: number;
+  /** Also count what is on screen (the near census). */
+  view: boolean;
+  /** Next row offset to scan (-pr..pr). */
+  dk: number;
+  done: boolean;
+}
+
+/** Patches per row segment that share one frustum test (most segments are wholly in or out of view). */
+const SEGMENT = 8;
+/** Rows of patches scanned per frame (near census: about 8 frames for a full scan). */
+const NEAR_ROWS_PER_FRAME = 16;
+const FAR_ROWS_PER_FRAME = 10;
+/** A new census starts this often (s). */
+const CENSUS_PERIOD = 0.5;
+
+/** A seabird colony and its nesting ledges. */
 interface Colony {
+  /** Stable id (agents remember which colony they nest in). */
+  uid: number;
   sp: number;
   x: number;
   z: number;
-  /** Typical ledge height (birds wheel around it). */
+  /** Typical ledge height (birds wheel around it), and the same eased for the speck flock. */
   y: number;
+  yDraw: number;
   r: number;
   n: number;
   ledges: Float32Array; // x, y, z, facing yaw per ledge
   ledgeCount: number;
   taken: Uint8Array;
+  /** The ground inside it changed: find its ledges again (not before `rebuildAt`, sim time). */
+  dirty: boolean;
+  rebuildAt: number;
 }
 const MAX_LEDGES = 32;
+/** How far beyond its radius a colony's ledge search reads the ground (the seaward look-out). */
+const COLONY_REACH = 30;
 
 /** Where birds wait out a storm: the sheltered (downwind) side of each island. */
 interface Lee {
@@ -723,10 +834,16 @@ export class FaunaSim {
   private readonly fields: WorldFields;
   private life: LifeInfo | null = null;
   private readonly kindBySp: Int16Array;
-  private readonly near = makeCensus();
-  private readonly far = makeCensus();
+  /** The census in use (front) and the one being taken (back), near and far. */
+  private near = makeCensus();
+  private far = makeCensus();
+  private readonly nearJob: ScanJob = { c: makeCensus(), cx: 0, cz: 0, pr: 0, stride: 1, view: true, dk: 0, done: true };
+  private readonly farJob: ScanJob = { c: makeCensus(), cx: 0, cz: 0, pr: 0, stride: 4, view: false, dk: 0, done: true };
   private colonies: Colony[] = [];
+  private nextColonyUid = 1;
   private lees: Lee[] = [];
+  /** Columns changed since the last frame (a rectangle in columns; x0 > x1 = none). */
+  private colsDirty = { x0: 1, z0: 1, x1: 0, z1: 0 };
   private censusTimer = 0;
   private cutPending = true;
   private lastTx = 0;
@@ -735,8 +852,13 @@ export class FaunaSim {
   private spawnTokens = 0;
   private leaveTokens = 0;
   private colonyVersion = -1;
-  private ecoVersion = -1;
   private lifeVersion = 0;
+  /** Frames stepped (spreads the lava checks over frames). */
+  private frame = 0;
+  /** Lava check results: how close the nearest molten lava is, and which way is away from it. */
+  private lavaDist = Infinity;
+  private awayX = 0;
+  private awayZ = 0;
   /** A clutch has hatched this dawn (cleared once the dawn is over). */
   private hatched = false;
   private phone: boolean;
@@ -745,6 +867,8 @@ export class FaunaSim {
   private readonly flowerBySp: Uint8Array;
   private readonly fruitBySp: Uint8Array;
   private readonly sphere = new THREE.Sphere();
+  /** The view frustum's planes, packed for the census (see sphereClass). */
+  private readonly planes = new Float64Array(24);
   private clock!: FaunaClock;
   private view!: FaunaView;
   private shelter = 0;
@@ -773,7 +897,32 @@ export class FaunaSim {
       this.fruitBySp[s.id] = s.plant.fruit !== undefined ? 1 : 0;
     }
     this.setQuality(opts.phone, opts.density);
+    // Only the ground matters for nesting ledges, so colonies are re-examined when columns change
+    // inside them (not on every ecology update).
+    fields.onCols.push(this.onCols);
   }
+
+  /** Stop listening to the world (the system is going away). */
+  dispose(): void {
+    const k = this.fields.onCols.indexOf(this.onCols);
+    if (k >= 0) this.fields.onCols.splice(k, 1);
+  }
+
+  /** Columns changed: remember where (colonies there look for their ledges again). */
+  private readonly onCols = (x0: number, z0: number, w: number, h: number): void => {
+    const d = this.colsDirty;
+    if (d.x0 > d.x1) {
+      d.x0 = x0;
+      d.z0 = z0;
+      d.x1 = x0 + w - 1;
+      d.z1 = z0 + h - 1;
+    } else {
+      d.x0 = Math.min(d.x0, x0);
+      d.z0 = Math.min(d.z0, z0);
+      d.x1 = Math.max(d.x1, x0 + w - 1);
+      d.z1 = Math.max(d.z1, z0 + h - 1);
+    }
+  };
 
   /** Caps follow the device and quality.density: about 60 agents on a phone and 120 on a laptop. */
   setQuality(phone: boolean, density: number): void {
@@ -793,6 +942,7 @@ export class FaunaSim {
     for (let i = 0; i < this.A.cap; i++) if (this.A.life[i] !== Life.Free) this.release(i);
     this.cutPending = true;
     this.colonies = [];
+    this.lees = [];
     this.colonyVersion = -1;
   }
 
@@ -806,9 +956,10 @@ export class FaunaSim {
   step(clock: FaunaClock, view: FaunaView): void {
     this.clock = clock;
     this.view = view;
+    this.frame++;
     const dt = clock.dt;
     const A = this.A;
-    const jump = Math.hypot(view.tx - this.lastTx, view.tz - this.lastTz);
+    const jump = hyp(view.tx - this.lastTx, view.tz - this.lastTz);
     const zoom = this.lastDist > 0 ? view.dist / this.lastDist : 99;
     const cut = this.cutPending || jump > Math.max(40, this.lastDist * 0.3) || zoom > 1.8 || zoom < 1 / 1.8;
     this.cutPending = false;
@@ -817,17 +968,13 @@ export class FaunaSim {
     this.lastDist = view.dist;
     this.shelter = shelterLevel(clock.storm);
 
-    if (this.lifeVersion !== this.colonyVersion || this.fields.ecoVersion !== this.ecoVersion) {
+    if (this.lifeVersion !== this.colonyVersion) {
       this.colonyVersion = this.lifeVersion;
-      this.ecoVersion = this.fields.ecoVersion;
-      this.findColonies();
+      this.syncColonies();
     }
-    this.censusTimer -= dt;
-    if (cut || this.censusTimer <= 0) {
-      this.censusTimer = 0.5;
-      this.takeCensus();
-      this.planCounts();
-    }
+    this.groundChanged();
+    this.rebuildOneColony();
+    this.census(cut, dt);
     if (cut) {
       for (let i = 0; i < A.cap; i++) {
         if (A.life[i] !== Life.Free && (this.outOfRange(i, 1) || !this.seen(i, this.kinds[A.kind[i]]))) this.release(i);
@@ -844,17 +991,22 @@ export class FaunaSim {
       const k = this.kinds[A.kind[i]];
       if (brush) {
         const reach = brush.r + (k.range === BIRD_RANGE || this.isFlyer(k.beh) ? 14 : 4);
-        if (Math.hypot(A.x[i] - brush.x, A.z[i] - brush.z) < reach) A.flee[i] = 4;
+        if (hyp(A.x[i] - brush.x, A.z[i] - brush.z) < reach) A.flee[i] = 4;
       }
       if (A.flee[i] > 0) A.flee[i] -= dt;
-      this.update(i, k, dt);
+      if (A.ent[i] > 0) A.ent[i] = Math.max(0, A.ent[i] - dt * ENTRANCE_RATE);
+      // Lava: each agent looks around every few frames (a flow moves a metre or two a second at most).
+      if (A.esc[i] <= 0 && (this.frame + i) % LAVA_CHECK_FRAMES === 0) this.lavaCheck(i, k);
+      if (A.life[i] === Life.Free) continue; // it slipped away (a crab under lava, a hidden snail)
+      if (A.esc[i] > 0) this.escape(i, k, dt);
+      else this.update(i, k, dt);
       if (A.life[i] === Life.Free) continue; // it went quietly during its update
       const seen = this.seen(i, k);
       A.unseen[i] = seen ? 0 : A.unseen[i] + dt;
-      if (A.unseen[i] > 0.25 && (A.life[i] === Life.Leaving || this.outOfRange(i, 1.25) || A.unseen[i] > UNSEEN_RECYCLE)) this.release(i);
+      if (A.unseen[i] > 0.25 && (A.life[i] === Life.Leaving || this.outOfRange(i, 1.25) || (A.unseen[i] > UNSEEN_RECYCLE && !this.framed(i, k)))) this.release(i);
     }
     this.P.step(dt, WIND_TO_X * 1.5, WIND_TO_Z * 1.5);
-    this.fillSpecks();
+    this.fillSpecks(dt);
   }
 
   /** Live agents (not counting free slots). */
@@ -869,29 +1021,38 @@ export class FaunaSim {
     return apparentPx(this.view, this.sphere, x, y, z, size);
   }
 
-  /** Is the agent (or any of its members) visibly on screen right now? */
+  /**
+   * Is the agent (or any of its members) visibly on screen right now? "Visibly" = its size in pixels
+   * times how much of it is drawn (presence) is at least one pixel.
+   */
   seen(i: number, k: Kind): boolean {
+    return this.visiblePx(i, k, true) >= 1;
+  }
+
+  /** Is the agent in frame and big enough to see, however faded? (A diving whale is still "there".) */
+  private framed(i: number, k: Kind): boolean {
+    return this.visiblePx(i, k, false) >= 1;
+  }
+
+  /** The biggest on-screen size (px) of the agent or its members, times presence if `faded`. */
+  visiblePx(i: number, k: Kind, faded: boolean): number {
     const A = this.A;
-    if (A.hide[i] >= 0.98) return false;
-    const vis = 1 - A.hide[i];
-    if (A.group[i] >= 0 && k.group) {
+    const vis = faded ? A.presence(i) : 1;
+    if (vis <= 0.02) return 0;
+    if (A.group[i] >= 0 && (k.group || (k.beh === B.nestBeach && A.st[i] === T_HATCH))) {
       const M = this.M;
       const m0 = A.group[i] * GROUP_SIZE;
-      const span = k.beh === B.glow ? 0.5 : k.span;
+      const span = k.beh === B.glow ? 0.5 : k.group ? k.span : 0.08;
+      let best = 0;
       for (let m = m0; m < m0 + A.members[i]; m++) {
-        if (M.hide[m] >= 0.98) continue;
-        if (this.apparentPx(M.x[m], M.y[m], M.z[m], span) * vis >= 1) return true;
+        const mv = faded ? 1 - M.hide[m] : 1;
+        if (mv <= 0.02) continue;
+        best = Math.max(best, this.apparentPx(M.x[m], M.y[m], M.z[m], span) * mv * vis);
       }
-      return false;
-    }
-    if (k.beh === B.nestBeach && A.st[i] === T_HATCH) {
-      const M = this.M;
-      const m0 = A.group[i] * GROUP_SIZE;
-      for (let m = m0; m < m0 + A.members[i]; m++) if (M.hide[m] < 0.98 && this.apparentPx(M.x[m], M.y[m], M.z[m], 0.08) >= 1) return true;
-      return false;
+      return best;
     }
     const span = k.beh === B.web ? (A.fold[i] > 0.05 ? 0.6 + A.a0[i] : k.span) : (k.span * A.scale[i]) / k.size;
-    return this.apparentPx(A.x[i], A.y[i], A.z[i], span) * vis >= 1;
+    return this.apparentPx(A.x[i], A.y[i], A.z[i], span) * vis;
   }
 
   /** Would a new animal of this kind be seen if it appeared here? */
@@ -903,7 +1064,7 @@ export class FaunaSim {
 
   private outOfRange(i: number, k: number): boolean {
     const kind = this.kinds[this.A.kind[i]];
-    return Math.hypot(this.A.x[i] - this.view.tx, this.A.z[i] - this.view.tz) > kind.range * k;
+    return hyp(this.A.x[i] - this.view.tx, this.A.z[i] - this.view.tz) > kind.range * k;
   }
 
   private isFlyer(beh: number): boolean {
@@ -923,6 +1084,16 @@ export class FaunaSim {
 
   okAt(k: Kind, x: number, z: number): boolean {
     return ((k.allowed >>> this.hab(x, z)) & 1) === 1 && this.fields.lavaAt(x, z) < 0.02;
+  }
+
+  /**
+   * Does an animal here throw a shadow? Only on or near dry ground or in the shallowest water: a duck
+   * on a deep pond or a bird high overhead would print a crisp shadow far below, stretched down the
+   * slope, on ground the water or the distance should hide.
+   */
+  castsShadow(x: number, y: number, z: number, size: number): boolean {
+    const g = this.ground(x, z);
+    return y - g < 1.5 + size && this.surface(x, z) - g < 1;
   }
 
   /** Pond level if (x, z) is inside a known pond's water, else NaN. */
@@ -963,66 +1134,319 @@ export class FaunaSim {
     return Math.max(this.fields.plants[o + 1], this.fields.plants[o + 3], this.fields.plants[o + 5] * 0.6) / 255;
   }
 
-  // ---------- census and colonies ----------
+  // ---------- lava ----------
 
-  private takeCensus(): void {
-    const v = this.view;
-    this.scan(this.near, v.tx, v.tz, NEAR_RANGE, 1, true);
-    this.scan(this.far, v.tx, v.tz, BIRD_RANGE, 4, false);
+  /** Is there molten lava within r of (x, z)? (The point and a ring of eight around it.) */
+  lavaNear(x: number, z: number, r: number): boolean {
+    const f = this.fields;
+    if (f.lavaAt(x, z) > 0.02) return true;
+    for (let s = 0; s < 8; s++) {
+      const a = s * (TAU / 8);
+      if (f.lavaAt(x + Math.cos(a) * r, z + Math.sin(a) * r) > 0.02) return true;
+    }
+    return false;
   }
 
-  private scan(c: Census, cx: number, cz: number, r: number, stride: number, view: boolean): void {
-    c.count.fill(0);
-    c.kept.fill(0);
-    c.inView.fill(0);
-    c.vkept.fill(0);
-    c.nearest.fill(Infinity);
+  /** Look for lava around a point (two rings out to LAVA_ALARM): sets lavaDist and the way away from it. */
+  private senseLava(x: number, z: number): void {
+    const f = this.fields;
+    this.lavaDist = f.lavaAt(x, z) > 0.02 ? 0 : Infinity;
+    let ax = 0;
+    let az = 0;
+    for (let ring = 1; ring <= 2; ring++) {
+      const r = LAVA_ALARM * ring * 0.5;
+      for (let s = 0; s < 8; s++) {
+        const a = (s + ring * 0.5) * (TAU / 8);
+        const ux = Math.cos(a);
+        const uz = Math.sin(a);
+        if (f.lavaAt(x + ux * r, z + uz * r) <= 0.02) continue;
+        if (r < this.lavaDist) this.lavaDist = r;
+        ax -= ux / ring;
+        az -= uz / ring;
+      }
+    }
+    const l = hyp(ax, az);
+    this.awayX = l > 1e-6 ? ax / l : 0;
+    this.awayZ = l > 1e-6 ? az / l : 0;
+  }
+
+  /**
+   * Molten lava close to an animal sends it away calmly: flyers, waders and swimmers simply startle
+   * (they lift off or move off), walkers hurry to safe ground, crabs dig a new burrow elsewhere, and
+   * the smallest (snails, spiders, fireflies) slip out of sight.
+   */
+  private lavaCheck(i: number, k: Kind): void {
+    const A = this.A;
+    if (A.life[i] === Life.Free) return;
+    // Anything well above the ground (soaring, wheeling) is in no danger.
+    if (A.y[i] > Math.max(this.ground(A.x[i], A.z[i]), 0) + 12) return;
+    if (k.beh === B.colony && (A.st[i] === C_APPROACH || A.st[i] === C_FLARE) && this.lavaNear(A.tx[i], A.tz[i], LAVA_SAFE)) {
+      // The ledge it was heading for is by the lava now: wheel again and pick another later.
+      this.freeLedge(i);
+      A.st[i] = C_ORBIT;
+      A.tm[i] = 5 + this.rng.next() * 10;
+      return;
+    }
+    this.senseLava(A.x[i], A.z[i]);
+    if (this.lavaDist === Infinity) return;
+    const onLand = this.surface(A.x[i], A.z[i]) - this.ground(A.x[i], A.z[i]) < 0.15;
+    switch (k.beh) {
+      case B.bask:
+      case B.graze:
+        this.startEscape(i, k);
+        return;
+      case B.scuttle:
+        // Already underground (or going): its burrow is going under, and it is never seen again.
+        if (A.st[i] === K_HIDDEN || A.st[i] === K_BURROW) this.leave(i);
+        else this.startEscape(i, k);
+        return;
+      case B.nestBeach:
+        if (A.st[i] !== T_HATCH && onLand) this.startEscape(i, k);
+        else A.flee[i] = Math.max(A.flee[i], 3);
+        return;
+      case B.haulOut:
+        if (onLand && A.st[i] !== E_SWIM && A.st[i] !== E_IN) this.startEscape(i, k);
+        else A.flee[i] = Math.max(A.flee[i], 3);
+        return;
+      case B.creep:
+      case B.web:
+      case B.glow:
+        this.leave(i);
+        A.flee[i] = Math.max(A.flee[i], 3);
+        return;
+      default:
+        A.flee[i] = Math.max(A.flee[i], 3);
+    }
+  }
+
+  /** How fast a walker hurries from lava (m/s): a good deal faster than it ambles, within its cap. */
+  private escapeSpeed(k: Kind): number {
+    return Math.min(k.vmax, Math.max(k.look.speed * 2.5, 0.3));
+  }
+
+  /**
+   * Send a walker to the nearest safe ground away from the lava (turtles and seals to the sea if it is
+   * close). With nowhere safe in reach it heads straight away from the lava and goes once unseen.
+   */
+  private startEscape(i: number, k: Kind): void {
+    const A = this.A;
+    const sea = this.swimsToo(k);
+    if (!this.findRefuge(i, k, sea) && !(sea && this.findRefuge(i, k, false))) {
+      const ax = this.awayX || Math.sin(A.yaw[i]);
+      const az = this.awayZ || Math.cos(A.yaw[i]);
+      A.tx[i] = A.x[i] + ax * 25;
+      A.tz[i] = A.z[i] + az * 25;
+      if (A.life[i] === Life.Live) A.life[i] = Life.Leaving;
+    }
+    A.esc[i] = 40;
+    A.flee[i] = 0;
+  }
+
+  /**
+   * The nearest spot within 30 m out of the lava's reach (none within LAVA_ALARM, so it can settle
+   * there): on the kind's own habitats if possible, out in water at least 0.8 m deep if `water`.
+   * Prefers spots away from the lava. Writes the target and returns true, or false if there is none.
+   */
+  private findRefuge(i: number, k: Kind, water: boolean): boolean {
+    const A = this.A;
+    const x = A.x[i];
+    const z = A.z[i];
+    for (let ring = 0; ring < REFUGE_RINGS.length; ring++) {
+      const r = REFUGE_RINGS[ring];
+      let best = -Infinity;
+      for (let s = 0; s < 12; s++) {
+        const a = (s + ring * 0.37) * (TAU / 12);
+        const ux = Math.sin(a);
+        const uz = Math.cos(a);
+        const px = x + ux * r;
+        const pz = z + uz * r;
+        const depth = this.surface(px, pz) - this.ground(px, pz);
+        if (water ? depth < 0.8 : depth > 0.02) continue;
+        if (this.lavaNear(px, pz, LAVA_SAFE) || this.lavaNear(px, pz, LAVA_ALARM)) continue;
+        const own = (k.allowed >>> this.hab(px, pz)) & 1;
+        const score = ux * this.awayX + uz * this.awayZ + own * 1.5;
+        if (score > best) {
+          best = score;
+          A.tx[i] = px;
+          A.tz[i] = pz;
+        }
+      }
+      if (best > -Infinity) return true;
+    }
+    return false;
+  }
+
+  /** Hurrying away from lava; once on safe ground the animal settles back into its own ways. */
+  private escape(i: number, k: Kind, dt: number): void {
+    const A = this.A;
+    A.esc[i] -= dt;
+    const speed = this.escapeSpeed(k) * A.spd[i];
+    A.hide[i] = Math.max(0, A.hide[i] - dt * 2); // a lizard that was tucking under leaves comes out to run
+    let d: number;
+    if (k.beh === B.scuttle) {
+      d = this.crabStep(i, k, speed, dt, WALK_ESCAPE);
+      this.anim(i, 14, 1, 0, 0, dt);
+    } else {
+      d = this.walkTo(i, k, A.tx[i], A.tz[i], speed, 3, dt, WALK_ESCAPE);
+      if (this.swimsToo(k)) this.surfaceOrGround(i, k, dt);
+      const hz = k.beh === B.bask ? 9 : k.beh === B.graze ? 0.7 : 1.2;
+      this.anim(i, hz, 1, 0, k.beh === B.graze ? 0.2 : 0, dt);
+    }
+    if (d >= 0.1 && A.esc[i] > 0) return;
+    A.esc[i] = 0;
+    // Walled in (by the sea, for a land animal) with lava still close: it goes once nobody is looking.
+    // Meanwhile the next lava check sends it off again, maybe another way.
+    if (d < 0 && A.life[i] === Life.Live && this.lavaNear(A.x[i], A.z[i], LAVA_SAFE)) A.life[i] = Life.Leaving;
+    // Safe: back to its own ways (the next lava check sends it on again if the flow keeps coming).
+    switch (k.beh) {
+      case B.bask:
+        A.st[i] = L_BASK;
+        A.tm[i] = 2 + this.rng.next() * 4;
+        return;
+      case B.graze:
+        A.st[i] = G_REST;
+        A.tm[i] = 10 + this.rng.next() * 10;
+        return;
+      case B.scuttle:
+        A.hx[i] = A.x[i];
+        A.hz[i] = A.z[i];
+        A.st[i] = K_BURROW;
+        A.tm[i] = 0;
+        return;
+      case B.nestBeach:
+        A.st[i] = this.surface(A.x[i], A.z[i]) - this.ground(A.x[i], A.z[i]) > 0.8 ? T_SWIM : T_DOWN;
+        A.a1[i] = 0;
+        A.tm[i] = 300;
+        return;
+      case B.haulOut:
+        A.st[i] = this.surface(A.x[i], A.z[i]) - this.ground(A.x[i], A.z[i]) > 0.7 ? E_SWIM : E_DOWN;
+        A.a1[i] = 0;
+        A.tm[i] = 90;
+        return;
+    }
+  }
+
+  // ---------- census and colonies ----------
+
+  /**
+   * Keep the census fresh. Normally a new one is taken every half second, a few rows per frame, and
+   * swapped in when done; after a cut (the camera jumped) it is taken at once so the view fills now.
+   */
+  private census(cut: boolean, dt: number): void {
+    this.censusTimer -= dt;
+    const nj = this.nearJob;
+    const fj = this.farJob;
+    if (cut) {
+      // The whole census at once (into the back tables), then swapped in.
+      this.startScan(nj, NEAR_RANGE);
+      this.startScan(fj, BIRD_RANGE);
+      this.scanRows(nj, Infinity);
+      this.scanRows(fj, Infinity);
+    } else {
+      if (nj.done && fj.done) {
+        if (this.censusTimer > 0) return;
+        this.startScan(nj, NEAR_RANGE);
+        this.startScan(fj, BIRD_RANGE);
+      }
+      const nearDone = this.scanRows(nj, NEAR_ROWS_PER_FRAME);
+      const farDone = this.scanRows(fj, FAR_ROWS_PER_FRAME);
+      if (!nearDone || !farDone) return;
+    }
+    // Swap the finished census in; the old one becomes the next back buffer.
+    this.censusTimer = CENSUS_PERIOD;
+    const n = this.near;
+    this.near = nj.c;
+    nj.c = n;
+    const f = this.far;
+    this.far = fj.c;
+    fj.c = f;
+    this.planCounts();
+  }
+
+  private startScan(job: ScanJob, r: number): void {
+    job.cx = this.view.tx;
+    job.cz = this.view.tz;
+    job.pr = Math.ceil(r / PATCH_M);
+    job.dk = -job.pr;
+    job.done = false;
+    resetCensus(job.c);
+  }
+
+  /** Scan up to `maxRows` more rows of a census job. Returns true once the job is finished. */
+  private scanRows(job: ScanJob, maxRows: number): boolean {
+    if (job.done) return true;
+    const c = job.c;
     const v = this.view;
     const surf = this.fields.surf;
-    const sp = this.sphere;
-    sp.radius = PATCH_M;
-    const pr = Math.ceil(r / PATCH_M);
-    const pi0 = Math.floor((cx - ORIGIN_X) / PATCH_M);
-    const pk0 = Math.floor((cz - ORIGIN_Z) / PATCH_M);
     const hab = this.fields.habitat;
+    const planes = this.planes;
+    packPlanes(v.frustum, planes);
+    const pr = job.pr;
+    const stride = job.stride;
+    const pi0 = Math.floor((job.cx - ORIGIN_X) / PATCH_M);
+    const pk0 = Math.floor((job.cz - ORIGIN_Z) / PATCH_M);
     const r2 = pr * pr;
-    for (let dk = -pr; dk <= pr; dk += stride) {
+    let rows = 0;
+    for (; job.dk <= pr && rows < maxRows; job.dk += stride, rows++) {
+      const dk = job.dk;
       const pk = pk0 + dk;
       if (pk < 0 || pk >= NP) continue;
-      for (let di = -pr; di <= pr; di += stride) {
-        const pi = pi0 + di;
-        if (pi < 0 || pi >= NP || di * di + dk * dk > r2) continue;
-        const p = pi + pk * NP;
-        const h = hab[p];
-        if (view) {
-          // Is this patch on screen, and how far is it from the eye?
-          const x = ORIGIN_X + (pi + 0.5) * PATCH_M;
-          const z = ORIGIN_Z + (pk + 0.5) * PATCH_M;
-          const y = Math.max(0, surf[pi * PATCH + 1 + (pk * PATCH + 1) * NX]);
-          sp.center.set(x, y, z);
-          if (v.frustum.intersectsSphere(sp)) {
-            const nv = c.inView[h]++;
-            if (nv < RESERVOIR) {
-              c.vlist[h * RESERVOIR + nv] = p;
-              c.vkept[h] = nv + 1;
-            } else {
-              const j = this.rng.int(nv + 1);
-              if (j < RESERVOIR) c.vlist[h * RESERVOIR + j] = p;
-            }
-            const d = Math.hypot(x - v.cx, y - v.cy, z - v.cz);
-            if (d < c.nearest[h]) c.nearest[h] = d;
-          }
+      // The row's span inside the circle, on the stride grid.
+      const half = Math.floor(Math.sqrt(Math.max(0, r2 - dk * dk)) / stride) * stride;
+      const z = ORIGIN_Z + (pk + 0.5) * PATCH_M;
+      for (let s0 = -half; s0 <= half; s0 += SEGMENT * stride) {
+        const s1 = Math.min(half, s0 + (SEGMENT - 1) * stride);
+        // One frustum test for the whole segment: wholly in view, wholly out, or test each patch.
+        // (The radius allows for the ground rising or falling along it; a tall pillar may be
+        // misjudged, which only nudges where new animals are tried.)
+        let cls = -1;
+        if (job.view) {
+          const piM = clamp(pi0 + Math.round((s0 + s1) / 2), 0, NP - 1);
+          const yM = Math.max(0, surf[piM * PATCH + 1 + (pk * PATCH + 1) * NX]);
+          cls = sphereClass(planes, ORIGIN_X + (piM + 0.5) * PATCH_M, yM, z, ((s1 - s0 + 1) * PATCH_M) / 2 + PATCH_M + 20);
         }
-        const n = c.count[h]++;
-        if (n < RESERVOIR) {
-          c.list[h * RESERVOIR + n] = p;
-          c.kept[h] = n + 1;
-        } else {
-          const j = this.rng.int(n + 1);
-          if (j < RESERVOIR) c.list[h * RESERVOIR + j] = p;
+        for (let di = s0; di <= s1; di += stride) {
+          const pi = pi0 + di;
+          if (pi < 0 || pi >= NP) continue;
+          const p = pi + pk * NP;
+          const h = hab[p];
+          if (cls >= 0) {
+            // Is this patch on screen, and how far is it from the eye?
+            const x = ORIGIN_X + (pi + 0.5) * PATCH_M;
+            const y = Math.max(0, surf[pi * PATCH + 1 + (pk * PATCH + 1) * NX]);
+            const inView = cls === 1 || (cls === 0 && sphereClass(planes, x, y, z, PATCH_M) >= 0);
+            if (inView) {
+              const nv = c.inView[h]++;
+              if (nv < RESERVOIR) {
+                c.vlist[h * RESERVOIR + nv] = p;
+                c.vkept[h] = nv + 1;
+              } else {
+                const j = this.rng.int(nv + 1);
+                if (j < RESERVOIR) c.vlist[h * RESERVOIR + j] = p;
+              }
+              const dx = x - v.cx;
+              const dy = y - v.cy;
+              const dz = z - v.cz;
+              const d2 = dx * dx + dy * dy + dz * dz;
+              if (d2 < c.nearest[h]) c.nearest[h] = d2;
+            }
+          }
+          const n = c.count[h]++;
+          if (n < RESERVOIR) {
+            c.list[h * RESERVOIR + n] = p;
+            c.kept[h] = n + 1;
+          } else {
+            const j = this.rng.int(n + 1);
+            if (j < RESERVOIR) c.list[h * RESERVOIR + j] = p;
+          }
         }
       }
     }
+    if (job.dk <= pr) return false;
+    // Nearest distances were kept squared while scanning.
+    if (job.view) for (let h = 0; h < HABITAT_COUNT; h++) if (c.nearest[h] < Infinity) c.nearest[h] = Math.sqrt(c.nearest[h]);
+    job.done = true;
+    return true;
   }
 
   /** A random patch of the kind's habitats from a census, or -1. */
@@ -1060,53 +1484,45 @@ export class FaunaSim {
     return n;
   }
 
-  /** Find nesting ledges for each colony near enough to matter, and each island's lee. */
-  private findColonies(): void {
+  /**
+   * Match the colonies to the latest life message. A colony that is still there (same species, place
+   * and size) keeps its ledges and who sits on them; only new or changed ones look for ledges. Each
+   * island's lee (where birds wait out storms) is found again too.
+   */
+  private syncColonies(): void {
     const life = this.life;
-    this.colonies = [];
+    const old = this.colonies;
+    const next: Colony[] = [];
+    for (const c of life ? life.colonies : []) {
+      let col: Colony | null = null;
+      for (let o = 0; o < old.length; o++) {
+        const p = old[o];
+        if (p.sp === c.species && Math.abs(p.x - c.x) < 0.5 && Math.abs(p.z - c.z) < 0.5 && Math.abs(p.r - c.r) < 0.5) col = p;
+      }
+      if (col) col.n = c.n;
+      else {
+        col = { uid: this.nextColonyUid++, sp: c.species, x: c.x, z: c.z, y: 0, yDraw: NaN, r: c.r, n: c.n, ledges: new Float32Array(MAX_LEDGES * 4), ledgeCount: 0, taken: new Uint8Array(MAX_LEDGES), dirty: false, rebuildAt: 0 };
+        this.findLedges(col);
+      }
+      next.push(col);
+    }
+    // A colony that changed (it grew, or moved a little) carries its birds over to its successor, each
+    // keeping the ledge at its spot. Birds of a colony that has gone keep what they are doing, without
+    // a ledge to come back to.
+    for (let o = 0; o < old.length; o++) {
+      const p = old[o];
+      if (next.indexOf(p) >= 0) continue;
+      let succ: Colony | null = null;
+      for (let c = 0; c < next.length; c++) {
+        const q = next[c];
+        if (q.sp === p.sp && hyp(q.x - p.x, q.z - p.z) < Math.max(p.r, q.r)) succ = q;
+      }
+      if (succ) this.adopt(p.uid, succ);
+      else this.orphan(p.uid);
+    }
+    this.colonies = next;
     this.lees = [];
     if (!life) return;
-    for (const c of life.colonies) {
-      const col: Colony = { sp: c.species, x: c.x, z: c.z, y: 0, r: c.r, n: c.n, ledges: new Float32Array(MAX_LEDGES * 4), ledgeCount: 0, taken: new Uint8Array(MAX_LEDGES) };
-      // Two passes: first ledges that look out over the sea (cliff tops and shelves), then, if the
-      // colony has too few of those, any footing with a drop beside it (or flat ground on a low islet).
-      for (let pass = 0; pass < 2 && col.ledgeCount < 8; pass++) {
-        for (let t = 0; t < 160 && col.ledgeCount < MAX_LEDGES; t++) {
-          const a = this.rng.next() * TAU;
-          const d = Math.sqrt(this.rng.next()) * c.r;
-          const x = c.x + Math.cos(a) * d;
-          const z = c.z + Math.sin(a) * d;
-          const h = this.ground(x, z);
-          if (h < 2) continue;
-          const gx = (this.ground(x + 1.5, z) - this.ground(x - 1.5, z)) / 3;
-          const gz = (this.ground(x, z + 1.5) - this.ground(x, z - 1.5)) / 3;
-          if (Math.hypot(gx, gz) > 0.9) continue;
-          // Fairly flat footing with a drop close by; the bird faces out over the drop.
-          let best = 0;
-          let face = 0;
-          for (let s = 0; s < 8; s++) {
-            const b = (s / 8) * TAU;
-            const drop = h - this.ground(x + Math.sin(b) * 5, z + Math.cos(b) * 5);
-            if (drop > best) {
-              best = drop;
-              face = b;
-            }
-          }
-          if (best < 2.5 && h > 4) continue;
-          const seaward = this.ground(x + Math.sin(face) * 25, z + Math.cos(face) * 25) < 2;
-          if (pass === 0 && !seaward) continue;
-          const o = col.ledgeCount * 4;
-          col.ledges[o] = x;
-          col.ledges[o + 1] = h;
-          col.ledges[o + 2] = z;
-          col.ledges[o + 3] = face;
-          col.ledgeCount++;
-          col.y += h;
-        }
-      }
-      col.y = col.ledgeCount > 0 ? col.y / col.ledgeCount : Math.max(0, this.ground(c.x, c.z));
-      this.colonies.push(col);
-    }
     for (const isl of life.islands) {
       const [x0, z0, x1, z1] = isl.bbox;
       const cx = isl.centroid[0];
@@ -1123,13 +1539,166 @@ export class FaunaSim {
     }
   }
 
+  /** Mark colonies whose ground changed since the last frame (from the columns stream). */
+  private groundChanged(): void {
+    const d = this.colsDirty;
+    if (d.x0 > d.x1) return;
+    const x0 = ORIGIN_X + d.x0 * CELL;
+    const z0 = ORIGIN_Z + d.z0 * CELL;
+    const x1 = ORIGIN_X + (d.x1 + 1) * CELL;
+    const z1 = ORIGIN_Z + (d.z1 + 1) * CELL;
+    d.x0 = 1;
+    d.x1 = 0;
+    for (let ci = 0; ci < this.colonies.length; ci++) {
+      const c = this.colonies[ci];
+      const R = c.r + COLONY_REACH;
+      if (x1 >= c.x - R && x0 <= c.x + R && z1 >= c.z - R && z0 <= c.z + R) c.dirty = true;
+    }
+  }
+
+  /**
+   * Find the ledges of one changed colony again (at most one per frame, and each colony at most every
+   * couple of seconds while lava or sand is still moving there).
+   */
+  private rebuildOneColony(): void {
+    const t = this.clock.t;
+    for (let ci = 0; ci < this.colonies.length; ci++) {
+      const c = this.colonies[ci];
+      if (!c.dirty || t < c.rebuildAt) continue;
+      c.dirty = false;
+      c.rebuildAt = t + 2;
+      this.findLedges(c);
+      this.remapLedges(c);
+      return;
+    }
+  }
+
+  /**
+   * Look for nesting ledges in a colony. The search is seeded by the colony itself (its place and
+   * species), so looking again over the same ground finds exactly the same ledges, and ground that
+   * changed only moves the ledges on it.
+   */
+  private findLedges(col: Colony): void {
+    const seed = Math.round(col.x * 4) * 7919 + Math.round(col.z * 4) * 104729 + col.sp * 31;
+    col.ledgeCount = 0;
+    col.taken.fill(0);
+    let sum = 0;
+    // Two passes: first ledges that look out over the sea (cliff tops and shelves), then, if the
+    // colony has too few of those, any footing with a drop beside it (or flat ground on a low islet).
+    for (let pass = 0; pass < 2 && col.ledgeCount < 8; pass++) {
+      for (let t = 0; t < 160 && col.ledgeCount < MAX_LEDGES; t++) {
+        const a = hash2(t, pass * 2, seed) * TAU;
+        const d = Math.sqrt(hash2(t, pass * 2 + 1, seed)) * col.r;
+        const x = col.x + Math.cos(a) * d;
+        const z = col.z + Math.sin(a) * d;
+        const h = this.ground(x, z);
+        if (h < 2 || this.fields.lavaAt(x, z) > 0.02) continue;
+        const gx = (this.ground(x + 1.5, z) - this.ground(x - 1.5, z)) / 3;
+        const gz = (this.ground(x, z + 1.5) - this.ground(x, z - 1.5)) / 3;
+        if (hyp(gx, gz) > 0.9) continue;
+        // Fairly flat footing with a drop close by; the bird faces out over the drop.
+        let best = 0;
+        let face = 0;
+        for (let s = 0; s < 8; s++) {
+          const b = (s / 8) * TAU;
+          const drop = h - this.ground(x + Math.sin(b) * 5, z + Math.cos(b) * 5);
+          if (drop > best) {
+            best = drop;
+            face = b;
+          }
+        }
+        if (best < 2.5 && h > 4) continue;
+        const seaward = this.ground(x + Math.sin(face) * 25, z + Math.cos(face) * 25) < 2;
+        if (pass === 0 && !seaward) continue;
+        const o = col.ledgeCount * 4;
+        col.ledges[o] = x;
+        col.ledges[o + 1] = h;
+        col.ledges[o + 2] = z;
+        col.ledges[o + 3] = face;
+        col.ledgeCount++;
+        sum += h;
+      }
+    }
+    col.y = col.ledgeCount > 0 ? sum / col.ledgeCount : Math.max(0, this.ground(col.x, col.z));
+    if (col.yDraw !== col.yDraw) col.yDraw = col.y;
+  }
+
+  /**
+   * After a colony's ledges were found again: each bird that held a ledge keeps the one now at its
+   * spot. One whose ledge is gone flies off again (landing birds go back to wheeling; a perched
+   * bird stays put unless the ground under it moved).
+   */
+  private remapLedges(col: Colony): void {
+    const A = this.A;
+    for (let i = 0; i < A.cap; i++) if (A.life[i] !== Life.Free && A.col[i] === col.uid && A.a3[i] >= 0) this.reclaimLedge(i, col);
+  }
+
+  /** A bird that held a ledge takes the free ledge of `col` at its spot, or goes without one. */
+  private reclaimLedge(i: number, col: Colony): void {
+    const A = this.A;
+    let best = -1;
+    let bd = 1.5;
+    for (let l = 0; l < col.ledgeCount; l++) {
+      const o = l * 4;
+      const d = hyp(col.ledges[o] - A.tx[i], col.ledges[o + 2] - A.tz[i]);
+      if (d < bd && !col.taken[l] && Math.abs(col.ledges[o + 1] - A.ty[i]) < 1) {
+        bd = d;
+        best = l;
+      }
+    }
+    A.a3[i] = best;
+    if (best >= 0) {
+      col.taken[best] = 1;
+      return;
+    }
+    const st = A.st[i];
+    if (st === C_APPROACH || st === C_FLARE) {
+      A.st[i] = C_ORBIT;
+      A.tm[i] = 5 + this.rng.next() * 10;
+    } else if (st === C_PERCH && Math.abs(this.ground(A.x[i], A.z[i]) - A.y[i]) > 0.3) {
+      A.st[i] = C_DROP;
+      A.tm[i] = 0;
+      this.takeOff(i);
+    }
+  }
+
+  /** Move the birds of colony `uid` to colony `to`, keeping the ledges they hold (by place). */
+  private adopt(uid: number, to: Colony): void {
+    const A = this.A;
+    for (let i = 0; i < A.cap; i++) {
+      if (A.life[i] === Life.Free || A.col[i] !== uid) continue;
+      A.col[i] = to.uid;
+      A.hx[i] = to.x;
+      A.hz[i] = to.z;
+      if (A.a3[i] >= 0) this.reclaimLedge(i, to);
+    }
+  }
+
+  /** Birds of a colony that is gone: no ledge to hold, no colony to return to. */
+  private orphan(uid: number): void {
+    const A = this.A;
+    for (let i = 0; i < A.cap; i++) {
+      if (A.life[i] === Life.Free || A.col[i] !== uid) continue;
+      A.col[i] = -1;
+      A.a3[i] = -1;
+      if (A.st[i] === C_APPROACH || A.st[i] === C_FLARE) A.st[i] = C_ORBIT;
+    }
+  }
+
+  /** The colony with this uid, or null. */
+  private colonyById(uid: number): Colony | null {
+    if (uid < 0) return null;
+    for (let ci = 0; ci < this.colonies.length; ci++) if (this.colonies[ci].uid === uid) return this.colonies[ci];
+    return null;
+  }
+
   private colonyFor(sp: number): Colony | null {
     let best: Colony | null = null;
     let bd = Infinity;
     for (let ci = 0; ci < this.colonies.length; ci++) {
       const c = this.colonies[ci];
       if (c.sp !== sp) continue;
-      const d = Math.hypot(c.x - this.view.tx, c.z - this.view.tz);
+      const d = hyp(c.x - this.view.tx, c.z - this.view.tz);
       if (d < BIRD_RANGE + c.r && d < bd) {
         bd = d;
         best = c;
@@ -1143,7 +1712,7 @@ export class FaunaSim {
     let bd = Infinity;
     for (let li = 0; li < this.lees.length; li++) {
       const l = this.lees[li];
-      const d = Math.hypot(l.x - x, l.z - z);
+      const d = hyp(l.x - x, l.z - z);
       if (d < bd) {
         bd = d;
         best = l;
@@ -1183,7 +1752,7 @@ export class FaunaSim {
         if (this.near.nearest[h] < nearest) nearest = this.near.nearest[h];
       }
       // How big would one look: at the colony, or at the nearest patch of its habitat in view.
-      const px = col ? Math.hypot(col.x - v.cx, col.z - v.cz) : nearest < Infinity ? nearest : Math.hypot(v.dist, NEAR_RANGE * 0.5);
+      const px = col ? hyp3(col.x - v.cx, col.y - v.cy, col.z - v.cz) : nearest < Infinity ? nearest : hyp(v.dist, NEAR_RANGE * 0.5);
       const vis = smooth(0.6, 2.5, (k.span * v.pxPerRad) / Math.max(1, px));
       const presence = col ? 1 : Math.min(1, Math.min(1, seen / 20) + 0.15 * Math.min(1, (all - seen) / 20));
       let pop = this.popNear(k.sp, v.tx, v.tz, k.range * 0.6);
@@ -1194,7 +1763,7 @@ export class FaunaSim {
       if (col) {
         this.sphere.center.set(col.x, col.y + 15, col.z);
         this.sphere.radius = col.r + 30;
-        near = (1 - smooth(250, 450, Math.hypot(col.x - v.cx, col.z - v.cz))) * (v.frustum.intersectsSphere(this.sphere) ? 1 : 0.3);
+        near = (1 - smooth(COLONY_NEAR, COLONY_FAR, hyp3(col.x - v.cx, col.y - v.cy, col.z - v.cz))) * (v.frustum.intersectsSphere(this.sphere) ? 1 : 0.3);
       }
       let w = look.max * this.density * popF * act * vis * presence * near;
       if (k.group) w = Math.min(w, (this.M.blocks / 2) * GROUP_SIZE);
@@ -1237,7 +1806,7 @@ export class FaunaSim {
         let best = -1;
         for (let i = 0; i < A.cap; i++) {
           if (A.kind[i] !== ki || A.life[i] !== Life.Live || this.headcount(i) === 0) continue;
-          const score = A.unseen[i] + Math.hypot(A.x[i] - this.view.tx, A.z[i] - this.view.tz) * 0.01;
+          const score = A.unseen[i] + hyp(A.x[i] - this.view.tx, A.z[i] - this.view.tz) * 0.01;
           if (score > best) {
             best = score;
             pick = i;
@@ -1273,11 +1842,13 @@ export class FaunaSim {
     if (A.life[i] !== Life.Live) return;
     A.life[i] = Life.Leaving;
     this.freeLedge(i);
+    // Hurrying from lava: it keeps heading for safe ground, and goes once out of sight.
+    if (A.esc[i] > 0) return;
     const k = this.kinds[A.kind[i]];
     // Pick an exit direction away from the camera target.
     const dx = A.x[i] - this.view.tx;
     const dz = A.z[i] - this.view.tz;
-    const d = Math.hypot(dx, dz) || 1;
+    const d = hyp(dx, dz) || 1;
     const far = this.isFlyer(k.beh) ? 500 : 120;
     A.tx[i] = A.x[i] + (dx / d) * far;
     A.tz[i] = A.z[i] + (dz / d) * far;
@@ -1304,7 +1875,7 @@ export class FaunaSim {
         if (p < 0) return false;
         x = ORIGIN_X + ((p % NP) + this.rng.next()) * PATCH_M;
         z = ORIGIN_Z + (Math.floor(p / NP) + this.rng.next()) * PATCH_M;
-        if (this.popNear(k.sp, x, z, k.range === BIRD_RANGE ? 200 : 60) <= 0) continue;
+        if (this.popNear(k.sp, x, z, k.range === BIRD_RANGE ? 200 : 60) <= 0 || this.lavaNear(x, z, LAVA_ALARM)) continue;
       }
       const i = this.A.alloc(ki);
       if (i < 0) return false;
@@ -1335,6 +1906,7 @@ export class FaunaSim {
         A.a2[i] = this.rng.next() < 0.5 ? 1 : -1;
         A.a3[i] = -1;
         if (col) {
+          A.col[i] = col.uid;
           A.hx[i] = col.x;
           A.hz[i] = col.z;
         }
@@ -1445,8 +2017,11 @@ export class FaunaSim {
       case B.graze:
       case B.creep: {
         if (!this.okAt(k, x, z) || g < 0.2) return false;
-        const hidden = this.coverAt(x, z) > (k.beh === B.graze ? 0.6 : 0.4);
-        if (!cut && !hidden && this.wouldSee(k, x, g, z)) return false;
+        if (!cut && this.wouldSee(k, x, g, z)) {
+          // In view, it may only step out from under a shrub (fading in as it comes out).
+          if (this.coverAt(x, z) <= (k.beh === B.graze ? 0.6 : 0.4)) return false;
+          A.ent[i] = 1;
+        }
         A.x[i] = x;
         A.z[i] = z;
         A.y[i] = g;
@@ -1474,6 +2049,7 @@ export class FaunaSim {
         A.v[i] = k.look.speed * 0.6;
         A.tm[i] = 10 + this.rng.next() * 30;
         A.tm2[i] = 5 + this.rng.next() * 25;
+        if (k.beh === B.surfaceBlow) A.hide[i] = smooth(3, 6, this.surface(sx, sz) - sy); // deep: unseen
         if (k.beh === B.nestBeach) A.st[i] = T_SWIM;
         if (k.beh === B.porpoise) this.spawnPod(i, k, cut);
         return true;
@@ -1538,6 +2114,7 @@ export class FaunaSim {
         A.a0[i] = cut ? 0.3 + this.rng.next() * 0.6 : 0; // thread length
         A.a1[i] = 0.25 + this.rng.next() * 0.7; // where it will settle
         A.y[i] = A.hy[i] - A.a0[i];
+        A.hide[i] = A.a0[i] < 0.01 ? 1 : 0; // up under its leaf until it lowers itself
         A.st[i] = 0;
         return true;
       }
@@ -1643,8 +2220,10 @@ export class FaunaSim {
     for (let t = 0; t < 18; t++) {
       const a = this.rng.next() * TAU;
       const d = Math.sqrt(this.rng.next()) * r;
-      const p = this.fields.patchIndex(x + Math.cos(a) * d, z + Math.sin(a) * d);
-      if (p < 0) continue;
+      const px = x + Math.cos(a) * d;
+      const pz = z + Math.sin(a) * d;
+      const p = this.fields.patchIndex(px, pz);
+      if (p < 0 || this.lavaNear(px, pz, LAVA_SAFE)) continue;
       const o = p * PLANT_BYTES;
       const pl = this.fields.plants;
       const tall = pl[o + 1] > 90 ? pl[o] - 1 : pl[o + 3] > 110 ? pl[o + 2] - 1 : -1;
@@ -1704,7 +2283,7 @@ export class FaunaSim {
       px -= gx * step;
       pz -= gz * step;
     }
-    if (Math.hypot(px - x, pz - z) > 25 || !this.okAt(k, px, pz)) return false;
+    if (hyp(px - x, pz - z) > 25 || !this.okAt(k, px, pz)) return false;
     A.tx[i] = px;
     A.tz[i] = pz;
     A.ty[i] = this.ground(px, pz);
@@ -1759,9 +2338,16 @@ export class FaunaSim {
     const start = this.rng.int(col.ledgeCount);
     for (let n = 0; n < col.ledgeCount; n++) {
       const l = (start + n) % col.ledgeCount;
-      if (col.taken[l]) continue;
+      if (col.taken[l] || this.lavaNear(col.ledges[l * 4], col.ledges[l * 4 + 2], LAVA_SAFE)) continue;
       col.taken[l] = 1;
       const A = this.A;
+      if (A.col[i] !== col.uid) {
+        // Joining this colony (its own has gone): wheel round this one from now on.
+        A.col[i] = col.uid;
+        A.hx[i] = col.x;
+        A.hz[i] = col.z;
+        A.hy[i] = col.y;
+      }
       A.a3[i] = l;
       A.tx[i] = col.ledges[l * 4];
       A.ty[i] = col.ledges[l * 4 + 1];
@@ -1784,7 +2370,7 @@ export class FaunaSim {
       const h = this.ground(x, z);
       const gx = this.ground(x + 1, z) - this.ground(x - 1, z);
       const gz = this.ground(x, z + 1) - this.ground(x, z - 1);
-      if (h < 1.5 || Math.hypot(gx, gz) > 1.2) continue;
+      if (h < 1.5 || hyp(gx, gz) > 1.2 || this.lavaNear(x, z, LAVA_SAFE)) continue;
       A.a3[i] = -1;
       A.tx[i] = x;
       A.ty[i] = h;
@@ -1799,7 +2385,7 @@ export class FaunaSim {
     const A = this.A;
     const k = this.kinds[A.kind[i]];
     if (!k || k.beh !== B.colony || A.a3[i] < 0) return;
-    const col = this.colonyFor(k.sp);
+    const col = this.colonyById(A.col[i]);
     if (col && A.a3[i] < col.ledgeCount) col.taken[A.a3[i]] = 0;
     A.a3[i] = -1;
   }
@@ -1847,7 +2433,7 @@ export class FaunaSim {
     const A = this.A;
     const dx = tx - A.x[i];
     const dz = tz - A.z[i];
-    const dh = Math.hypot(dx, dz);
+    const dh = hyp(dx, dz);
     const v = A.v[i];
     const rate = Math.min(4, Math.max(0.6, (1.6 * Math.max(v, 1)) / Math.max(dh, 1)));
     const want = Math.atan2(dx, dz);
@@ -1905,14 +2491,14 @@ export class FaunaSim {
     const dx = tx - A.x[i];
     const dy = ty - A.y[i];
     const dz = tz - A.z[i];
-    const d = Math.hypot(dx, dy, dz);
+    const d = hyp3(dx, dy, dz);
     const v = Math.min(k.vmax, Math.max(0.4, Math.min(A.v[i] + 0.5, d * 2.5)));
     const step = Math.min(d, v * dt);
     if (d > 1e-4) {
       A.x[i] += (dx / d) * step;
       A.y[i] += (dy / d) * step;
       A.z[i] += (dz / d) * step;
-      if (Math.hypot(dx, dz) > 0.05) A.yaw[i] = turnToward(A.yaw[i], Math.atan2(dx, dz), dt * 6);
+      if (hyp(dx, dz) > 0.05) A.yaw[i] = turnToward(A.yaw[i], Math.atan2(dx, dz), dt * 6);
     }
     A.v[i] = v;
     A.vy[i] = 0;
@@ -1933,7 +2519,7 @@ export class FaunaSim {
   /** Keep the agent's combined speed under its hard cap. */
   private limit(i: number, k: Kind): void {
     const A = this.A;
-    const s = Math.hypot(A.v[i], A.vy[i]);
+    const s = hyp(A.v[i], A.vy[i]);
     if (s > k.vmax) {
       A.v[i] *= k.vmax / s;
       A.vy[i] *= k.vmax / s;
@@ -1941,14 +2527,16 @@ export class FaunaSim {
   }
 
   /**
-   * Walk toward a point on the ground: turn first, then move along the heading, never stepping off
-   * the allowed habitats. Returns the distance left, or -1 if the way is blocked.
+   * Walk toward a point on the ground: turn first, then move along the heading. `mode` says what may
+   * be stepped on: WALK_HABITAT (the allowed habitats, no lava), WALK_NO_LAVA (anything but lava: a
+   * turtle or seal getting back to the sea) or WALK_ESCAPE (anything a land animal can stand on,
+   * lava included: hurrying off a flow). Returns the distance left, or -1 if the way is blocked.
    */
-  private walkTo(i: number, k: Kind, tx: number, tz: number, speed: number, turnRate: number, dt: number): number {
+  private walkTo(i: number, k: Kind, tx: number, tz: number, speed: number, turnRate: number, dt: number, mode = WALK_HABITAT): number {
     const A = this.A;
     const dx = tx - A.x[i];
     const dz = tz - A.z[i];
-    const d = Math.hypot(dx, dz);
+    const d = hyp(dx, dz);
     if (d < 0.005) {
       A.v[i] = 0;
       return 0;
@@ -1960,7 +2548,7 @@ export class FaunaSim {
     const step = Math.min(d, v * dt);
     const nx = A.x[i] + Math.sin(A.yaw[i]) * step;
     const nz = A.z[i] + Math.cos(A.yaw[i]) * step;
-    if (!this.okAt(k, nx, nz)) {
+    if (!this.canStep(k, nx, nz, mode)) {
       A.v[i] = 0;
       return -1;
     }
@@ -1970,6 +2558,18 @@ export class FaunaSim {
     A.vy[i] = 0;
     this.stickToGround(i, k);
     return d - step;
+  }
+
+  /** May a walker of this kind step onto (x, z)? See walkTo for the modes. */
+  private canStep(k: Kind, x: number, z: number, mode: number): boolean {
+    if (mode === WALK_HABITAT) return this.okAt(k, x, z);
+    if (mode === WALK_NO_LAVA) return this.fields.lavaAt(x, z) < 0.02;
+    return this.swimsToo(k) || this.surface(x, z) - this.ground(x, z) < 0.05;
+  }
+
+  /** Animals that crawl on land but are at home in the sea (turtles, seals). */
+  private swimsToo(k: Kind): boolean {
+    return k.beh === B.nestBeach || k.beh === B.haulOut;
   }
 
   /** Stand on the ground, pitched to the slope along the heading. */
@@ -1998,7 +2598,7 @@ export class FaunaSim {
     const A = this.A;
     const dx = tx - A.x[i];
     const dz = tz - A.z[i];
-    const dh = Math.hypot(dx, dz);
+    const dh = hyp(dx, dz);
     const want = Math.atan2(dx, dz);
     const yaw0 = A.yaw[i];
     A.yaw[i] = turnToward(yaw0, want, turnRate * dt);
@@ -2120,22 +2720,8 @@ export class FaunaSim {
     const night = activityLevel(k.look.active, this.clock.phase) < 0.3;
     if (this.shelter > 0.5 && st !== C_SHELTER && st !== C_SHELTER_FLY) {
       this.freeLedge(i);
-      const lee = this.nearestLee(A.x[i], A.z[i]);
-      if (lee) {
+      if (this.shelterSpot(i)) {
         A.st[i] = C_SHELTER_FLY;
-        // Somewhere on land near the island's sheltered side.
-        A.tx[i] = lee.x;
-        A.tz[i] = lee.z;
-        for (let t = 0; t < 8; t++) {
-          const x = lee.x + (this.rng.next() - 0.5) * 30;
-          const z = lee.z + (this.rng.next() - 0.5) * 30;
-          if (this.ground(x, z) > 0.5) {
-            A.tx[i] = x;
-            A.tz[i] = z;
-            break;
-          }
-        }
-        A.ty[i] = Math.max(0, this.ground(A.tx[i], A.tz[i]));
         if (st === C_PERCH || st === C_FLOAT) this.takeOff(i);
       }
     }
@@ -2151,7 +2737,7 @@ export class FaunaSim {
         A.tm[i] -= dt;
         if (A.tm[i] <= 0) {
           A.tm[i] = 10 + this.rng.next() * 30;
-          const col = this.colonyFor(k.sp);
+          const col = this.colonyById(A.col[i]) ?? this.colonyFor(k.sp);
           const overSea = this.ground(A.x[i], A.z[i]) < -2;
           if (col && (night || this.rng.next() < 0.6) && (this.takeLedge(i, col) || (night && this.groundRoost(i, col)))) A.st[i] = C_APPROACH;
           else if (overSea && !night && this.rng.next() < 0.35) {
@@ -2177,7 +2763,7 @@ export class FaunaSim {
         return;
       }
       case C_FLARE: {
-        const d = Math.hypot(A.tx[i] - A.x[i], A.ty[i] - A.y[i], A.tz[i] - A.z[i]);
+        const d = hyp3(A.tx[i] - A.x[i], A.ty[i] - A.y[i], A.tz[i] - A.z[i]);
         const v = Math.max(1.2, Math.min(sp * 0.8, d * 1.1));
         A.v[i] = approach(A.v[i], v, dt * 4);
         const ux = (A.tx[i] - A.x[i]) / Math.max(d, 1e-3);
@@ -2226,43 +2812,41 @@ export class FaunaSim {
         return;
       }
       case C_PLUNGE: {
-        // Climb to ~14 m, fold, dive into the sea, bob up and rest on the water.
+        // Climb to ~14 m over the sea, then fold and dive.
         A.tm[i] += dt;
         const sea = this.surface(A.x[i], A.z[i]);
-        if (A.a1[i] >= 0 && A.tm[i] < 4) {
-          this.flyTo(i, k, A.tx[i], sea + 14, A.tz[i], sp * 0.7, dt, 2);
-          this.anim(i, 3.5, 0.6, 0, 0, dt);
-          if (A.tm[i] > 2.5 || Math.abs(A.y[i] - sea - 14) < 2) {
-            A.a1[i] = -Math.abs(A.a1[i]) - 1; // diving now
-            A.tm[i] = 4;
-          }
+        this.flyTo(i, k, A.tx[i], sea + 14, A.tz[i], sp * 0.7, dt, 2);
+        this.anim(i, 3.5, 0.6, 0, 0, dt);
+        if (A.tm[i] > 2.5 || Math.abs(A.y[i] - sea - 14) < 2) {
+          A.st[i] = C_DIVE;
+          A.tm[i] = 0;
+        }
+        return;
+      }
+      case C_DIVE: {
+        // Wings folded, straight down into the sea; then bob up and rest on the water.
+        const sea = this.surface(A.x[i], A.z[i]);
+        if (this.ground(A.x[i], A.z[i]) > sea - 1) {
+          // Drifted over the shore while climbing: no dive here, pull out and go back to wheeling.
+          A.st[i] = C_DROP;
+          A.tm[i] = 1;
           return;
         }
-        if (A.a1[i] < 0) {
-          if (this.ground(A.x[i], A.z[i]) > sea - 1) {
-            // Drifted over the shore while climbing: no dive here, pull out and go back to wheeling.
-            A.a1[i] = Math.abs(A.a1[i]) - 1;
-            A.st[i] = C_DROP;
-            A.tm[i] = 1;
-            return;
-          }
-          const v = Math.min(k.vmax, A.v[i] + 9.8 * dt);
-          A.v[i] = v;
-          A.pitch[i] = approach(A.pitch[i], -1.25, dt * 5);
-          A.x[i] += Math.sin(A.yaw[i]) * Math.cos(A.pitch[i]) * v * dt;
-          A.z[i] += Math.cos(A.yaw[i]) * Math.cos(A.pitch[i]) * v * dt;
-          A.y[i] += Math.sin(A.pitch[i]) * v * dt;
-          A.vy[i] = Math.sin(A.pitch[i]) * v;
-          this.anim(i, 0, 0, 0.75, 0, dt);
-          if (A.y[i] <= sea) {
-            this.splash(A.x[i], sea, A.z[i], 1.2, 14);
-            A.a1[i] = Math.abs(A.a1[i]) - 1;
-            A.st[i] = C_FLOAT;
-            A.tm[i] = 4 + this.rng.next() * 6;
-            A.v[i] = 0;
-            A.vy[i] = 0;
-            A.y[i] = sea - 0.5;
-          }
+        const v = Math.min(k.vmax, A.v[i] + 9.8 * dt);
+        A.v[i] = v;
+        A.pitch[i] = approach(A.pitch[i], -1.25, dt * 5);
+        A.x[i] += Math.sin(A.yaw[i]) * Math.cos(A.pitch[i]) * v * dt;
+        A.z[i] += Math.cos(A.yaw[i]) * Math.cos(A.pitch[i]) * v * dt;
+        A.y[i] += Math.sin(A.pitch[i]) * v * dt;
+        A.vy[i] = Math.sin(A.pitch[i]) * v;
+        this.anim(i, 0, 0, 0.75, 0, dt);
+        if (A.y[i] <= sea) {
+          this.splash(A.x[i], sea, A.z[i], 1.2, 14);
+          A.st[i] = C_FLOAT;
+          A.tm[i] = 4 + this.rng.next() * 6;
+          A.v[i] = 0;
+          A.vy[i] = 0;
+          A.y[i] = sea - 0.5;
         }
         return;
       }
@@ -2281,7 +2865,7 @@ export class FaunaSim {
         return;
       }
       case C_SHELTER_FLY: {
-        const dh = Math.hypot(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
+        const dh = hyp(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
         if (dh > this.landRadius(i)) {
           this.flyTo(i, k, A.tx[i], A.ty[i] + Math.min(6, dh * 0.2), A.tz[i], sp * 0.8, dt, 2);
           this.anim(i, 3.5, 0.8, 0, 0, dt);
@@ -2301,12 +2885,36 @@ export class FaunaSim {
           this.takeOff(i);
           A.st[i] = C_DROP;
           A.tm[i] = 0.8;
+        } else if (A.flee[i] > 0 && this.shelterSpot(i)) {
+          // Disturbed (the brush, or lava coming): shift to another sheltered spot.
+          this.takeOff(i);
+          A.st[i] = C_SHELTER_FLY;
         }
         return;
       }
       default:
         A.st[i] = C_ORBIT;
     }
+  }
+
+  /** Somewhere on land near the sheltered (downwind) side of the nearest island, away from lava. */
+  private shelterSpot(i: number): boolean {
+    const A = this.A;
+    const lee = this.nearestLee(A.x[i], A.z[i]);
+    if (!lee) return false;
+    A.tx[i] = lee.x;
+    A.tz[i] = lee.z;
+    for (let t = 0; t < 8; t++) {
+      const x = lee.x + (this.rng.next() - 0.5) * 30;
+      const z = lee.z + (this.rng.next() - 0.5) * 30;
+      if (this.ground(x, z) > 0.5 && !this.lavaNear(x, z, LAVA_SAFE)) {
+        A.tx[i] = x;
+        A.tz[i] = z;
+        break;
+      }
+    }
+    A.ty[i] = Math.max(0, this.ground(A.tx[i], A.tz[i]));
+    return true;
   }
 
   private takeOff(i: number): void {
@@ -2395,7 +3003,7 @@ export class FaunaSim {
         return;
       }
       case S_DESCEND: {
-        const dh = Math.hypot(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
+        const dh = hyp(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
         if (dh > this.landRadius(i)) {
           this.flyTo(i, k, A.tx[i], A.ty[i] + Math.min(6, dh * 0.3), A.tz[i], sp * 0.7, dt, 0.3);
           this.anim(i, 2.2, dh < 8 ? 0.9 : flap, 0, 0, dt);
@@ -2443,7 +3051,7 @@ export class FaunaSim {
             // Drop to the ground to feed.
             const gx = A.x[i] + (this.rng.next() - 0.5) * 6;
             const gz = A.z[i] + (this.rng.next() - 0.5) * 6;
-            if (this.ground(gx, gz) > 0.3) {
+            if (this.ground(gx, gz) > 0.3 && !this.lavaNear(gx, gz, LAVA_SAFE)) {
               A.tx[i] = gx;
               A.tz[i] = gz;
               A.ty[i] = this.ground(gx, gz);
@@ -2466,7 +3074,7 @@ export class FaunaSim {
         // Bounding flight: a burst of wingbeats, then a short glide with closed wings.
         const cyc = (this.clock.t * 2.2 + A.ph[i]) % 1;
         const flapping = cyc < 0.6;
-        const dh = Math.hypot(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
+        const dh = hyp(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
         let down = false;
         if (dh > this.landRadius(i)) {
           this.flyTo(i, k, A.tx[i], A.ty[i] + Math.min(3, dh * 0.3) + (flapping ? 0.4 : -0.4), A.tz[i], sp, dt, 0.2);
@@ -2569,7 +3177,7 @@ export class FaunaSim {
         return;
       }
       case W_FLY: {
-        const dh = Math.hypot(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
+        const dh = hyp(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
         if (dh > this.landRadius(i)) {
           this.flyTo(i, k, A.tx[i], A.ty[i] + Math.min(6, dh * 0.3), A.tz[i], 6, dt, 1.5);
           this.anim(i, 2.4, dh < 3 ? 1 : 0.85, 0, 0, dt);
@@ -2650,7 +3258,7 @@ export class FaunaSim {
           }
           A.a1[i] = 1;
         }
-        const dh = Math.hypot(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
+        const dh = hyp(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
         if (dh > this.landRadius(i)) {
           this.flyTo(i, k, A.tx[i], A.ty[i] + Math.min(2.5, dh * 0.2), A.tz[i], 9, dt, 1);
           this.anim(i, 8, 0.9, 0, 0, dt);
@@ -2724,7 +3332,7 @@ export class FaunaSim {
       }
       case P_FLY: {
         // Circle out and splash down on new water.
-        const far = Math.hypot(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
+        const far = hyp(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
         this.anim(i, 6, 1, 0, 0, dt);
         if (far > this.landRadius(i)) this.flyTo(i, k, A.tx[i], s + Math.min(10, far * 0.4) + 0.3, A.tz[i], 10, dt, 1.5);
         else if (this.settle(i, k, A.tx[i], this.surface(A.tx[i], A.tz[i]), A.tz[i], dt)) {
@@ -2744,7 +3352,7 @@ export class FaunaSim {
     const A = this.A;
     const dx = A.tx[i] - A.x[i];
     const dz = A.tz[i] - A.z[i];
-    const d = Math.hypot(dx, dz);
+    const d = hyp(dx, dz);
     if (d < 0.01) return 0;
     A.yaw[i] = turnToward(A.yaw[i], Math.atan2(dx, dz), dt * 1.5);
     const err = Math.abs(wrapAngle(Math.atan2(dx, dz) - A.yaw[i]));
@@ -2786,7 +3394,7 @@ export class FaunaSim {
         // Irregular flight: the path wobbles from side to side.
         const wob = Math.sin(this.clock.t * 1.7 + A.ph[i]) * 0.5;
         A.yaw[i] += wob * dt;
-        const dh = Math.hypot(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
+        const dh = hyp(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
         this.anim(i, 6, 1.0, 0, 0, dt);
         if (dh > this.landRadius(i)) this.flyTo(i, k, A.tx[i], A.ty[i] + Math.min(4, dh * 0.2), A.tz[i], sp, dt, 0.3);
         else if (this.settle(i, k, A.tx[i], A.ty[i], A.tz[i], dt)) {
@@ -2837,7 +3445,7 @@ export class FaunaSim {
         A.tm[i] += dt;
         const u = Math.min(1, A.tm[i] / 0.6);
         A.y[i] = g - A.scale[i] * 0.6 * (1 - u);
-        A.hide[i] = 0;
+        A.hide[i] = 1 - u;
         this.anim(i, 6, 0.6, 0, 0, dt);
         if (u >= 1) {
           A.st[i] = K_FREEZE;
@@ -2857,7 +3465,7 @@ export class FaunaSim {
         if (A.tm[i] <= 0) {
           const r = this.rng.next();
           const range = 1.5 + (activityLevel('night', this.clock.phase) > 0.5 ? 4 : 1.5);
-          if (r < 0.15 || Math.hypot(A.x[i] - A.hx[i], A.z[i] - A.hz[i]) > range) {
+          if (r < 0.15 || hyp(A.x[i] - A.hx[i], A.z[i] - A.hz[i]) > range) {
             A.st[i] = K_HOME;
           } else if (this.pickNear(i, k, A.hx[i], A.hz[i], 0.3, range)) {
             A.st[i] = r < 0.6 ? K_SPRINT : K_WANDER;
@@ -2897,6 +3505,7 @@ export class FaunaSim {
         A.tm[i] += dt;
         const u = Math.min(1, A.tm[i] / 0.5);
         A.y[i] = g - A.scale[i] * 0.6 * u;
+        A.hide[i] = Math.max(A.hide[i], u);
         this.anim(i, 10, 0.8, 0, 0, dt);
         if (u >= 1) {
           A.st[i] = K_HIDDEN;
@@ -2911,11 +3520,11 @@ export class FaunaSim {
   }
 
   /** Crabs move sideways: the body stays put and the legs carry it left or right. */
-  private crabStep(i: number, k: Kind, speed: number, dt: number): number {
+  private crabStep(i: number, k: Kind, speed: number, dt: number, mode = WALK_HABITAT): number {
     const A = this.A;
     const dx = A.tx[i] - A.x[i];
     const dz = A.tz[i] - A.z[i];
-    const d = Math.hypot(dx, dz);
+    const d = hyp(dx, dz);
     if (d < 0.01) return 0;
     const dir = Math.atan2(dx, dz);
     // Turn the body so it faces across the line of travel (whichever side is closer).
@@ -2926,7 +3535,7 @@ export class FaunaSim {
     const step = Math.min(d, v * dt);
     const nx = A.x[i] + (dx / d) * step;
     const nz = A.z[i] + (dz / d) * step;
-    if (!this.okAt(k, nx, nz)) {
+    if (!this.canStep(k, nx, nz, mode)) {
       A.v[i] = 0;
       return -1;
     }
@@ -3019,7 +3628,7 @@ export class FaunaSim {
     // Fleeing: wait in cover until the brush has gone (then basking resumes). Leaving: tuck in and go.
     if ((d < 0.05 || d < 0) && A.life[i] === Life.Leaving) {
       if (this.coverAt(A.x[i], A.z[i]) > 0.4) {
-        A.hide[i] = Math.min(1, A.hide[i] + dt * 2); // tucked under the leaves
+        A.hide[i] = Math.min(1, A.hide[i] + dt * 1.2); // tucked under the leaves
         if (A.hide[i] >= 1) this.release(i);
       } else this.pickNear(i, k, A.x[i], A.z[i], 1, 5);
     }
@@ -3122,7 +3731,7 @@ export class FaunaSim {
         // Crawl straight up the slope until above the swash.
         const gx = this.ground(A.x[i] + 1, A.z[i]) - this.ground(A.x[i] - 1, A.z[i]);
         const gz = this.ground(A.x[i], A.z[i] + 1) - this.ground(A.x[i], A.z[i] - 1);
-        const l = Math.hypot(gx, gz) || 1;
+        const l = hyp(gx, gz) || 1;
         A.tx[i] = A.x[i] + (gx / l) * 2;
         A.tz[i] = A.z[i] + (gz / l) * 2;
         const d = this.walkTo(i, k, A.tx[i], A.tz[i], crawl, 0.5, dt);
@@ -3153,24 +3762,9 @@ export class FaunaSim {
         return;
       }
       case T_DOWN: {
-        // Straight down the slope to the sea; if that way is blocked, crawl to the nearest water instead
-        // (`a1` = 1 once she has picked that water).
-        if (A.a1[i] === 0) {
-          const gx = this.ground(A.x[i] + 1, A.z[i]) - this.ground(A.x[i] - 1, A.z[i]);
-          const gz = this.ground(A.x[i], A.z[i] + 1) - this.ground(A.x[i], A.z[i] - 1);
-          const l = Math.hypot(gx, gz) || 1;
-          A.tx[i] = A.x[i] - (gx / l) * 2;
-          A.tz[i] = A.z[i] - (gz / l) * 2;
-        }
-        const d = this.walkTo(i, k, A.tx[i], A.tz[i], crawl, 0.5, dt);
-        this.surfaceOrGround(i, k, dt);
-        this.anim(i, 0.5, 0.9, 0, 0, dt);
-        if (d < 0 && A.a1[i] === 0 && this.waterPoint(i, k, A.x[i], A.z[i], 0.8, 30)) A.a1[i] = 1;
-        else if (this.surface(A.x[i], A.z[i]) - this.ground(A.x[i], A.z[i]) > 0.8 || d < 0 || A.tm[i] <= 0) {
+        if (this.backToSea(i, k, crawl, 0.5, 0.8, dt)) {
           A.st[i] = T_SWIM;
           A.tm[i] = 200 + this.rng.next() * 200; // one nest a night is plenty
-          A.a1[i] = 0;
-          if (d < 0) this.leave(i); // stuck: she goes once nobody is looking
         }
         return;
       }
@@ -3197,6 +3791,38 @@ export class FaunaSim {
     const g = this.ground(A.x[i], A.z[i]) + this.lift(i, k);
     const want = Math.max(g, this.surface(A.x[i], A.z[i]) - A.scale[i] * 0.1);
     A.y[i] = want <= g ? g : Math.max(g, approach(A.y[i], want, dt * 1.5));
+  }
+
+  /**
+   * A turtle or seal crawling back into the sea: straight down the slope; if that way is blocked
+   * (rock it would not normally cross), to the nearest water over whatever lies between (`a1` = 1
+   * once that water is picked). Walled in by lava, it stays put and goes once nobody is looking; it
+   * never swims on dry land. Returns true once it is in water `deep` enough to swim.
+   */
+  private backToSea(i: number, k: Kind, crawl: number, turn: number, deep: number, dt: number): boolean {
+    const A = this.A;
+    if (A.a1[i] === 0) {
+      const gx = this.ground(A.x[i] + 1, A.z[i]) - this.ground(A.x[i] - 1, A.z[i]);
+      const gz = this.ground(A.x[i], A.z[i] + 1) - this.ground(A.x[i], A.z[i] - 1);
+      const l = hyp(gx, gz) || 1;
+      A.tx[i] = A.x[i] - (gx / l) * 2;
+      A.tz[i] = A.z[i] - (gz / l) * 2;
+    }
+    const d = this.walkTo(i, k, A.tx[i], A.tz[i], crawl, turn, dt, A.a1[i] === 1 ? WALK_NO_LAVA : WALK_HABITAT);
+    this.surfaceOrGround(i, k, dt);
+    this.anim(i, k.plan === AnimalModel.Seal ? 1.2 : 0.5, 0.9, 0, 0, dt);
+    if (this.surface(A.x[i], A.z[i]) - this.ground(A.x[i], A.z[i]) > deep) {
+      A.a1[i] = 0;
+      return true;
+    }
+    let stuck = A.tm[i] <= 0;
+    if (d < 0) {
+      if (A.a1[i] === 0 && (this.waterPoint(i, k, A.x[i], A.z[i], deep + 0.2, 30) || this.waterPoint(i, k, A.x[i], A.z[i], deep + 0.2, 90))) A.a1[i] = 1;
+      else stuck = true;
+    } else if (A.a1[i] === 1 && d < 0.3) A.a1[i] = 0; // reached that water's edge: on down the slope
+    // Still trying, but it will be let go as soon as it is out of sight.
+    if (stuck && A.life[i] === Life.Live) A.life[i] = Life.Leaving;
+    return false;
   }
 
   /** Leave by swimming deeper and on until out of view. */
@@ -3279,7 +3905,7 @@ export class FaunaSim {
       M.vx[m] += ax * dt;
       M.vy[m] += ay * dt;
       M.vz[m] += az * dt;
-      const s = Math.hypot(M.vx[m], M.vy[m], M.vz[m]);
+      const s = hyp3(M.vx[m], M.vy[m], M.vz[m]);
       if (s > vmax) {
         M.vx[m] *= vmax / s;
         M.vy[m] *= vmax / s;
@@ -3297,7 +3923,7 @@ export class FaunaSim {
         M.z[m] = nz;
       }
       M.y[m] += M.vy[m] * dt;
-      const hs = Math.hypot(M.vx[m], M.vz[m]);
+      const hs = hyp(M.vx[m], M.vz[m]);
       if (hs > 0.05) {
         const yaw = Math.atan2(M.vx[m], M.vz[m]);
         const turn = Math.abs(wrapAngle(yaw - M.yaw[m])) / Math.max(dt, 1e-3);
@@ -3381,7 +4007,7 @@ export class FaunaSim {
       // Followers keep station on the leader.
       const fx = A.x[lead] + Math.cos(A.yaw[lead]) * A.a0[i] - Math.sin(A.yaw[lead]) * (2 + Math.abs(A.a1[i]));
       const fz = A.z[lead] - Math.sin(A.yaw[lead]) * A.a0[i] - Math.cos(A.yaw[lead]) * (2 + Math.abs(A.a1[i]));
-      const gap = Math.hypot(fx - A.x[i], fz - A.z[i]);
+      const gap = hyp(fx - A.x[i], fz - A.z[i]);
       if (this.swimTo(i, k, fx, fz, s - 0.8, Math.min(k.vmax * 0.9, sp * (0.8 + gap * 0.1)), 0.9, dt) < 0) A.v[i] *= 0.5;
     }
     this.anim(i, 1.2 + A.v[i] * 0.2, 0.9, 0, 0, dt);
@@ -3404,6 +4030,9 @@ export class FaunaSim {
     const sp = k.look.speed * A.spd[i];
     const s = this.surface(A.x[i], A.z[i]);
     const body = A.scale[i] * 0.11;
+    // Deeper than a few metres it fades into the blue (and is not drawn at all on a long dive); the
+    // fade is eased so even the plunge back after a breach thins it out rather than snapping.
+    A.hide[i] += clamp(smooth(3, 6, s - A.y[i]) - A.hide[i], -dt * 2, dt * 2);
     A.tm[i] -= dt;
     switch (A.st[i]) {
       case H_DIVE: {
@@ -3413,7 +4042,6 @@ export class FaunaSim {
           if (A.life[i] === Life.Leaving) this.leave2(i);
           else if (!this.pickNear(i, k, A.x[i], A.z[i], 60, 200, true, 15)) this.pickNear(i, k, A.x[i], A.z[i], 20, 60, true, 15);
         }
-        A.hide[i] = smooth(3, 6, s - A.y[i]) * 0.9;
         this.anim(i, 0.25, 0.7, 0, 0, dt);
         if (A.tm[i] <= 0 && A.life[i] === Life.Live) {
           A.st[i] = H_RISE;
@@ -3431,7 +4059,6 @@ export class FaunaSim {
       case H_SURFACE: {
         const atTop = s - body * 0.6;
         if (this.swimTo(i, k, A.tx[i], A.tz[i], atTop, sp * 0.6, 0.1, dt) < 20) this.pickNear(i, k, A.x[i], A.z[i], 60, 160, true, 15);
-        A.hide[i] = smooth(3, 6, s - A.y[i]) * 0.9;
         this.anim(i, 0.2, 0.5, 0, 0, dt);
         if (A.st[i] === H_RISE && A.y[i] > atTop - 0.3) {
           A.st[i] = H_SURFACE;
@@ -3535,7 +4162,7 @@ export class FaunaSim {
     // Erratic flight toward the target flower.
     const jitter = bee ? 2.5 : 1.6;
     A.yaw[i] += Math.sin(this.clock.t * (bee ? 7 : 3.3) + A.ph[i] * 4) * jitter * dt;
-    const dh = Math.hypot(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
+    const dh = hyp(A.tx[i] - A.x[i], A.tz[i] - A.z[i]);
     this.anim(i, wingHz, bee ? 0.5 : 1.1, 0, 0, dt);
     if (dh > 0.6) {
       const bob = Math.sin(this.clock.t * (bee ? 5 : 2.2) + A.ph[i]) * (bee ? 0.15 : 0.35);
@@ -3607,7 +4234,7 @@ export class FaunaSim {
           const d = 1 + this.rng.next() * 2.5;
           const px = A.x[i] + Math.sin(a) * d;
           const pz = A.z[i] + Math.cos(a) * d;
-          if (!this.okAt(k, px, pz) && Math.hypot(px - A.hx[i], pz - A.hz[i]) > 6) continue;
+          if (!this.okAt(k, px, pz) && hyp(px - A.hx[i], pz - A.hz[i]) > 6) continue;
           A.tx[i] = px;
           A.tz[i] = pz;
           A.ty[i] = Math.max(this.ground(px, pz), A.hy[i]) + 0.3 + this.rng.next() * 0.9;
@@ -3623,7 +4250,7 @@ export class FaunaSim {
     const dx = A.tx[i] - A.x[i];
     const dy = A.ty[i] - A.y[i];
     const dz = A.tz[i] - A.z[i];
-    const d = Math.hypot(dx, dy, dz);
+    const d = hyp3(dx, dy, dz);
     const v = Math.min(sp, k.vmax);
     const step = Math.min(d, v * dt);
     if (d > 1e-3) {
@@ -3711,15 +4338,16 @@ export class FaunaSim {
       case E_UP: {
         const gx = this.ground(A.x[i] + 1, A.z[i]) - this.ground(A.x[i] - 1, A.z[i]);
         const gz = this.ground(A.x[i], A.z[i] + 1) - this.ground(A.x[i], A.z[i] - 1);
-        const l = Math.hypot(gx, gz) || 1;
+        const l = hyp(gx, gz) || 1;
         const d = this.walkTo(i, k, A.x[i] + (gx / l) * 2, A.z[i] + (gz / l) * 2, crawl, 0.6, dt);
         this.surfaceOrGround(i, k, dt);
         this.anim(i, 1.2, 1, 0, 0, dt);
         if (this.ground(A.x[i], A.z[i]) > 0.8 || d < 0 || A.tm[i] <= 0) {
-          // Rest only once out of the water; blocked in the shallows, swim off and try elsewhere later.
+          // Rest only once out of the water; blocked in the shallows, slide back down and try elsewhere later.
           const dry = this.surface(A.x[i], A.z[i]) - this.ground(A.x[i], A.z[i]) < 0.05;
-          A.st[i] = dry ? E_REST : E_SWIM;
-          A.tm[i] = dry ? 40 + this.rng.next() * 150 : 30;
+          A.st[i] = dry ? E_REST : E_DOWN;
+          A.tm[i] = dry ? 40 + this.rng.next() * 150 : 60;
+          A.a1[i] = 0;
         }
         return;
       }
@@ -3736,6 +4364,7 @@ export class FaunaSim {
           } else {
             A.st[i] = E_DOWN;
             A.tm[i] = 90;
+            A.a1[i] = 0;
           }
         }
         return;
@@ -3750,13 +4379,7 @@ export class FaunaSim {
         return;
       }
       case E_DOWN: {
-        const gx = this.ground(A.x[i] + 1, A.z[i]) - this.ground(A.x[i] - 1, A.z[i]);
-        const gz = this.ground(A.x[i], A.z[i] + 1) - this.ground(A.x[i], A.z[i] - 1);
-        const l = Math.hypot(gx, gz) || 1;
-        const d = this.walkTo(i, k, A.x[i] - (gx / l) * 2, A.z[i] - (gz / l) * 2, crawl, 0.6, dt);
-        this.surfaceOrGround(i, k, dt);
-        this.anim(i, 1.2, 1, 0, 0, dt);
-        if (this.surface(A.x[i], A.z[i]) - this.ground(A.x[i], A.z[i]) > 0.7 || d < 0 || A.tm[i] <= 0) {
+        if (this.backToSea(i, k, crawl, 0.6, 0.7, dt)) {
           A.st[i] = E_SWIM;
           A.tm[i] = 30 + this.rng.next() * 60;
           if (A.life[i] === Life.Leaving) this.leave2(i);
@@ -3781,7 +4404,8 @@ export class FaunaSim {
     A.pitch[i] = Math.sin(this.clock.t * 0.7 + A.ph[i] * 2) * 0.05;
     if ((this.clock.t + A.ph[i] * 10) % 12 < dt) A.a1[i] = 0.25 + this.rng.next() * 0.7;
     const glint = A.a0[i] > 0.02 ? silkGlint(this.clock.phase) : 0;
-    A.hide[i] = A.a0[i] < 0.01 ? 1 : 0;
+    // Tucked up under the leaf (thread drawn in): out of sight.
+    A.hide[i] = approach(A.hide[i], A.a0[i] < 0.01 ? 1 : 0, dt * 2);
     // The shader reads silk length (aux, in body lengths) and glint (fold).
     this.anim(i, 0.5, 0.2, glint, A.a0[i] / Math.max(1e-3, A.scale[i]), dt);
     A.aux[i] = A.a0[i] / Math.max(1e-3, A.scale[i]);
@@ -3813,7 +4437,7 @@ export class FaunaSim {
       return;
     }
     if (A.tm[i] <= 0) A.tm[i] = 20 + this.rng.next() * 40;
-    if (Math.hypot(A.tx[i] - A.x[i], A.tz[i] - A.z[i]) < 0.02 || this.walkTo(i, k, A.tx[i], A.tz[i], sp, 0.3, dt) < 0) this.pickNear(i, k, A.x[i], A.z[i], 0.1, 0.4);
+    if (hyp(A.tx[i] - A.x[i], A.tz[i] - A.z[i]) < 0.02 || this.walkTo(i, k, A.tx[i], A.tz[i], sp, 0.3, dt) < 0) this.pickNear(i, k, A.x[i], A.z[i], 0.1, 0.4);
     this.anim(i, 0.5, 0.5, 0, 0, dt);
   }
 
@@ -3893,10 +4517,10 @@ export class FaunaSim {
         M.x[m] += Math.sin(M.yaw[m]) * 0.15 * dt;
         M.z[m] += Math.cos(M.yaw[m]) * 0.15 * dt;
         M.y[m] = Math.min(M.y[m] + (s - g > 0.4 ? -0.1 : 0) * dt, s - 0.01);
-        M.hide[m] = s - g > 0.4 ? Math.min(1, M.hide[m] + dt * 0.5) : 0;
+        M.hide[m] = s - g > 0.4 ? Math.min(1, M.hide[m] + dt * 0.5) : Math.max(0, M.hide[m] - dt * 2);
         if (M.hide[m] >= 1) M.y[m] = s - 0.5;
       } else {
-        M.hide[m] = 0;
+        M.hide[m] = Math.max(0, M.hide[m] - dt * 2.5); // wriggling up out of the sand
         const gx = this.ground(M.x[m] + 0.5, M.z[m]) - this.ground(M.x[m] - 0.5, M.z[m]);
         const gz = this.ground(M.x[m], M.z[m] + 0.5) - this.ground(M.x[m], M.z[m] - 0.5);
         const want = Math.atan2(-gx, -gz) + Math.sin(this.clock.t * 2 + M.ph[m]) * 0.4;
@@ -3953,23 +4577,30 @@ export class FaunaSim {
 
   // ---------- far colonies: the speck flock ----------
 
-  /** Specks circling seabird colonies the agents don't cover (far away, or more birds than the cap). */
-  private fillSpecks(): void {
+  /**
+   * Specks: a far colony's birds as small flapping dots. They take over exactly where the colony's 3D
+   * birds thin out (COLONY_NEAR..COLONY_FAR from the eye), and each speck shows only while it is far
+   * and small: one that comes near the eye, or would look bigger than a few pixels, fades out (that
+   * close, birds are drawn as birds). They roost at night and sit out storms, like the real ones.
+   */
+  private fillSpecks(dt: number): void {
     const v = this.view;
     const t = this.clock.t;
     let n = 0;
     const maxSpecks = Math.round((this.phone ? 200 : 400) * clamp(this.density / (this.phone ? 0.8 : 1.2), 0.5, 1));
+    const calm = 1 - this.shelter;
     for (let ci = 0; ci < this.colonies.length; ci++) {
       const c = this.colonies[ci];
+      // Ledges found again after the ground changed may shift the colony's height: ease to it.
+      c.yDraw = approach(c.yDraw, c.y, dt * 0.5);
       const ki = this.kindBySp[c.sp];
       if (ki < 0) continue;
       const k = this.kinds[ki];
-      const d = Math.hypot(c.x - v.cx, c.z - v.cz);
-      const fade = smooth(70, 140, d);
+      const fade = smooth(COLONY_NEAR, COLONY_FAR, hyp3(c.x - v.cx, c.yDraw - v.cy, c.z - v.cz)) * calm;
       if (fade <= 0.01) continue;
-      const act = Math.max(0.25, activityLevel(k.look.active, this.clock.phase));
+      const act = activityLevel(k.look.active, this.clock.phase);
       const count = Math.min(maxSpecks - n, Math.round(c.n * 160 * act * (this.phone ? 0.6 : 1)));
-      const g = c.y;
+      const g = c.yDraw;
       for (let s = 0; s < count; s++) {
         const h1 = hash01(s * 3 + 1, c.sp);
         const h2 = hash01(s * 3 + 2, c.sp);
@@ -3977,14 +4608,21 @@ export class FaunaSim {
         const R = c.r * (0.4 + 1.4 * h1);
         const w = (k.look.speed / R) * (0.6 + 0.4 * h2) * (h3 < 0.5 ? 1 : -1);
         const a = t * w + h2 * TAU;
+        const x = c.x + Math.cos(a) * R;
+        const y = g + 8 + 45 * h3 + Math.sin(t * 0.3 + s) * 3;
+        const z = c.z + Math.sin(a) * R;
+        const eye = hyp3(x - v.cx, y - v.cy, z - v.cz);
+        const px = (SPECK_SIZE * v.pxPerRad) / Math.max(1, eye);
+        const alpha = fade * smooth(150, 220, eye) * (1 - smooth(8, 12, px));
+        if (alpha < 0.02) continue;
         const o = n * 8;
-        this.specks[o] = c.x + Math.cos(a) * R;
-        this.specks[o + 1] = g + 8 + 45 * h3 + Math.sin(t * 0.3 + s) * 3;
-        this.specks[o + 2] = c.z + Math.sin(a) * R;
+        this.specks[o] = x;
+        this.specks[o + 1] = y;
+        this.specks[o + 2] = z;
         // Wing beat: flap in bouts, glide between.
         const bout = (t * 0.25 + h1 * 7) % 1 < 0.35;
         this.specks[o + 3] = bout ? 0.5 + 0.45 * Math.sin(t * 22 + s) : 0.62;
-        this.specks[o + 4] = fade;
+        this.specks[o + 4] = alpha;
         this.specks[o + 5] = k.lin[0];
         this.specks[o + 6] = k.lin[1];
         this.specks[o + 7] = k.lin[2];
@@ -4003,6 +4641,14 @@ function hash01(a: number, b: number): number {
   return (h >>> 0) / 4294967296;
 }
 
+/** Distances (m) at which a walker looks for safe ground away from lava. */
+const REFUGE_RINGS = [5, 9, 14, 20, 28] as const;
+
+/** What a walker may step on (see FaunaSim.walkTo). */
+const WALK_HABITAT = 0;
+const WALK_NO_LAVA = 1;
+const WALK_ESCAPE = 2;
+
 // State numbers per behaviour (each behaviour reads only its own).
 const C_ORBIT = 0;
 const C_APPROACH = 1;
@@ -4013,6 +4659,7 @@ const C_PLUNGE = 5;
 const C_FLOAT = 6;
 const C_SHELTER_FLY = 7;
 const C_SHELTER = 8;
+const C_DIVE = 9;
 const S_CIRCLE = 0;
 const S_KITE = 1;
 const S_GLIDE = 2;
@@ -4089,9 +4736,12 @@ export function apparentPx(v: FaunaView, sphere: THREE.Sphere, x: number, y: num
   sphere.center.set(x, y, z);
   sphere.radius = Math.max(0.05, size);
   if (!v.frustum.intersectsSphere(sphere)) return 0;
-  const d = Math.max(0.1, Math.hypot(x - v.cx, y - v.cy, z - v.cz));
+  const d = Math.max(0.1, hyp3(x - v.cx, y - v.cy, z - v.cz));
   return (size * v.pxPerRad) / d;
 }
+
+/** Any valid colour triple, for the invisible warm-up animal. */
+const WARM_COLORS = Float32Array.from([0x808080, 0x808080, 0x808080]);
 
 /** Build the camera snapshot the simulation needs from a frame. */
 export function viewFromCamera(camera: THREE.PerspectiveCamera, target: THREE.Vector3, dist: number, bufferHeight: number, out: FaunaView, m: THREE.Matrix4): FaunaView {
@@ -4141,6 +4791,9 @@ export function createFauna(deps: SystemDeps): PageSystem {
   const e = new THREE.Euler();
   const buf = new THREE.Vector2();
   const glowRgb = new Float32Array(3);
+  // The creature programs (lit, and shadow once shadows are on) are built on the first frames.
+  let warmedMain = false;
+  let warmedShadow = false;
   // For the browser checks and screenshots: hold the animals' clock at a day phase (null = follow the sky).
   let phaseOverride: number | null = null;
   group.userData.setPhase = (p: number | null) => {
@@ -4154,15 +4807,20 @@ export function createFauna(deps: SystemDeps): PageSystem {
     const M = sim.M;
     for (let plan = 0; plan < PLAN_COUNT; plan++) batches[plan]?.begin();
     points.begin();
+    // Shadows only close up, where animals are big enough for a shadow to matter.
+    const shadows = quality.shadows && f.cam.dist < 70;
     for (let i = 0; i < A.cap; i++) {
-      if (A.life[i] === 0 || A.hide[i] >= 0.999) continue;
+      if (A.life[i] === Life.Free) continue;
+      const presence = A.presence(i);
+      if (presence < 0.001) continue;
       const k = sim.kinds[A.kind[i]];
       if (k.group) continue;
       if (k.beh === B.nestBeach && A.st[i] === T_HATCH) continue;
       const b = batches[k.plan];
       if (!b) continue;
       setOrientation(q, e, A.yaw[i], A.pitch[i], A.roll[i]);
-      b.add(A.x[i], A.y[i], A.z[i], A.scale[i], q, A.ph[i], A.amp[i], A.fold[i], A.aux[i], k.colors);
+      const shadow = shadows && sim.castsShadow(A.x[i], A.y[i], A.z[i], A.scale[i]);
+      b.add(A.x[i], A.y[i], A.z[i], A.scale[i], q, A.ph[i], A.amp[i], A.fold[i], A.aux[i], k.colors, 0, presence, shadow);
     }
     // Group members: fish, hatchlings, fireflies.
     const night = u.uNight.value;
@@ -4184,20 +4842,23 @@ export function createFauna(deps: SystemDeps): PageSystem {
       }
       const b = batches[hatch ? HATCHLING_PLAN : k.plan];
       if (!b) continue;
+      const presence = A.presence(i);
       for (let m = m0; m < m0 + A.members[i]; m++) {
-        if (M.hide[m] >= 0.999 || (hatch && M.w[m] > 0)) continue;
-        const sp = Math.hypot(M.vx[m], M.vy[m], M.vz[m]);
-        const pitch = hatch ? 0 : Math.atan2(M.vy[m], Math.max(0.05, Math.hypot(M.vx[m], M.vz[m]))) * 0.6;
+        const mp = presence * (1 - M.hide[m]);
+        if (mp < 0.001 || (hatch && M.w[m] > 0)) continue;
+        const sp = hyp3(M.vx[m], M.vy[m], M.vz[m]);
+        const pitch = hatch ? 0 : Math.atan2(M.vy[m], Math.max(0.05, hyp(M.vx[m], M.vz[m]))) * 0.6;
         setOrientation(q, e, M.yaw[m], pitch, 0);
         const scale = hatch ? A.scale[i] : A.scale[i] * (0.85 + 0.3 * ((m * 0.618) % 1));
-        b.add(M.x[m], M.y[m], M.z[m], scale, q, M.ph[m], hatch ? 1 : clamp(0.4 + sp, 0.4, 1.2), 0, hatch ? 0 : M.w[m], k.colors);
+        const shadow = shadows && sim.castsShadow(M.x[m], M.y[m], M.z[m], scale);
+        b.add(M.x[m], M.y[m], M.z[m], scale, q, M.ph[m], hatch ? 1 : clamp(0.4 + sp, 0.4, 1.2), 0, hatch ? 0 : M.w[m], k.colors, 0, mp, shadow);
       }
     }
     // Specks over far colonies.
     const S = sim.specks;
     for (let s = 0; s < sim.speckCount; s++) {
       const o = s * 8;
-      points.add(S[o], S[o + 1], S[o + 2], 1.5, S[o + 5] * 0.55, S[o + 6] * 0.55, S[o + 7] * 0.55, S[o + 4] * 0.9, PointKind.Speck + clamp(S[o + 3], 0, 0.99));
+      points.add(S[o], S[o + 1], S[o + 2], SPECK_SIZE, S[o + 5] * 0.55, S[o + 6] * 0.55, S[o + 7] * 0.55, S[o + 4] * 0.9, PointKind.Speck + clamp(S[o + 3], 0, 0.99));
     }
     // Splashes, blows, wakes, flicked sand.
     const P = sim.P;
@@ -4207,10 +4868,19 @@ export function createFauna(deps: SystemDeps): PageSystem {
       const fade = (1 - u01) * Math.min(1, u01 * 8);
       points.add(P.x[p], P.y[p], P.z[p], P.size[p] + P.grow[p] * u01, P.rgba[p * 4], P.rgba[p * 4 + 1], P.rgba[p * 4 + 2], P.rgba[p * 4 + 3] * fade, P.kind[p]);
     }
-    // Shadows only close up, where animals are big enough for a shadow to matter. The bounds pad is
-    // in body lengths: a spider's silk can hang a hundred or more of its tiny body lengths.
-    const shadows = quality.shadows && f.cam.dist < 70;
-    for (let plan = 0; plan < PLAN_COUNT; plan++) batches[plan]?.end(shadows, plan === AnimalModel.Spider ? 300 : 1.6);
+    // Warm-up: one invisible animal at the camera target, drawn (with a shadow when shadows are on) so
+    // WebGL builds the creature programs at load, not when the first animal or shadow appears.
+    const warmShadow = quality.shadows && !warmedShadow;
+    if (!warmedMain || warmShadow) {
+      const t = f.cam.target;
+      q.identity();
+      batches[AnimalModel.Seabird]?.warm(t.x, t.y, t.z, q, sim.kinds[0]?.colors ?? WARM_COLORS);
+      points.add(t.x, t.y, t.z, 1, 0, 0, 0, 0, PointKind.Glow);
+      warmedMain = true;
+      warmedShadow = warmedShadow || warmShadow;
+    }
+    // The bounds pad is in body lengths: a spider's silk can hang a hundred or more of its tiny body lengths.
+    for (let plan = 0; plan < PLAN_COUNT; plan++) batches[plan]?.end(shadows || warmShadow, plan === AnimalModel.Spider ? 300 : 1.6);
     renderer.getDrawingBufferSize(buf);
     points.end(buf.y);
   };
@@ -4239,6 +4909,7 @@ export function createFauna(deps: SystemDeps): PageSystem {
       draw(f);
     },
     dispose() {
+      sim.dispose();
       for (const b of batches) b?.dispose();
       points.dispose();
       scene.remove(group);

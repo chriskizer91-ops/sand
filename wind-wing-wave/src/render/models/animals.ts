@@ -17,6 +17,11 @@
  *   The slot convention per body plan is listed in `SLOT_GUIDE` below so the catalogue can match it.
  * - Fine patterns (ray spots, butterfly veins, turtle scutes, bee bands, snail spirals) are
  *   computed in the fragment shader from the vertex's rest position, so they cost no triangles.
+ * - Each animal also carries a presence (0..1, the 4th number of `iCol`). Below 1 the animal is drawn
+ *   with a screen-door fade: a fixed dither drops that share of its pixels (and of its shadow). That
+ *   is how an animal slips out from under a shrub, sinks into deep water or tucks into leaf litter
+ *   without popping, and it needs no transparency sorting. The same number, plus 2, means "no shadow"
+ *   (a duck on a deep pond or a bird high up would throw a crisp shadow on ground far below).
  *
  * Instances are packed as four small vectors (position+scale, rotation quaternion, animation, colours),
  * never 64-byte matrices (ARCHITECTURE §6.6). Everything here runs once at load; the per-frame work is
@@ -1427,16 +1432,18 @@ attribute vec2 aPat;
 attribute vec4 iPos;
 attribute vec4 iQuat;
 attribute vec4 iAnim;
-attribute vec3 iCol;
+attribute vec4 iCol;
 varying vec3 vColBack;
 varying vec4 vPat;
 varying vec3 vC1;
 varying vec3 vC2;
 varying float vUnder;
 varying float vGlow;
+varying float vPresence;
 vec3 cPos;
 vec3 cNrm;
 vec3 cFront;
+bool cShadow;
 
 vec3 qrot(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }
 vec2 rot2(vec2 v, float a) { float c = cos(a); float s = sin(a); return vec2(c * v.x - s * v.y, s * v.x + c * v.y); }
@@ -1561,16 +1568,17 @@ void creatureDeform() {
   vC1 = c1;
   vC2 = c2;
   vUnder = clamp((uSeaLevel - 0.05 - cPos.y) * 0.12, 0.0, 0.45);
+  cShadow = iCol.w < 1.5;
+  vPresence = cShadow ? iCol.w : iCol.w - 2.0;
 }
 `;
 
-const FRAGMENT_PARS = /* glsl */ `
-varying vec3 vColBack;
-varying vec4 vPat;
-varying vec3 vC1;
-varying vec3 vC2;
-varying float vUnder;
-varying float vGlow;
+/**
+ * The screen-door fade (shared by the lit material and the shadow material). A fixed per-pixel
+ * threshold, so a half-present animal is a steady sprinkle that thins away, never a flicker.
+ */
+const FADE_PARS = /* glsl */ `
+varying float vPresence;
 
 // Sin-free hash (no textures, no trig).
 float cHash(vec2 p) {
@@ -1578,6 +1586,20 @@ float cHash(vec2 p) {
   p3 += dot(p3, p3.yzx + 33.33);
   return fract((p3.x + p3.y) * p3.z);
 }
+
+void creatureFade() {
+  if (vPresence < 0.999 && cHash(floor(gl_FragCoord.xy)) >= vPresence) discard;
+}
+`;
+
+const FRAGMENT_PARS = /* glsl */ `
+${FADE_PARS}
+varying vec3 vColBack;
+varying vec4 vPat;
+varying vec3 vC1;
+varying vec3 vC2;
+varying float vUnder;
+varying float vGlow;
 
 vec3 creaturePattern(vec3 c, bool front) {
   float k = vPat.w;
@@ -1657,6 +1679,7 @@ export function creatureMaterials(u: WorldUniforms): CreatureMaterials {
       .replace('#include <begin_vertex>', 'vec3 transformed = cPos;');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n${FRAGMENT_PARS}`)
+      .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\ncreatureFade();')
       .replace(
         '#include <color_fragment>',
         `vec3 cBase = gl_FrontFacing ? vColor.rgb : vColBack;
@@ -1667,11 +1690,17 @@ diffuseColor.rgb *= cBase;`,
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += cBase * vGlow;');
   };
   const depth = new THREE.MeshDepthMaterial();
+  // The shadow pass draws it double-sided (material.shadowSide); matching that here keeps one program.
+  depth.side = THREE.DoubleSide;
   depth.onBeforeCompile = (shader) => {
     addWorldUniforms(shader, u);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${VERTEX_PARS}`)
-      .replace('#include <begin_vertex>', 'creatureDeform();\nvec3 transformed = cPos;');
+      // An animal that casts no shadow is folded to a point here, so the shadow pass draws nothing.
+      .replace('#include <begin_vertex>', 'creatureDeform();\nvec3 transformed = cShadow ? cPos : vec3(0.0);');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>\n${FADE_PARS}`)
+      .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\ncreatureFade();');
   };
   const out = { material, depth };
   materialCache.set(u, out);
@@ -1682,7 +1711,8 @@ diffuseColor.rgb *= cBase;`,
 
 /**
  * One instanced draw of one body plan. Fill with add() between begin() and end() each frame.
- * Instance layout: iPos (x, y, z, scale), iQuat (rotation), iAnim (phase, amp, fold, aux), iCol (packed colours).
+ * Instance layout: iPos (x, y, z, scale), iQuat (rotation), iAnim (phase, amp, fold, aux),
+ * iCol (three packed colours, presence).
  */
 export class CreatureBatch {
   readonly mesh: THREE.Mesh;
@@ -1707,6 +1737,8 @@ export class CreatureBatch {
   private maxY = 0;
   private maxZ = 0;
   private maxScale = 0;
+  /** This frame holds a warm-up instance: draw it wherever it is (see warm()). */
+  private warming = false;
 
   constructor(base: THREE.BufferGeometry, capacity: number, mats: CreatureMaterials) {
     this.capacity = capacity;
@@ -1717,7 +1749,7 @@ export class CreatureBatch {
     this.pos = new Float32Array(capacity * 4);
     this.quat = new Float32Array(capacity * 4);
     this.anim = new Float32Array(capacity * 4);
-    this.col = new Float32Array(capacity * 3);
+    this.col = new Float32Array(capacity * 4);
     const inst = (arr: Float32Array, size: number) => {
       const a = new THREE.InstancedBufferAttribute(arr, size);
       a.setUsage(THREE.DynamicDrawUsage);
@@ -1726,7 +1758,7 @@ export class CreatureBatch {
     this.aPos = inst(this.pos, 4);
     this.aQuat = inst(this.quat, 4);
     this.aAnim = inst(this.anim, 4);
-    this.aCol = inst(this.col, 3);
+    this.aCol = inst(this.col, 4);
     this.attrs = [this.aPos, this.aQuat, this.aAnim, this.aCol];
     g.setAttribute('iPos', this.aPos);
     g.setAttribute('iQuat', this.aQuat);
@@ -1749,10 +1781,14 @@ export class CreatureBatch {
     this.minX = this.minY = this.minZ = Infinity;
     this.maxX = this.maxY = this.maxZ = -Infinity;
     this.maxScale = 0;
+    this.warming = false;
   }
 
-  /** Add one animal (its three colours read from `colors` at `co`). Returns false when the batch is full. */
-  add(x: number, y: number, z: number, scale: number, q: THREE.Quaternion, ph: number, amp: number, fold: number, aux: number, colors: ArrayLike<number>, co = 0): boolean {
+  /**
+   * Add one animal (its three colours read from `colors` at `co`; `presence` 0..1 fades it with the
+   * screen-door dither; `shadow` false leaves it out of the shadow pass). Returns false when full.
+   */
+  add(x: number, y: number, z: number, scale: number, q: THREE.Quaternion, ph: number, amp: number, fold: number, aux: number, colors: ArrayLike<number>, co = 0, presence = 1, shadow = true): boolean {
     if (this.count >= this.capacity) return false;
     const i = this.count++;
     const o4 = i * 4;
@@ -1768,10 +1804,10 @@ export class CreatureBatch {
     this.anim[o4 + 1] = amp;
     this.anim[o4 + 2] = fold;
     this.anim[o4 + 3] = aux;
-    const o3 = i * 3;
-    this.col[o3] = colors[co];
-    this.col[o3 + 1] = colors[co + 1];
-    this.col[o3 + 2] = colors[co + 2];
+    this.col[o4] = colors[co];
+    this.col[o4 + 1] = colors[co + 1];
+    this.col[o4 + 2] = colors[co + 2];
+    this.col[o4 + 3] = shadow ? presence : presence + 2;
     if (x < this.minX) this.minX = x;
     if (y < this.minY) this.minY = y;
     if (z < this.minZ) this.minZ = z;
@@ -1782,12 +1818,23 @@ export class CreatureBatch {
     return true;
   }
 
+  /**
+   * Add one invisible instance (presence 0: every pixel is dropped) and draw this frame even when
+   * culled, casting a shadow if asked. Drawing it makes WebGL build the creature programs, including
+   * the shadow one, at load: renderer.compile() cannot build the shadow program ahead of time, because
+   * its program key depends on the shadow map being the render target. `colors` = any valid triple.
+   */
+  warm(x: number, y: number, z: number, q: THREE.Quaternion, colors: ArrayLike<number>): void {
+    if (this.add(x, y, z, 1, q, 0, 0, 0, 0, colors, 0, 0)) this.warming = true;
+  }
+
   /** Upload what was added this frame and size the culling sphere around it. `reach` = extra body lengths beyond the origin (wings, silk). */
   end(castShadow: boolean, reach = 1.6): void {
     const n = this.count;
     this.geo.instanceCount = n;
     this.mesh.visible = n > 0;
     this.mesh.castShadow = castShadow && n > 0;
+    this.mesh.frustumCulled = !this.warming;
     if (n === 0) return;
     // Upload only the filled part of each buffer.
     for (let k = 0; k < this.attrs.length; k++) {
@@ -1799,7 +1846,10 @@ export class CreatureBatch {
     const sp = this.geo.boundingSphere as THREE.Sphere;
     const pad = this.maxScale * reach;
     sp.center.set((this.minX + this.maxX) * 0.5, (this.minY + this.maxY) * 0.5, (this.minZ + this.maxZ) * 0.5);
-    sp.radius = 0.5 * Math.hypot(this.maxX - this.minX, this.maxY - this.minY, this.maxZ - this.minZ) + pad;
+    const ex = this.maxX - this.minX;
+    const ey = this.maxY - this.minY;
+    const ez = this.maxZ - this.minZ;
+    sp.radius = 0.5 * Math.sqrt(ex * ex + ey * ey + ez * ez) + pad;
   }
 
   dispose(): void {
@@ -1839,7 +1889,9 @@ void main() {
   float px = aSize * projectionMatrix[1][1] * 0.5 * uViewH / depth;
   float kind = floor(aKind + 0.001);
   float minPx = kind < 1.5 ? 2.6 : (kind < 2.5 ? 1.5 : 2.0);
-  gl_PointSize = clamp(px, minPx, 72.0);
+  // A speck stands for a far bird: it never grows past a few pixels (nearer birds are drawn as birds).
+  float maxPx = kind > 0.5 && kind < 1.5 ? 8.0 : 72.0;
+  gl_PointSize = clamp(px, minPx, maxPx);
   float fog = smoothstep(uFogNear, uFogFar, length(mv.xyz));
   vColor = vec4(mix(aColor.rgb, uFogColor, fog * (kind < 0.5 ? 0.35 : 1.0)), aColor.a * clamp(px / minPx, 0.35, 1.0));
   vKind = aKind;
@@ -1976,7 +2028,10 @@ export class SoftPoints {
     }
     const sp = this.geo.boundingSphere as THREE.Sphere;
     sp.center.set((this.minX + this.maxX) * 0.5, (this.minY + this.maxY) * 0.5, (this.minZ + this.maxZ) * 0.5);
-    sp.radius = 0.5 * Math.hypot(this.maxX - this.minX, this.maxY - this.minY, this.maxZ - this.minZ) + 2;
+    const ex = this.maxX - this.minX;
+    const ey = this.maxY - this.minY;
+    const ez = this.maxZ - this.minZ;
+    sp.radius = 0.5 * Math.sqrt(ex * ex + ey * ey + ez * ez) + 2;
   }
 
   dispose(): void {

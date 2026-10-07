@@ -4,22 +4,23 @@
  * - agents that walk or swim stay on their habitats;
  * - agent, member and triangle caps hold on phone and laptop;
  * - the same seed spawns the same animals;
- * - nothing pops in or out in view while the camera is still;
- * - night, dawn, storm and brush behaviour;
- * - the arrival scenes (vignettes) and their markers.
+ * - nothing pops in or out in view while the camera is still (judged by what is drawn: size on
+ *   screen times the creature shader's presence, which may only change as a fade);
+ * - night, dawn, storm, brush and lava behaviour; colonies keep their ledges; the speck flock;
+ * - the arrival scenes (vignettes) and their markers, and that their actors never pop either.
  */
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
-import { NP, NX, NZ } from '../src/config';
+import { CELL, NP, NX, NZ, ORIGIN_X, ORIGIN_Z } from '../src/config';
 import { SPECIES } from '../src/content/species';
-import { ANIMAL_MODEL_COUNT, AnimalModel, type Behaviour, type Road } from '../src/content/speciesTypes';
+import { ANIMAL_MODEL_COUNT, AnimalModel, Habitat, type Behaviour, type Road } from '../src/content/speciesTypes';
 import { Columns } from '../src/engine/columns';
 import { buildDemoChain, demoEco, demoLife } from '../src/engine/fixtures';
 import { PLANT_BYTES, type LifeInfo, type StormState } from '../src/engine/protocol';
-import { FaunaSim, GROUNDED, GROUP_SIZE, Life, T_HATCH, TRI_BUDGET, activityLevel, shelterLevel, speedLimit, viewFromCamera, type FaunaClock, type FaunaView } from '../src/render/fauna';
+import { FaunaSim, GROUNDED, GROUP_SIZE, Life, SPECK_SIZE, T_HATCH, TRI_BUDGET, activityLevel, shelterLevel, speedLimit, viewFromCamera, type FaunaClock, type FaunaView } from '../src/render/fauna';
 import { WorldFields } from '../src/render/fields';
 import { HATCHLING_PLAN, Part, buildAnimalGeometries, planTriangles } from '../src/render/models/animals';
-import { MARKER_SECONDS, VignetteSim, sceneFor, type SceneKind } from '../src/render/vignettes';
+import { MARKER_SECONDS, VignetteSim, sceneFor, type Scene, type SceneKind } from '../src/render/vignettes';
 
 // ---------- the demo world, built once ----------
 
@@ -213,6 +214,9 @@ function watch(place: Place, opts: { phase?: number; seconds?: number; phone?: b
   const prevY = new Float64Array(n);
   const prevZ = new Float64Array(n);
   const prevSeen = new Uint8Array(n);
+  const prevPresence = new Float32Array(n);
+  const prevFramed = new Uint8Array(n);
+  const prevBeh: string[] = new Array<string>(n).fill('');
   const mPrev = new Float32Array(M.blocks * GROUP_SIZE * 3);
   const mOwner = new Int32Array(M.blocks * GROUP_SIZE).fill(-1);
   const report = {
@@ -234,20 +238,24 @@ function watch(place: Place, opts: { phase?: number; seconds?: number; phone?: b
       const live = A.life[i] !== Life.Free;
       if (!live) {
         // An agent vanished: it must not have been on screen.
-        if (prevSerial[i] && prevSeen[i] && !first) report.pops.push(`vanished in view: ${SPECIES[r.sim.kinds[0].sp] ? 'agent' : ''} slot ${i}`);
+        if (prevSerial[i] && prevSeen[i] && !first) report.pops.push(`vanished in view: ${prevBeh[i]}`);
         prevSerial[i] = 0;
         continue;
       }
       const k = r.sim.kinds[A.kind[i]];
+      // What is drawn: on-screen size times presence (the shader's screen-door fade).
       const seen = r.sim.seen(i, k);
+      const presence = A.presence(i);
+      const framed = r.sim.visiblePx(i, k, false) >= 1;
       if (A.serial[i] !== prevSerial[i]) {
-        // A new agent: it must not appear on screen, unless the camera just cut or it steps out from cover.
+        // A new agent: it must not be drawn visibly on its first frame (it starts out of view, too
+        // small, hidden, or fading in), unless the camera just cut.
         report.spawned.add(A.kind[i]);
         if (prevSerial[i] && prevSeen[i] && !first) report.pops.push(`replaced in view: ${k.look.behaviour}`);
-        const cover = coverAt(A.x[i], A.z[i]);
-        const natural = (k.look.behaviour === 'bask' || k.look.behaviour === 'graze' || k.look.behaviour === 'creep') && cover > 0.4;
-        if (seen && !first && !natural) report.pops.push(`appeared in view: ${k.look.behaviour} state ${A.st[i]}`);
+        if (seen && !first) report.pops.push(`appeared in view: ${k.look.behaviour} state ${A.st[i]} presence ${presence.toFixed(2)}`);
       } else {
+        // In frame, presence may only change as a fade (a pop would be a jump within one frame).
+        if (framed && prevFramed[i] && Math.abs(presence - prevPresence[i]) > dt * MAX_FADE_RATE + 1e-4) report.pops.push(`presence jumped in view: ${k.look.behaviour} st${A.st[i]} ${prevPresence[i].toFixed(2)} -> ${presence.toFixed(2)}`);
         // Speed since last frame.
         const dx = A.x[i] - prevX[i];
         const dy = A.y[i] - prevY[i];
@@ -297,18 +305,17 @@ function watch(place: Place, opts: { phase?: number; seconds?: number; phone?: b
       prevY[i] = A.y[i];
       prevZ[i] = A.z[i];
       prevSeen[i] = seen ? 1 : 0;
+      prevPresence[i] = presence;
+      prevFramed[i] = framed ? 1 : 0;
+      prevBeh[i] = k.look.behaviour;
     }
     if (drawn > TRI_BUDGET) report.capFails.push(`${drawn} animal triangles > ${TRI_BUDGET}`);
   });
   return { r, report };
 }
 
-function coverAt(x: number, z: number): number {
-  const p = fields.patchIndex(x, z);
-  if (p < 0) return 0;
-  const o = p * PLANT_BYTES;
-  return Math.max(fields.plants[o + 1], fields.plants[o + 3], fields.plants[o + 5] * 0.6) / 255;
-}
+/** Fades must take at least a quarter of a second (presence change per second, while in frame). */
+const MAX_FADE_RATE = 4;
 
 const SCENARIOS: [Place, number, boolean][] = [
   ['beach', DAY, false],
@@ -475,6 +482,308 @@ describe('fauna simulation', () => {
   });
 });
 
+// ---------- changing the world for a test (always put back afterwards) ----------
+
+/** Pour molten lava `thick` m deep within r of (x, z), straight into the mirrors. Returns the undo. */
+function pourLava(x: number, z: number, r: number, thick: number): () => void {
+  const saved: number[] = [];
+  const i0 = Math.max(0, Math.floor((x - r - ORIGIN_X) / CELL));
+  const i1 = Math.min(NX - 1, Math.floor((x + r - ORIGIN_X) / CELL));
+  const k0 = Math.max(0, Math.floor((z - r - ORIGIN_Z) / CELL));
+  const k1 = Math.min(NZ - 1, Math.floor((z + r - ORIGIN_Z) / CELL));
+  for (let k = k0; k <= k1; k++) {
+    for (let i = i0; i <= i1; i++) {
+      if (Math.hypot(ORIGIN_X + (i + 0.5) * CELL - x, ORIGIN_Z + (k + 0.5) * CELL - z) > r) continue;
+      const c = i + k * NX;
+      saved.push(c, fields.surf[c], fields.ground[c * 4], fields.ground[c * 4 + 1]);
+      fields.surf[c] += thick;
+      fields.ground[c * 4] = Math.min(255, Math.round(thick * 20));
+      fields.ground[c * 4 + 1] = 255;
+    }
+  }
+  return () => {
+    for (let s = saved.length - 4; s >= 0; s -= 4) {
+      const c = saved[s];
+      fields.surf[c] = saved[s + 1];
+      fields.ground[c * 4] = saved[s + 2];
+      fields.ground[c * 4 + 1] = saved[s + 3];
+    }
+  };
+}
+
+/** Send a columns message over a rectangle (as the engine would), its heights changed by `edit`. Returns the undo. */
+function sendCols(x0: number, z0: number, w: number, h: number, edit: (x: number, z: number, y: number) => number): () => void {
+  const pack = (fn: (x: number, z: number, y: number) => number) => {
+    const surf = new Float32Array(w * h);
+    const ground = new Uint8Array(w * h * 4);
+    for (let k = 0; k < h; k++) {
+      for (let i = 0; i < w; i++) {
+        const c = x0 + i + (z0 + k) * NX;
+        surf[i + k * w] = fn(ORIGIN_X + (x0 + i + 0.5) * CELL, ORIGIN_Z + (z0 + k + 0.5) * CELL, fields.surf[c]);
+        ground.set(fields.ground.subarray(c * 4, c * 4 + 4), (i + k * w) * 4);
+      }
+    }
+    return { surf, ground };
+  };
+  const before = pack((_x, _z, y) => y);
+  fields.apply({ t: 'cols', x0, z0, w, h, ...pack(edit) });
+  return () => fields.apply({ t: 'cols', x0, z0, w, h, ...before });
+}
+
+/** Set the habitat of every patch within r of (x, z), except the one at the centre. Returns the undo. */
+function paintHabitat(x: number, z: number, r: number, h: number): () => void {
+  const saved: number[] = [];
+  const own = fields.patchIndex(x, z);
+  for (let dz = -r; dz <= r; dz += 2) {
+    for (let dx = -r; dx <= r; dx += 2) {
+      if (Math.hypot(dx, dz) > r) continue;
+      const p = fields.patchIndex(x + dx, z + dz);
+      if (p < 0 || p === own || saved.includes(p)) continue;
+      saved.push(p, fields.habitat[p]);
+      fields.habitat[p] = h;
+    }
+  }
+  return () => {
+    for (let s = saved.length - 2; s >= 0; s -= 2) fields.habitat[saved[s]] = saved[s + 1];
+  };
+}
+
+interface ColonyView {
+  uid: number;
+  x: number;
+  z: number;
+  r: number;
+  y: number;
+  yDraw: number;
+  ledges: Float32Array;
+  ledgeCount: number;
+  taken: Uint8Array;
+}
+const coloniesOf = (r: Rig): ColonyView[] => (r.sim as unknown as { colonies: ColonyView[] }).colonies;
+
+describe('fauna and the changing world', () => {
+  it('lava: walkers hurry off a flow, crabs dig in elsewhere; none stays on molten lava, none vanishes in view', () => {
+    for (const place of ['reef', 'beach'] as const) {
+      const p = PLACES[place];
+      const r = makeRig(31, { phone: true });
+      aim(r, p.x, p.z, p.d, -0.6, 0.75, true);
+      run(r, 60);
+      const A = r.sim.A;
+      const tracked: { i: number; serial: number; beh: string }[] = [];
+      const undo: (() => void)[] = [];
+      for (const beh of ['bask', 'graze', 'scuttle'] as Behaviour[]) {
+        for (const i of liveOf(r, beh)) {
+          if (beh === 'scuttle' && A.hide[i] >= 1) continue; // underground: never seen again, nothing to show
+          tracked.push({ i, serial: A.serial[i], beh });
+          undo.push(pourLava(A.x[i], A.z[i], 6, 1.5));
+        }
+      }
+      const fails: string[] = [];
+      try {
+        expect(tracked.length, place).toBeGreaterThan(2);
+        const wasSeen = tracked.map(() => false);
+        const reachedSafety = tracked.map(() => false);
+        run(r, 75, () => {
+          tracked.forEach((t, n) => {
+            const same = A.serial[t.i] === t.serial && A.life[t.i] !== Life.Free;
+            if (!same && wasSeen[n]) fails.push(`${t.beh} vanished in view`);
+            wasSeen[n] = same && r.sim.seen(t.i, r.sim.kinds[A.kind[t.i]]);
+            if (same && A.esc[t.i] <= 0 && !r.sim.lavaNear(A.x[t.i], A.z[t.i], 3)) reachedSafety[n] = true;
+          });
+        });
+        for (const t of tracked) {
+          if (A.serial[t.i] !== t.serial || A.life[t.i] === Life.Free) continue; // let go later, out of sight
+          const lava = fields.lavaAt(A.x[t.i], A.z[t.i]);
+          if (lava > 0.02) fails.push(`${t.beh} still on ${lava.toFixed(2)} m of lava (escaping ${A.esc[t.i].toFixed(0)} s)`);
+        }
+        // They got away on their own feet (out of sight, one may since have been let go as usual).
+        // Most got away on their own feet; the rest were let go out of sight, as animals out of frame are.
+        const safe = reachedSafety.filter(Boolean).length;
+        expect(safe, `${place}: ${safe} of ${tracked.length} reached safe ground`).toBeGreaterThanOrEqual(tracked.length * 0.5);
+      } finally {
+        for (let u = undo.length - 1; u >= 0; u--) undo[u]();
+      }
+      expect(fails, place).toEqual([]);
+    }
+  });
+
+  it('a tortoise overrun by lava plods off it, in view, and settles clear of the flow', () => {
+    const r = makeRig(33);
+    aim(r, PLACES.reef.x, PLACES.reef.z, PLACES.reef.d);
+    run(r, 40);
+    const A = r.sim.A;
+    const i = liveOf(r, 'graze').find((j) => r.sim.seen(j, r.sim.kinds[A.kind[j]]))!;
+    expect(i).toBeDefined();
+    const serial = A.serial[i];
+    aim(r, A.x[i], A.z[i], 45);
+    const undo = pourLava(A.x[i], A.z[i], 6, 1.5);
+    let offLava = -1;
+    let t = 0;
+    try {
+      run(r, 90, () => {
+        t += r.clock.dt;
+        expect(A.serial[i], 'still the same tortoise').toBe(serial);
+        if (offLava < 0 && fields.lavaAt(A.x[i], A.z[i]) < 0.02) offLava = t;
+      });
+      expect(fields.lavaAt(A.x[i], A.z[i])).toBeLessThan(0.02);
+      expect(r.sim.lavaNear(A.x[i], A.z[i], 4)).toBe(false);
+    } finally {
+      undo();
+    }
+    // Six metres of lava at a tortoise's hurry (0.3 m/s): off it in well under a minute.
+    expect(offLava).toBeGreaterThan(0);
+    expect(offLava).toBeLessThan(35);
+  });
+
+  it('colony ledges stay put through ecology and life updates; only changed ground moves them', () => {
+    const r = makeRig(21, { phone: true });
+    aim(r, PLACES.cliff.x, PLACES.cliff.z, PLACES.cliff.d, -0.6, 0.75, true);
+    run(r, 40);
+    const A = r.sim.A;
+    const holders = (c: ColonyView) => {
+      let n = 0;
+      for (let i = 0; i < A.cap; i++) if (A.life[i] !== Life.Free && A.col[i] === c.uid && A.a3[i] >= 0) n++;
+      return n;
+    };
+    const taken = (c: ColonyView) => c.taken.reduce((a, b) => a + b, 0);
+    const snap = () => coloniesOf(r).map((c) => ({ uid: c.uid, ledges: Array.from(c.ledges.subarray(0, c.ledgeCount * 4)), y: c.y }));
+    const consistent: string[] = [];
+    const check = () => {
+      for (const c of coloniesOf(r)) if (taken(c) !== holders(c)) consistent.push(`colony ${c.uid}: ${taken(c)} ledges taken, ${holders(c)} birds hold one`);
+    };
+    const before = snap();
+    expect(before.length).toBeGreaterThan(0);
+    expect(coloniesOf(r).some((c) => holders(c) > 0)).toBe(true);
+    // Ecology at 2 Hz and life at 1 Hz, for 20 s: nothing about the colony moves.
+    const ys: number[] = [];
+    let frame = 0;
+    run(r, 20, () => {
+      if (frame % 15 === 0) fields.ecoVersion++;
+      if (frame % 30 === 0) r.sim.setLife({ ...lifeAll });
+      frame++;
+      ys.push(coloniesOf(r)[0].yDraw);
+      check();
+    });
+    expect(snap()).toEqual(before);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeLessThan(1e-6);
+    // The same ground sent again (a columns message over the colony): exactly the same ledges.
+    const c0 = coloniesOf(r)[0];
+    const half = Math.ceil((c0.r + 20) / CELL);
+    const ci = Math.floor((c0.x - ORIGIN_X) / CELL) - half;
+    const ck = Math.floor((c0.z - ORIGIN_Z) / CELL) - half;
+    sendCols(ci, ck, half * 2, half * 2, (_x, _z, y) => y);
+    run(r, 3, check);
+    expect(snap()).toEqual(before);
+    // Raise the ground on one side of the colony: ledges there change, and every claim stays consistent.
+    const undo = sendCols(ci, ck, half * 2, half * 2, (x, _z, y) => (x > c0.x && y > 2 ? y + 4 : y));
+    try {
+      run(r, 4, check);
+      expect(snap()).not.toEqual(before);
+    } finally {
+      undo();
+    }
+    run(r, 4, check);
+    expect(snap()).toEqual(before);
+    // The colony grows (a new life message with a bigger radius): its birds move over with their ledges.
+    const holding = coloniesOf(r).reduce((n, c) => n + holders(c), 0);
+    r.sim.setLife({ ...lifeAll, colonies: lifeAll.colonies.map((c) => ({ ...c, r: c.r + 3 })) });
+    run(r, 0.1, check);
+    expect(coloniesOf(r).every((c) => before.every((b) => b.uid !== c.uid))).toBe(true);
+    expect(coloniesOf(r).reduce((n, c) => n + holders(c), 0)).toBeGreaterThanOrEqual(Math.floor(holding * 0.5));
+    run(r, 10, check);
+    expect(consistent.slice(0, 3)).toEqual([]);
+  });
+
+  it('the speck flock only shows far, small birds, and roosts at night and in storms', () => {
+    for (const phone of [true, false]) {
+      const r = makeRig(5, { phone });
+      aim(r, PLACES.cliff.x, PLACES.cliff.z, PLACES.cliff.d, -0.6, 0.75, phone);
+      const near: string[] = [];
+      run(r, 10, () => {
+        const S = r.sim.specks;
+        for (let s = 0; s < r.sim.speckCount; s++) {
+          const eye = Math.hypot(S[s * 8] - r.view.cx, S[s * 8 + 1] - r.view.cy, S[s * 8 + 2] - r.view.cz);
+          const px = (SPECK_SIZE * r.view.pxPerRad) / eye;
+          if (eye < 150 || px > 12) near.push(`speck at ${eye.toFixed(0)} m, ${px.toFixed(1)} px`);
+        }
+      });
+      expect(near.slice(0, 3), phone ? 'phone' : 'laptop').toEqual([]);
+    }
+    const flock = (phase: number, storm: StormState) => {
+      const r = makeRig(5, { phase });
+      r.clock.storm = storm;
+      aim(r, PLACES.overview.x, PLACES.overview.z, PLACES.overview.d);
+      run(r, 5);
+      return r.sim.speckCount;
+    };
+    expect(flock(DAY, CALM)).toBeGreaterThan(20);
+    expect(flock(NIGHT, CALM)).toBe(0);
+    expect(flock(DAY, { phase: 'peak', t: 10, level: 1, great: false })).toBe(0);
+  });
+
+  it('a nesting turtle blocked on her way down crawls to the water; she never swims on dry sand', () => {
+    const r = makeRig(14, { phase: NIGHT });
+    // A spot on the cay's west beach, about 0.7 m above the sea.
+    let bx = PLACES.cay.x;
+    while (fields.heightAt(bx, PLACES.cay.z) > 0.7) bx -= 0.25;
+    const bz = PLACES.cay.z;
+    aim(r, bx, bz, 20);
+    run(r, 1);
+    const ki = kindIndex(r, 'nest-beach')[0];
+    const k = r.sim.kinds[ki];
+    const A = r.sim.A;
+    const i = A.alloc(ki);
+    expect(i).toBeGreaterThanOrEqual(0);
+    A.x[i] = bx;
+    A.z[i] = bz;
+    A.y[i] = fields.heightAt(bx, bz);
+    A.scale[i] = k.size;
+    A.st[i] = 6; // crawling back down to the sea
+    A.tm[i] = 300;
+    // Rock shore all round her (not a turtle's ground): the way straight down is blocked.
+    const undo = paintHabitat(bx, bz, 8, Habitat.RockShore);
+    const serial = A.serial[i];
+    const wrong: string[] = [];
+    let swam = false;
+    try {
+      run(r, 150, () => {
+        if (A.serial[i] !== serial || A.life[i] === Life.Free) return;
+        const depth = r.sim.surface(A.x[i], A.z[i]) - fields.heightAt(A.x[i], A.z[i]);
+        if (A.st[i] === 0 && depth < 0.3) wrong.push(`swimming in ${depth.toFixed(2)} m of water`);
+        if (A.st[i] === 0) swam = true;
+      });
+    } finally {
+      undo();
+    }
+    expect(wrong.slice(0, 3)).toEqual([]);
+    expect(swam).toBe(true);
+  });
+
+  it('a seabird caught by a storm mid-dive keeps its wheeling height', () => {
+    const r = makeRig(8);
+    aim(r, PLACES.cliff.x, PLACES.cliff.z, PLACES.cliff.d);
+    run(r, 30);
+    const A = r.sim.A;
+    const i = liveOf(r, 'colony').find((j) => A.st[j] === 0)!;
+    expect(i).toBeDefined();
+    const height = A.a1[i];
+    const serial = A.serial[i];
+    A.st[i] = 5; // climb for a plunge dive
+    A.tm[i] = 0;
+    run(r, 3);
+    r.clock.storm = { phase: 'peak', t: 10, level: 1, great: false };
+    run(r, 2);
+    r.clock.storm = CALM;
+    let checked = 0;
+    run(r, 40, () => {
+      if (A.serial[i] !== serial || A.life[i] === Life.Free) return;
+      expect(A.a1[i]).toBe(height);
+      checked++;
+    });
+    expect(checked).toBeGreaterThan(0);
+  });
+});
+
 // ---------- arrival scenes ----------
 
 describe('arrival scenes', () => {
@@ -605,6 +914,79 @@ describe('arrival scenes', () => {
     viewFromCamera(cam, new THREE.Vector3(180, 10, -20), 60, 760, view, mat);
     step(1);
     expect(sim.activeScenes()).toBe(1);
+  });
+
+  it('arrival actors never pop: each starts out of sight or fades in, fades only gradually, and goes only unseen', () => {
+    const scenes: [string, Road, boolean][] = [
+      ['turtle', 'sea', true],
+      ['whale', 'flight', true],
+      ['tortoise', 'sea', true],
+      ['shark', 'sea', false],
+      ['seal', 'sea', true],
+      ['dolphin', 'sea', true],
+      ['anole', 'raft', true],
+      ['anole', 'raft', false],
+      ['palm', 'sea', true],
+      ['palm', 'sea', false],
+      ['booby', 'flight', true],
+      ['fig', 'bird', true],
+      ['ghostcrab', 'sea', true],
+      ['ghostcrab', 'sea', false],
+      ['butterfly', 'flight', true],
+      ['spider', 'wind', true],
+    ];
+    const spot = { x: -332, z: 250 };
+    const pops: string[] = [];
+    let drawnActors = 0;
+    for (const phone of [true, false]) {
+      for (const yaw of [0, Math.PI / 2, Math.PI, Math.PI * 1.5]) {
+        const cam = new THREE.PerspectiveCamera(50, phone ? 412 / 915 : 1280 / 760, 0.5, 16000);
+        const target = new THREE.Vector3(spot.x, Math.max(0, fields.heightAt(spot.x, spot.z)), spot.z);
+        cam.position.set(spot.x + Math.sin(yaw) * 38, target.y + 14, spot.z + Math.cos(yaw) * 38);
+        cam.lookAt(target);
+        const view: FaunaView = { tx: 0, tz: 0, cx: 0, cy: 0, cz: 0, dist: 40, pxPerRad: 800, frustum: new THREE.Frustum() };
+        viewFromCamera(cam, target, 40, phone ? 915 * 2.625 : 760, view, mat);
+        for (const [key, road, ok] of scenes) {
+          const label = `${key}/${road}/${ok ? 'stays' : 'leaves'} ${phone ? 'phone' : 'laptop'} yaw ${yaw.toFixed(1)}`;
+          const sim = new VignetteSim(SPECIES, fields, 3);
+          const clock = { t: 0, dt: 1 / 30, storm: 0 };
+          sim.arrive({ species: SPECIES.find((x) => x.key === key)!.id, road, x: spot.x, z: spot.z, island: 2, ok, first: true, returned: false }, view);
+          const sc: Scene | undefined = sim.scenes.find((x) => x.on && !x.waiting);
+          if (!sc) continue; // nothing to play here (a crab with no shore)
+          const drawn = new Uint8Array(sc.n);
+          const prevP = new Float32Array(sc.n);
+          const prevFramed = new Uint8Array(sc.n);
+          for (let f = 0; f < 150 * 30 && sc.on; f++) {
+            clock.t += clock.dt;
+            sim.step(clock, view);
+            for (let i = 0; i < sc.n; i++) {
+              const p = sc.presence(i);
+              const px = sim.visiblePx(sc, i, false);
+              if (sc.gone[i]) {
+                if (drawn[i] === 1) {
+                  // It was just let go: it must have been out of sight at that moment.
+                  if (px * p >= 1) pops.push(`${label}: actor ${i} went while ${(px * p).toFixed(1)} px`);
+                  drawn[i] = 2;
+                }
+                continue;
+              }
+              if (p < 0.001) continue;
+              if (!drawn[i]) {
+                drawn[i] = 1;
+                drawnActors++;
+                if (px * p >= 1) pops.push(`${label}: actor ${i} appeared at ${(px * p).toFixed(1)} px (presence ${p.toFixed(2)})`);
+              } else if (px >= 1 && prevFramed[i] && Math.abs(p - prevP[i]) > clock.dt * MAX_FADE_RATE + 1e-4) {
+                pops.push(`${label}: actor ${i} presence jumped ${prevP[i].toFixed(2)} -> ${p.toFixed(2)}`);
+              }
+              prevP[i] = p;
+              prevFramed[i] = px >= 1 ? 1 : 0;
+            }
+          }
+        }
+      }
+    }
+    expect(drawnActors).toBeGreaterThan(50);
+    expect(pops.slice(0, 6)).toEqual([]);
   });
 });
 
