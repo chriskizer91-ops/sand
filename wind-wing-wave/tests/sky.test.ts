@@ -20,7 +20,22 @@ import {
   type DayLook,
 } from '../src/render/daylight';
 import { assignCaps, type CapSlot } from '../src/render/sky';
-import { CALM_WIND, boltAt, flashAt, gustAt, makeStormCurve, nextStrikeDelay, rainbowAt, stormCurve, windVeer } from '../src/render/weather';
+import {
+  CALM_WIND,
+  RAIN_BOXES,
+  RAIN_WRAP,
+  advanceRain,
+  boltAt,
+  flashAt,
+  gustAt,
+  makeRainMotion,
+  makeStormCurve,
+  nextStrikeDelay,
+  rainBoxWeights,
+  rainbowAt,
+  stormCurve,
+  windVeer,
+} from '../src/render/weather';
 
 const COLORS = ['zenith', 'horizon', 'fog', 'sun', 'hemiSky', 'hemiGround', 'glow'] as const;
 const NUMBERS = ['sunI', 'hemiI', 'glowI', 'night', 'stars'] as const;
@@ -148,14 +163,42 @@ describe('sun, moon and seasons', () => {
 describe('storms', () => {
   const at = (phase: StormState['phase'], t: number, level: number) => stormCurve({ phase, t, level }, makeStormCurve());
 
+  /**
+   * The contract only says the level "rises in warning, 1 at peak", so the warning is checked
+   * against both readings: the stub's (level tops out at 0.6) and the natural one (level reaches
+   * 1 as the peak begins), over the 30-45 s warnings ARCHITECTURE §6.8 allows.
+   */
+  const conventions = [
+    { name: 'stub, level to 0.6', len: 40, top: 0.6 },
+    { name: 'level to 1, 30 s', len: 30, top: 1 },
+    { name: 'level to 1, 40 s', len: 40, top: 1 },
+    { name: 'level to 1, 45 s', len: 45, top: 1 },
+  ];
+
   it('the warning only builds: wind, gloom, swell and rain never go back down', () => {
-    let prev = at('warning', 0, 0);
-    for (let t = 0.5; t <= 40; t += 0.5) {
-      const c = at('warning', t, (0.6 * t) / 40);
-      for (const k of ['storm', 'gloom', 'wind', 'rain'] as const) expect(c[k]).toBeGreaterThanOrEqual(prev[k] - 1e-9);
-      prev = c;
+    for (const cv of conventions) {
+      let prev = at('warning', 0, 0);
+      for (let t = 0.5; t <= cv.len; t += 0.5) {
+        const c = at('warning', t, (cv.top * t) / cv.len);
+        for (const k of ['storm', 'gloom', 'wind', 'rain'] as const) expect(c[k]).toBeGreaterThanOrEqual(prev[k] - 1e-9);
+        prev = c;
+      }
+      // The light turns amber early on.
+      expect(at('warning', 6, (cv.top * 6) / cv.len).amber, cv.name).toBeGreaterThan(0.5);
     }
-    expect(at('warning', 5, 0.08).amber).toBeGreaterThan(0.5);
+  });
+
+  it('the warning keeps its pace whichever way the engine reports its level', () => {
+    for (const cv of conventions) {
+      for (let t = 0; t <= cv.len; t += 0.25) {
+        const c = at('warning', t, (cv.top * t) / cv.len);
+        // No full storm and no real rain early: the amber and grey get their time.
+        if (t < 0.85 * cv.len) expect(c.storm, `${cv.name} at ${t} s`).toBeLessThan(1);
+        if (t < 0.75 * cv.len) expect(c.rain, `${cv.name} at ${t} s`).toBeLessThan(0.05);
+      }
+      // By the end the storm has gathered (the peak's smoothing covers the last bit).
+      expect(at('warning', cv.len, cv.top).storm, cv.name).toBeGreaterThanOrEqual(0.75);
+    }
   });
 
   it('the peak is full storm with lightning; the clearing only eases', () => {
@@ -178,6 +221,9 @@ describe('storms', () => {
     const pairs: [ReturnType<typeof at>, ReturnType<typeof at>][] = [
       [at('none', 0, 0), at('warning', 0, 0)],
       [at('warning', 40, 0.6), at('peak', 0, 1)],
+      [at('warning', 30, 1), at('peak', 0, 1)],
+      [at('warning', 40, 1), at('peak', 0, 1)],
+      [at('warning', 45, 1), at('peak', 0, 1)],
       [at('peak', 60, 1), at('clearing', 0, 1)],
       [at('clearing', 30, 0), at('none', 0, 0)],
     ];
@@ -218,6 +264,72 @@ describe('storms', () => {
         expect(Math.abs(windVeer(t, s))).toBeLessThanOrEqual(0.45 + 1e-9);
       }
     }
+  });
+});
+
+describe('rain', () => {
+  /** Distance moved between two drifts, across the wrap. */
+  const step = (a: number, b: number) => {
+    const d = Math.abs(b - a) % RAIN_WRAP;
+    return Math.min(d, RAIN_WRAP - d);
+  };
+
+  it('moves at real speeds while the wind ramps and veers, however long the game has run', () => {
+    for (const t0 of [0, 300, 1200, 3000, 20000]) {
+      const m = makeRainMotion();
+      const dt = 1 / 45;
+      let storm = 0;
+      let strength = CALM_WIND;
+      let worst = 0;
+      for (let t = 0; t < 140; t += dt) {
+        // The storm builds over 40 s, then rages, the way weather.ts smooths it.
+        storm += ((t < 40 ? t / 40 : 1) - storm) * (1 - Math.exp(-dt / 1.2));
+        strength += (CALM_WIND + (1 - CALM_WIND) * storm - strength) * (1 - Math.exp(-dt / 1.2));
+        const veer = windVeer(t0 + t, storm);
+        const x0 = m.driftX;
+        const z0 = m.driftZ;
+        advanceRain(m, -Math.cos(veer), -Math.sin(veer), strength, gustAt(t0 + t, storm), dt, true);
+        worst = Math.max(worst, Math.hypot(step(x0, m.driftX), step(z0, m.driftZ)) / dt);
+      }
+      // Sideways at no more than 9 m/s, however the wind changes (drops fall at 8.5-11.5 m/s).
+      expect(worst, `from ${t0} s`).toBeLessThanOrEqual(9 + 1e-6);
+      expect(m.fall).toBeCloseTo(140, 0);
+    }
+  });
+
+  it('wraps without a jump and starts again between showers', () => {
+    for (const r of RAIN_BOXES) expect(RAIN_WRAP % (2 * r)).toBe(0);
+    const m = makeRainMotion();
+    for (let i = 0; i < 20000; i++) {
+      advanceRain(m, -1, 0.2, 1, 1, 0.05, true);
+      expect(m.driftX).toBeGreaterThanOrEqual(0);
+      expect(m.driftX).toBeLessThan(RAIN_WRAP);
+    }
+    advanceRain(m, -1, 0, 1, 0, 0.05, false);
+    expect([m.driftX, m.driftZ, m.fall]).toEqual([0, 0, 0]);
+    // The slant still follows the wind while it is dry.
+    expect(m.velX).toBeLessThan(0);
+  });
+
+  it('every box keeps its size; zooming only fades whole boxes in and out, smoothly', () => {
+    const a = new THREE.Vector4();
+    const b = new THREE.Vector4();
+    let worst = 0;
+    for (let d = 8; d <= 1600; d *= 1.002) {
+      rainBoxWeights(d, a);
+      rainBoxWeights(d * 1.002, b);
+      const w = a.toArray();
+      for (const v of w) {
+        expect(v).toBeGreaterThanOrEqual(0);
+        expect(v).toBeLessThanOrEqual(1);
+      }
+      expect(Math.max(...w)).toBe(1); // there is always rain at the scale of the view
+      worst = Math.max(worst, ...b.toArray().map((v, i) => Math.abs(v - w[i])));
+    }
+    expect(worst).toBeLessThan(0.01);
+    // Close up the biggest box makes way; from the god view the smallest one does.
+    expect(rainBoxWeights(20, a).w).toBe(0);
+    expect(rainBoxWeights(1200, a).x).toBe(0);
   });
 });
 

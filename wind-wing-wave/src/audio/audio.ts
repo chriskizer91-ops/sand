@@ -12,7 +12,8 @@
  * - continuous sounds are at most 10 looping layers (layers.ts), each started only while audible;
  * - dense choruses are baked once into loops (beds.ts), so a chorus costs one playing sound;
  * - calls are phrases: one source with scheduled automation (voices.ts, play.ts);
- * - at most 12 new sounds a second, 6 bird phrases at once, and a cap on live nodes;
+ * - at most 12 new sounds a second and 6 bird phrases at once, and every live node is counted
+ *   (graph, layers and one-shots): new calls give way at 70 nodes, nothing passes 90;
  * - the control work runs 15 times a second, the census of the surroundings twice a second;
  * - the audio context is suspended while the game is hidden or the sound is off.
  */
@@ -25,10 +26,10 @@ import { weatherOf } from '../render/weather';
 import { BedStore } from './beds';
 import { habitatPresence, makeCensus, patchX, patchZ, popsNear, SAMPLES, takeCensus } from './census';
 import { chimeNotes, type ChimeKind } from './chimes';
-import { AudioGraph, type BusId } from './graph';
-import { Layer, ON_LEVEL, type LayerDef } from './layers';
+import { AudioGraph, nodeRoom, routeNodes, type BusId } from './graph';
+import { Layer, layerNodes, ON_LEVEL, type LayerDef } from './layers';
 import * as mix from './mix';
-import { scheduleChime, schedulePhrase, scheduleThunder, type Scheduled } from './play';
+import { chimeNodes, phraseNodes, scheduleChime, schedulePhrase, scheduleThunder, THUNDER_NODES, type Scheduled } from './play';
 import * as sfx from './sfx';
 import { isBedKind, voicePhrase, type PhraseSpec } from './voices';
 
@@ -49,8 +50,6 @@ const CENSUS_DT = 0.5;
 const MAX_LOOPS = 10;
 const MAX_BIRDS = 6;
 const VOICES_PER_SECOND = 12;
-/** One-shot nodes alive at once before new calls are skipped (chimes and thunder always play). */
-const LIVE_NODE_CAP = 60;
 /** Plants popping up further than this from the listener make no sound (m). */
 const POP_RADIUS = 120;
 const POP_QUEUE = 8;
@@ -85,8 +84,9 @@ const LAYERS: Record<LayerId, LayerDef> = {
   whistle: { bus: 'ambience', source: 'white', filters: [{ type: 'bandpass', freq: 1150, q: 8 }], prio: 2, tau: 0.8 },
   // Leaves rustling.
   rustle: { bus: 'ambience', source: 'white', filters: [{ type: 'bandpass', freq: 2500, q: 0.6 }], prio: 3, tau: 0.6 },
-  surf: { bus: 'ambience', source: 'surf', pan: true, prio: 6, tau: 1 },
-  surfRock: { bus: 'ambience', source: 'surfRock', pan: true, prio: 5, tau: 1 },
+  // Surf on sand and on rock: baked waves through a low-pass that wanders, so passes differ.
+  surf: { bus: 'ambience', source: 'surf', filters: [{ type: 'lowpass', freq: 5000, q: 0.5 }], pan: true, prio: 6, tau: 1 },
+  surfRock: { bus: 'ambience', source: 'surfRock', filters: [{ type: 'lowpass', freq: 5000, q: 0.5 }], pan: true, prio: 5, tau: 1 },
   // Storm surf: deep rumbling waves whose low-pass opens with each breaker.
   stormSurf: { bus: 'weather', source: 'brown', filters: [{ type: 'lowpass', freq: 600, q: 0.7 }], prio: 7, tau: 0.8 },
   // High-altitude air at the god view.
@@ -309,16 +309,22 @@ export function createAudio(deps: SystemDeps): AudioSystem {
     return Math.hypot(x - c.x, y - c.y, z - c.z);
   }
 
-  function takeVoice(): boolean {
-    if (budget < 1 || (graph !== null && graph.live > LIVE_NODE_CAP)) return false;
+  /** Nodes a phrase costs once routed with this share of its reverb. */
+  function phraseCost(spec: PhraseSpec, reverb: number): number {
+    return phraseNodes(spec) + routeNodes(reverb * spec.reverb);
+  }
+
+  /** A new one-shot of `cost` nodes may start: within 12 a second, and below the soft node cap. */
+  function takeVoice(cost: number): boolean {
+    if (budget < 1 || !graph || !nodeRoom(graph.live, cost, false)) return false;
     budget -= 1;
     return true;
   }
 
-  /** Play a phrase now; `reverb` scales the phrase's own reverb share. */
+  /** Play a phrase now; `reverb` scales the phrase's own reverb share. Nothing passes the hard node cap. */
   function play(spec: PhraseSpec, bus: BusId, level: number, pan: number, reverb: number, delay = 0.02): Scheduled | null {
     const g = graph;
-    if (!g || level <= 0) return null;
+    if (!g || level <= 0 || !nodeRoom(g.live, phraseCost(spec, reverb), true)) return null;
     const s = schedulePhrase(g.ctx, spec, g.ctx.currentTime + delay, level, g.white, rand() * 1.5);
     g.route(s, bus, pan, reverb * spec.reverb);
     return s;
@@ -348,7 +354,10 @@ export function createAudio(deps: SystemDeps): AudioSystem {
     }
     const d = Math.hypot(x - listenerX, z - listenerZ);
     const level = c.voice.loud * mix.distanceGain(d) * lifeAlt * 0.9;
-    if (level < 0.008 || !takeVoice()) return;
+    if (level < 0.008) return;
+    const spec = voicePhrase(c.voice.kind, c.voice.pitch * (0.96 + 0.08 * rand()), rand);
+    const reverb = 0.4 + 0.6 * (d / (d + 40));
+    if (!takeVoice(phraseCost(spec, reverb))) return;
     const now = graph!.ctx.currentTime;
     for (let i = birds.length - 1; i >= 0; i--) if (birds[i].end < now) birds.splice(i, 1);
     if (birds.length >= MAX_BIRDS) {
@@ -357,8 +366,7 @@ export function createAudio(deps: SystemDeps): AudioSystem {
       oldest.out.gain.cancelScheduledValues(now);
       oldest.out.gain.setTargetAtTime(0, now, 0.05);
     }
-    const spec = voicePhrase(c.voice.kind, c.voice.pitch * (0.96 + 0.08 * rand()), rand);
-    const s = play(spec, 'life', level, panOf(f, x, z), 0.4 + 0.6 * (d / (d + 40)));
+    const s = play(spec, 'life', level, panOf(f, x, z), reverb);
     if (s) birds.push({ out: s.out, end: s.end });
   }
 
@@ -423,10 +431,13 @@ export function createAudio(deps: SystemDeps): AudioSystem {
     L.whistle.filters[0]?.frequency.setTargetAtTime(1150 + 250 * Math.sin(f.t * 0.19) + 200 * ws.gust, now, 0.5);
     L.rustle.target = mix.rustleLevel(landGreen, ws.wind, ws.gust) * lifeAlt;
     const coast = census.shoreDist < 220 ? 1 : 0;
-    const surf = mix.surfLevel(census.shoreDist, ws.storm) * (0.35 + 0.65 * (1 - air)) + 0.03 * air * coast;
+    const surf = (mix.surfLevel(census.shoreDist, ws.storm) * (0.35 + 0.65 * (1 - air)) + 0.03 * air * coast) * mix.surfSwell(f.t);
     L.surf.target = surf * (1 - census.shoreRock);
     L.surfRock.target = surf * census.shoreRock;
     L.surf.pan = L.surfRock.pan = 0.6 * panOf(f, census.shoreX, census.shoreZ);
+    const surfCut = mix.surfCutoff(f.t, ws.storm);
+    L.surf.filters[0]?.frequency.setTargetAtTime(surfCut, now, 0.5);
+    L.surfRock.filters[0]?.frequency.setTargetAtTime(surfCut, now, 0.5);
     L.stormSurf.target = (0.05 * ws.storm) / (1 + census.shoreDist / 60);
     const breaker = Math.max(0, Math.sin((f.t * Math.PI * 2) / 7));
     L.stormSurf.filters[0]?.frequency.setTargetAtTime(400 + 1400 * breaker * breaker, now, 0.4);
@@ -471,18 +482,21 @@ export function createAudio(deps: SystemDeps): AudioSystem {
     L.sand.pan = panOf(f, pourX, pourZ);
     L.sand.filters[0]?.frequency.setTargetAtTime(pouring === 'sand' ? 3200 : 2200, now, 0.1);
 
-    // Run the layers: the highest priorities get the ten slots.
+    // Run the layers: the highest priorities get the ten slots; a running layer left without
+    // one fades out quickly and stops.
     let slots = MAX_LOOPS;
     for (const l of byPrio) {
       const wants = l.target > ON_LEVEL;
-      if ((wants || l.running) && slots > 0) {
-        slots--;
-        if (wants && !l.running) {
-          const src = l.def.source;
-          const buf = src === 'white' ? g.white : src === 'pink' ? g.pink : src === 'brown' ? g.brown : beds.get(src);
-          if (buf) l.start(g, buf, rand() * 8);
-        }
-      } else if (slots <= 0) l.target = 0;
+      if (!wants && !l.running) continue;
+      l.evicted = slots <= 0;
+      if (l.evicted) continue;
+      slots--;
+      // A new layer also keeps to the hard node cap (it tries again next tick).
+      if (wants && !l.running && nodeRoom(g.live, layerNodes(l.def), true)) {
+        const src = l.def.source;
+        const buf = src === 'white' ? g.white : src === 'pink' ? g.pink : src === 'brown' ? g.brown : beds.get(src);
+        if (buf) l.start(g, buf, rand() * 8);
+      }
     }
     for (const l of byPrio) {
       if (!l.running) continue;
@@ -490,31 +504,45 @@ export function createAudio(deps: SystemDeps): AudioSystem {
       if (l.spent) l.stop();
     }
 
-    // One-shots from the tools.
+    // One-shots from the tools. Sounds that build up (rock, rubbing, burning) and find no room
+    // wait for the next tick; chance sounds (pings, steam) are simply skipped.
     clatterCd -= dt;
-    if (rockAcc > 0.02 && clatterCd <= 0 && takeVoice()) {
-      const pan = panOf(f, pourX, pourZ);
-      play(sfx.clatterPhrase(rockAcc, rand), 'tools', 0.8 * pourGain, pan, 1);
-      play(sfx.thudPhrase(rockAcc), 'tools', 0.8 * pourGain, pan, 0);
-      rockAcc = 0;
-      clatterCd = 0.14;
+    if (rockAcc > 0.02 && clatterCd <= 0) {
+      const clatter = sfx.clatterPhrase(rockAcc, rand);
+      const thud = sfx.thudPhrase(rockAcc);
+      if (takeVoice(phraseCost(clatter, 1) + phraseCost(thud, 0))) {
+        const pan = panOf(f, pourX, pourZ);
+        play(clatter, 'tools', 0.8 * pourGain, pan, 1);
+        play(thud, 'tools', 0.8 * pourGain, pan, 0);
+        rockAcc = 0;
+        clatterCd = 0.14;
+      }
     }
     rubCd -= dt;
-    if ((pouring === 'hands' || pouring === 'scoop') && rubCd <= 0 && takeVoice()) {
+    if ((pouring === 'hands' || pouring === 'scoop') && rubCd <= 0) {
       const spec = pouring === 'hands' ? sfx.rubPhrase(rand) : sfx.scoopPhrase(rand);
-      play(spec, 'tools', 0.8 * pourGain, panOf(f, pourX, pourZ), 0);
-      rubCd = pouring === 'hands' ? 0.22 + 0.1 * rand() : 0.16 + 0.05 * rand();
+      if (takeVoice(phraseCost(spec, 0))) {
+        play(spec, 'tools', 0.8 * pourGain, panOf(f, pourX, pourZ), 0);
+        rubCd = pouring === 'hands' ? 0.22 + 0.1 * rand() : 0.16 + 0.05 * rand();
+      }
     }
     burnCd -= dt;
-    if (burnAcc > 0 && burnCd <= 0 && takeVoice()) {
-      play(sfx.burnPhrase(rand), 'tools', 0.7 * lavaGain, lavaPan, 0);
-      burnAcc = 0;
-      burnCd = 0.5;
+    if (burnAcc > 0 && burnCd <= 0) {
+      const spec = sfx.burnPhrase(rand);
+      if (takeVoice(phraseCost(spec, 0))) {
+        play(spec, 'tools', 0.7 * lavaGain, lavaPan, 0);
+        burnAcc = 0;
+        burnCd = 0.5;
+      }
     }
     const tinkles = mix.tinkleRate(pouring === 'lava' ? 0 : lavaArea, coolRate);
-    if (rand() < 1 - Math.exp(-tinkles * dt) && takeVoice()) play(sfx.tinklePhrase(rand), 'tools', lavaGain, lavaPan + (rand() - 0.5) * 0.3, 1);
-    if (rand() < 1 - Math.exp(-2.5 * steam * dt) && takeVoice()) {
-      play(rand() < 0.5 ? sfx.steamHissPhrase(rand) : sfx.bubblePhrase(rand), 'tools', 0.8 * mix.toolDistanceGain(camDistTo(f, steamX, 0, steamZ)), L.steam.pan, 1);
+    if (rand() < 1 - Math.exp(-tinkles * dt)) {
+      const spec = sfx.tinklePhrase(rand);
+      if (takeVoice(phraseCost(spec, 1))) play(spec, 'tools', lavaGain, lavaPan + (rand() - 0.5) * 0.3, 1);
+    }
+    if (rand() < 1 - Math.exp(-2.5 * steam * dt)) {
+      const spec = rand() < 0.5 ? sfx.steamHissPhrase(rand) : sfx.bubblePhrase(rand);
+      if (takeVoice(phraseCost(spec, 1))) play(spec, 'tools', 0.8 * mix.toolDistanceGain(camDistTo(f, steamX, 0, steamZ)), L.steam.pan, 1);
     }
 
     // Animal calls, each at its own time of day, quieter in storms and from high up.
@@ -529,35 +557,50 @@ export function createAudio(deps: SystemDeps): AudioSystem {
     }
     whaleCd -= dt;
     if (whaleNear && whalePitch > 0 && camDist < 500 && whaleCd <= 0) {
-      whaleCd = 25 + 20 * rand();
-      play(voicePhrase('whale', whalePitch, rand), 'life', 0.35 * Math.max(lifeAlt, 0.4), (rand() - 0.5) * 0.8, 1);
+      const spec = voicePhrase('whale', whalePitch, rand);
+      if (takeVoice(phraseCost(spec, 1))) {
+        whaleCd = 25 + 20 * rand();
+        play(spec, 'life', 0.35 * Math.max(lifeAlt, 0.4), (rand() - 0.5) * 0.8, 1);
+      }
     }
 
-    // Thunder: after the flash, by the time sound takes to travel (capped at 8 s).
+    // Thunder: after the flash, by the time sound takes to travel (capped at 8 s). It may use
+    // the node reserve; if even that is full, this one rumble is let go.
     if (ws.strikes !== seenStrikes) {
       seenStrikes = ws.strikes;
-      const s = scheduleThunder(g.ctx, now + Math.min(8, ws.strikeDist / 343), ws.strikeDist, g.brown, rand);
-      g.route(s, 'weather', 0.7 * panOf(f, ws.strikeX, ws.strikeZ), 0.5);
+      if (nodeRoom(g.live, THUNDER_NODES + routeNodes(0.5), true)) {
+        const s = scheduleThunder(g.ctx, now + Math.min(8, ws.strikeDist / 343), ws.strikeDist, g.brown, rand);
+        g.route(s, 'weather', 0.7 * panOf(f, ws.strikeX, ws.strikeZ), 0.5);
+      }
     }
 
-    // Chimes, spaced so they never pile up.
+    // Chimes, spaced so they never pile up. They may use the node reserve, and wait their turn
+    // if even that is full.
     chimeGap -= dt;
     if (chimeQueue.length > 0 && chimeGap <= 0) {
-      const c = chimeQueue.shift()!;
-      const s = scheduleChime(g.ctx, chimeNotes(c.kind), now + 0.05, 0.11 * c.level, g.white);
-      g.route(s, 'chimes', 0, 0.45);
-      chimeGap = c.kind === 'milestone' || c.kind === 'age' || c.kind === 'first' || c.kind === 'ending' ? 3 : 1.4;
+      const c = chimeQueue[0];
+      const notes = chimeNotes(c.kind);
+      if (nodeRoom(g.live, chimeNodes(notes) + routeNodes(0.45), true)) {
+        chimeQueue.shift();
+        const s = scheduleChime(g.ctx, notes, now + 0.05, 0.11 * c.level, g.white);
+        g.route(s, 'chimes', 0, 0.45);
+        chimeGap = c.kind === 'milestone' || c.kind === 'age' || c.kind === 'first' || c.kind === 'ending' ? 3 : 1.4;
+      }
     }
 
     // Plant pops: soft woody ticks, at most about three a second.
     popCd -= dt;
-    if (popCount > 0 && popCd <= 0 && takeVoice()) {
-      popCount--;
-      const x = pops[popCount * 3];
-      const z = pops[popCount * 3 + 1];
-      const d = Math.hypot(x - listenerX, z - listenerZ);
-      play(sfx.popPhrase(pops[popCount * 3 + 2], rand), 'life', 0.8 * mix.distanceGain(d * 0.3) * lifeAlt, panOf(f, x, z), 1);
-      popCd = 0.34;
+    if (popCount > 0 && popCd <= 0) {
+      const i = (popCount - 1) * 3;
+      const spec = sfx.popPhrase(pops[i + 2], rand);
+      if (takeVoice(phraseCost(spec, 1))) {
+        popCount--;
+        const x = pops[i];
+        const z = pops[i + 1];
+        const d = Math.hypot(x - listenerX, z - listenerZ);
+        play(spec, 'life', 0.8 * mix.distanceGain(d * 0.3) * lifeAlt, panOf(f, x, z), 1);
+        popCd = 0.34;
+      }
     }
   }
 
@@ -567,7 +610,9 @@ export function createAudio(deps: SystemDeps): AudioSystem {
       stats: () => ({
         state: graph ? graph.ctx.state : 'none',
         layers: (Object.keys(layers) as LayerId[]).filter((id) => layers[id].running).map((id) => `${id} ${layers[id].level.toFixed(4)}`),
+        // Every live node: the graph's own, the running layers' and the one-shots' (budget 70/90).
         liveNodes: graph ? graph.live : 0,
+        nodes: graph ? { graph: graph.fixed, layers: graph.layerNodes, oneShots: graph.oneShots } : null,
         birds: birds.length,
         census: { land: census.land, green: census.green, bare: census.bare, shore: Math.round(census.shoreDist), rock: census.shoreRock },
       }),

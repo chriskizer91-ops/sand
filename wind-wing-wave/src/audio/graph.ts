@@ -6,11 +6,33 @@
  *   reverb send -> convolver (impulse made in code) -> reverb return ---------/
  *
  * Also the noise buffers every noisy sound starts from (white, pink, brown), made once in code,
- * and the bookkeeping that disconnects one-shot sounds when they end and counts the live nodes.
+ * and the bookkeeping that disconnects one-shot sounds when they end and counts every live
+ * node, so the whole sound system keeps to its node budget.
  */
 import type { Scheduled } from './play';
 
 export type BusId = 'ambience' | 'life' | 'weather' | 'tools' | 'chimes';
+
+// ---------- the node budget (pure, tested) ----------
+
+/**
+ * Live audio nodes (look-and-sound §9.1: about 40 typically). Every node costs the phone a
+ * little work each audio block, so the total is counted, the graph and the running layers
+ * included. New calls and tool sounds give way at the soft cap; chimes, thunder and UI clicks
+ * may use the reserve above it, and nothing at all passes the hard cap.
+ */
+export const NODE_SOFT_CAP = 70;
+export const NODE_HARD_CAP = 90;
+
+/** Is there room for a new sound of `cost` nodes with `live` nodes playing? */
+export function nodeRoom(live: number, cost: number, reserve: boolean): boolean {
+  return live + cost <= (reserve ? NODE_HARD_CAP : NODE_SOFT_CAP);
+}
+
+/** Nodes route() adds to a sound: a stereo panner, plus a gain into the reverb when it has some. */
+export function routeNodes(reverb: number): number {
+  return reverb > 0 ? 2 : 1;
+}
 
 // ---------- noise and impulse buffers (pure fills, tested) ----------
 
@@ -87,8 +109,12 @@ export class AudioGraph {
   readonly white: AudioBuffer;
   readonly pink: AudioBuffer;
   readonly brown: AudioBuffer;
+  /** Nodes of the graph itself (master, compressor, field filter, buses, reverb). */
+  readonly fixed: number;
+  /** Nodes held by running layers (layers.ts keeps this up to date). */
+  layerNodes = 0;
   /** Nodes belonging to one-shot sounds that are still playing. */
-  live = 0;
+  oneShots = 0;
 
   constructor(
     readonly ctx: AudioContext,
@@ -132,6 +158,13 @@ export class AudioGraph {
     this.white = n.white;
     this.pink = n.pink;
     this.brown = n.brown;
+    // master, compressor, field, the five buses, reverb send, convolver, reverb return
+    this.fixed = 3 + Object.keys(this.bus).length + 3;
+  }
+
+  /** Every node alive in the sound system now. */
+  get live(): number {
+    return this.fixed + this.layerNodes + this.oneShots;
   }
 
   /**
@@ -150,10 +183,10 @@ export class AudioGraph {
       s.nodes.push(g);
     }
     const nodes = s.nodes;
-    this.live += nodes.length;
+    this.oneShots += nodes.length;
     s.src.onended = () => {
       for (const node of nodes) node.disconnect();
-      this.live -= nodes.length;
+      this.oneShots -= nodes.length;
     };
   }
 }

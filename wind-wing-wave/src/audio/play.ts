@@ -20,6 +20,50 @@ export interface Scheduled {
 /** Quietest level used as "silent" in exponential fades (WebAudio cannot fade exactly to zero). */
 const QUIET = 0.0001;
 
+/** Partials of the bell and marimba voices: [ratio, level, decay seconds]. */
+const BELL: readonly (readonly [number, number, number])[] = [
+  [1, 1, 1],
+  [2.756, 0.3, 0.42],
+];
+const MARIMBA: readonly (readonly [number, number, number])[] = [
+  [1, 1, 1],
+  [4, 0.25, 0.17],
+];
+
+// ---------- node counts (pure: the budget checks a sound's cost before making it) ----------
+
+/** Nodes schedulePhrase makes for a phrase (tests/audio.test.ts holds the two in step). */
+export function phraseNodes(p: PhraseSpec): number {
+  let n = 2; // envelope and source
+  if (p.filter) n += 1;
+  if (p.am) n += 3; // gain, LFO, depth
+  if (p.source !== 'noise') {
+    if (p.fm) n += 2;
+    if (p.vibrato) n += 2;
+  }
+  return n;
+}
+
+/** Nodes scheduleChime makes for a chime (tests/audio.test.ts holds the two in step). */
+export function chimeNodes(notes: readonly ChimeNote[]): number {
+  let n = 1; // output gain
+  let pad = false;
+  for (const note of notes) {
+    if (note.voice === 'bell') n += BELL.length * 2;
+    else if (note.voice === 'marimba') n += MARIMBA.length * 2;
+    else if (note.voice === 'glide' || note.voice === 'pop') n += 2;
+    else if (note.voice === 'pad') {
+      n += 4; // two detuned tones, each an oscillator and a gain
+      if (!pad) n += 1; // the shared warm filter
+      pad = true;
+    } else n += 3; // breath: noise, band-pass, gain
+  }
+  return n;
+}
+
+/** Nodes scheduleThunder makes. */
+export const THUNDER_NODES = 3;
+
 /**
  * Schedule a phrase at `when` (context time, s) at `level` (linear). `noise` feeds noise voices;
  * `offset` (s) picks where in the noise buffer it starts, so repeated calls never sound identical.
@@ -123,16 +167,6 @@ export function schedulePhrase(ctx: BaseAudioContext, p: PhraseSpec, when: numbe
   }
   return { out: env, nodes, src, end };
 }
-
-/** Partials of the bell and marimba voices: [ratio, level, decay seconds]. */
-const BELL: readonly (readonly [number, number, number])[] = [
-  [1, 1, 1],
-  [2.756, 0.3, 0.42],
-];
-const MARIMBA: readonly (readonly [number, number, number])[] = [
-  [1, 1, 1],
-  [4, 0.25, 0.17],
-];
 
 /** Schedule a chime (notes from chimes.ts) at `when`, at `level`. */
 export function scheduleChime(ctx: BaseAudioContext, notes: readonly ChimeNote[], when: number, level: number, noise: AudioBuffer): Scheduled {

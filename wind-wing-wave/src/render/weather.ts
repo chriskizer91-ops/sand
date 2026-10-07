@@ -23,7 +23,10 @@ import type { FrameCtx, PageSystem, SystemDeps, WorldUniforms } from './shared';
 
 // ---------- the storm curve (pure: tested in tests/sky.test.ts) ----------
 
-/** A typical warning lasts this long (the engine's level is the main driver; this is a floor). */
+/**
+ * A typical warning lasts this long (ARCHITECTURE §6.8 says 30-45 s). The warning builds with
+ * time over this span, or faster if the engine's level says the storm is nearer.
+ */
 export const WARNING_SECONDS = 40;
 /** A typical clearing lasts this long. */
 export const CLEARING_SECONDS = 30;
@@ -62,8 +65,11 @@ export function stormCurve(s: Pick<StormState, 'phase' | 't' | 'level'>, out: St
   out.beams = 0;
   out.lightning = false;
   if (s.phase === 'warning') {
-    // Progress through the warning: the engine's level (which reaches ~0.6 by the end) or time.
-    const p = clamp(Math.max(s.level / 0.6, s.t / WARNING_SECONDS), 0, 1);
+    // Progress through the warning: time, or the engine's level when it is further along. The
+    // contract only says the level "rises in warning, 1 at peak", so it is used as it comes: an
+    // engine whose level tops out lower (the stub stops at 0.6) is simply led by the clock, and
+    // one that reaches 1 just as the peak begins is followed exactly, even in a short warning.
+    const p = clamp(Math.max(s.level, s.t / WARNING_SECONDS), 0, 1);
     out.storm = p;
     out.gloom = smoothstep(0.15, 1, p);
     out.amber = smoothstep(0, 0.25, p) * (1 - smoothstep(0.45, 0.85, p));
@@ -145,6 +151,79 @@ export function gustAt(t: number, storm: number): number {
 /** Slow veer of the trade wind (radians): a few degrees when calm, more in storms. */
 export function windVeer(t: number, storm: number): number {
   return (noise1(t / 97, 13) - 0.5) * (0.3 + 0.6 * storm);
+}
+
+// ---------- how the rain moves (pure: tested in tests/sky.test.ts) ----------
+
+/**
+ * Rain falls in four nested boxes around the camera, half-widths in metres, a quarter of the
+ * drops in each. Every drop has a fixed place in the world and wraps around the camera inside
+ * its box, so panning and zooming move through the rain as they would through real rain. The
+ * boxes never change size: a box that changed size would shuffle every drop in it.
+ */
+export const RAIN_BOXES = [24, 48, 96, 192] as const;
+/** The wind's push wraps at this distance: a whole number of every box's width, so no drop jumps. */
+export const RAIN_WRAP = 2 * RAIN_BOXES[RAIN_BOXES.length - 1];
+/** Sideways speed of the rain in full wind (m/s), and the extra a gust adds. Drops fall at 8.5-11.5 m/s. */
+const RAIN_PUSH = 6;
+const RAIN_GUST_PUSH = 3;
+
+/** The rain's own clocks, moved on each frame so drops travel at real speeds whatever the wind does. */
+export interface RainMotion {
+  /** How far the wind has carried the rain (m, wrapped at RAIN_WRAP). */
+  driftX: number;
+  driftZ: number;
+  /** The rain's sideways speed now (m/s): it also slants the streaks. */
+  velX: number;
+  velZ: number;
+  /** Seconds this shower has been falling. */
+  fall: number;
+}
+
+/** v wrapped into [0, RAIN_WRAP). */
+function wrapRain(v: number): number {
+  return v - Math.floor(v / RAIN_WRAP) * RAIN_WRAP;
+}
+
+export function makeRainMotion(): RainMotion {
+  return { driftX: 0, driftZ: 0, velX: 0, velZ: 0, fall: 0 };
+}
+
+/**
+ * Move the rain on by dt. The wind (unit direction, strength CALM_WIND..1, gust 0..1) carries it
+ * sideways at a few metres a second. Between showers (`raining` false, nothing drawn) the
+ * clocks start again from zero, so the GPU always works with small, exact numbers.
+ */
+export function advanceRain(m: RainMotion, windX: number, windZ: number, strength: number, gust: number, dt: number, raining: boolean): RainMotion {
+  const push = strength * (RAIN_PUSH + RAIN_GUST_PUSH * gust);
+  m.velX = windX * push;
+  m.velZ = windZ * push;
+  if (!raining) {
+    m.driftX = 0;
+    m.driftZ = 0;
+    m.fall = 0;
+    return m;
+  }
+  m.driftX = wrapRain(m.driftX + m.velX * dt);
+  m.driftZ = wrapRain(m.driftZ + m.velZ * dt);
+  m.fall += dt;
+  return m;
+}
+
+/**
+ * How much each rain box shows from a camera distance (0..1 each). The boxes near the scale
+ * of the view show fully, the much smaller or larger ones fade away (from up high, a box of
+ * rain hugging the lens would only streak across the island). Weights change smoothly with
+ * zoom, so the rain never jumps while you zoom.
+ */
+export function rainBoxWeights(camDist: number, out: THREE.Vector4): THREE.Vector4 {
+  const best = clamp(camDist * 0.35, RAIN_BOXES[0], RAIN_BOXES[RAIN_BOXES.length - 1]);
+  return out.set(boxShow(RAIN_BOXES[0], best), boxShow(RAIN_BOXES[1], best), boxShow(RAIN_BOXES[2], best), boxShow(RAIN_BOXES[3], best));
+}
+
+/** A box shows fully within 1.5 doublings of the view's own scale and is gone 3 doublings away. */
+function boxShow(r: number, best: number): number {
+  return 1 - smoothstep(1.5, 3, Math.abs(Math.log2(r / best)));
 }
 
 // ---------- shared state ----------
@@ -240,26 +319,36 @@ function displace(pts: Float32Array, i0: number, i1: number, jitter: number, sx:
 
 const RAIN_VERT = /* glsl */ `
 attribute vec2 aCorner;
-attribute vec4 aSeed;
+attribute vec4 aSeed;      // x, y, z: the drop's place in its box (0..1); w: its fall speed
 uniform vec3 uCamPos;
-uniform float uTime;
-uniform vec4 uWind;
-uniform float uBox;
+uniform vec2 uRainDrift;   // how far the wind has carried the rain (m)
+uniform vec2 uRainVel;     // the rain's sideways speed now (m/s)
+uniform float uRainFall;   // seconds this shower has been falling
+uniform vec4 uRainBoxes;   // half-width of each box (m)
+uniform vec4 uRainShow;    // how much each box shows from this camera distance
 varying float vAlpha;
 varying float vAcross;
 void main() {
-  float R = uBox;
-  float H = uBox * 1.4;
-  // Drops drift with the wind and wrap around the camera, so the rain always surrounds you.
-  vec2 drift = uWind.xy * 7.0 * uTime;
+  // Drops take turns between the four boxes, so each box keeps its share at any rain amount.
+  vec4 box = vec4(equal(vec4(float(gl_InstanceID % 4)), vec4(0.0, 1.0, 2.0, 3.0)));
+  float show = dot(uRainShow, box);
+  if (show < 0.01) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // this box is out of scale for the view: no pixels
+    return;
+  }
+  float R = dot(uRainBoxes, box);
+  float H = R * 1.4;
   vec3 c = uCamPos;
-  vec3 p;
-  p.xz = mod(aSeed.xz * 2.0 * R + drift - c.xz, 2.0 * R) - R + c.xz;
+  // Each drop has its own place in the world, carried by the wind and falling; it wraps around
+  // the camera inside its box, so the rain always surrounds you and moving moves through it.
+  vec3 rel;
+  rel.xz = mod(aSeed.xz * 2.0 * R + uRainDrift - c.xz, 2.0 * R) - R;
   float speed = 8.5 + 3.0 * aSeed.w;
-  float fall = mod(uTime * speed + aSeed.y * H, H);
-  p.y = c.y + H * 0.5 - fall;
-  vec3 dir = normalize(vec3(uWind.x * 0.7, -1.0, uWind.y * 0.7));
-  vec3 toCam = c - p;
+  rel.y = mod(aSeed.y * H - uRainFall * speed - c.y, H) - 0.5 * H;
+  vec3 p = c + rel;
+  // Slanted along the drop's own motion: falling at about 10 m/s, pushed sideways by the wind.
+  vec3 dir = normalize(vec3(uRainVel.x * 0.1, -1.0, uRainVel.y * 0.1));
+  vec3 toCam = -rel;
   float dCam = length(toCam);
   // Width and length grow with distance, so every streak stays about two pixels wide.
   float len = 0.8 + 0.035 * dCam;
@@ -267,8 +356,10 @@ void main() {
   // Wound to face the camera (the other order would be culled as a back face).
   vec3 side = normalize(cross(toCam / max(dCam, 0.001), dir));
   vec3 world = p - dir * len * aCorner.y + side * aCorner.x * w;
-  float yRel = fall / H;
-  vAlpha = smoothstep(0.0, 0.12, yRel) * (1.0 - smoothstep(0.85, 1.0, yRel)) * smoothstep(0.6, 3.0, dCam);
+  // Drops fade in and out at the edges of their box, so wrapping around is never seen.
+  float yRel = rel.y / H + 0.5;
+  float edge = max(abs(rel.x), abs(rel.z)) / R;
+  vAlpha = show * smoothstep(0.0, 0.12, yRel) * (1.0 - smoothstep(0.85, 1.0, yRel)) * (1.0 - smoothstep(0.75, 1.0, edge)) * smoothstep(0.6, 3.0, dCam);
   vAcross = aCorner.x * 2.0;
   gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
 }`;
@@ -320,6 +411,8 @@ varying float vH;
 varying float vEdge;
 varying float vStrength;
 varying float vNear;
+varying vec2 vRing;
+varying float vSeed;
 void main() {
   vec4 b = uBeams[int(aBeam)];
   vec3 axis = normalize(uSunDir);
@@ -334,6 +427,8 @@ void main() {
   vNear = smoothstep(120.0, 400.0, length(uCamPos.xz - b.xy));
   vH = aLocal.z;
   vStrength = b.w;
+  vRing = aLocal.xy;
+  vSeed = aBeam * 17.0;
   gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
 }`;
 
@@ -344,10 +439,27 @@ varying float vH;
 varying float vEdge;
 varying float vStrength;
 varying float vNear;
+varying vec2 vRing;
+varying float vSeed;
+float hash11(float p) {
+  p = fract(p * 0.1031);
+  p *= p + 33.33;
+  p *= p + p;
+  return fract(p);
+}
 void main() {
-  float a = uBeamAmt * vStrength * vNear * vEdge * vEdge * smoothstep(0.0, 0.08, vH) * (1.0 - smoothstep(0.45, 1.0, vH));
-  gl_FragColor = vec4(uSunColor * a * 0.035, 1.0);
-  #include <colorspace_fragment>
+  // Soft rays along the shaft: smooth value noise around its circumference (9 cells, wrapping).
+  float x = (atan(vRing.y, vRing.x) / 6.2832 + 0.5) * 9.0;
+  float i = floor(x);
+  float f = fract(x);
+  float rays = mix(hash11(mod(i, 9.0) + vSeed), hash11(mod(i + 1.0, 9.0) + vSeed), f * f * (3.0 - 2.0 * f));
+  // Brightest down the middle of the shaft, nothing at its edges, fading out along its length.
+  float a = uBeamAmt * vStrength * vNear * vEdge * vEdge * vEdge * (0.45 + 0.55 * rays)
+    * smoothstep(0.0, 0.08, vH) * (1.0 - smoothstep(0.4, 1.0, vH));
+  // Added straight onto the finished screen colours, so there is no colour-space step here: a
+  // small linear amount becomes a large screen amount after it, and the shaft would glare white.
+  // The sun's colour is brought to screen space once (square root, near enough) to keep its tint.
+  gl_FragColor = vec4(sqrt(max(uSunColor, vec3(0.0))) * a * 0.13, 1.0);
 }`;
 
 export function createWeather(deps: SystemDeps): PageSystem {
@@ -355,6 +467,11 @@ export function createWeather(deps: SystemDeps): PageSystem {
   const st = weatherOf(u);
   const rand = mulberry32(0x5eed);
   const curve = makeStormCurve();
+  const motion = makeRainMotion();
+  // Every weather mesh starts visible but empty (nothing to draw), so the first frame, or a
+  // precompile at load, builds its shader then, not at the storm's most dramatic moment. From
+  // the second frame on each one shows only while it has something to draw.
+  let firstFrame = true;
 
   // ----- rain: up to 1400 streaks on a phone, 2600 on a laptop (2 triangles each) -----
   const rainMax = quality.phone ? 1400 : 2600;
@@ -367,11 +484,13 @@ export function createWeather(deps: SystemDeps): PageSystem {
   rainGeo.instanceCount = 0;
   const rainUniforms = {
     uCamPos: u.uCamPos,
-    uTime: u.uTime,
-    uWind: u.uWind,
     uFogColor: u.uFogColor,
     uNight: u.uNight,
-    uBox: { value: 40 },
+    uRainDrift: { value: new THREE.Vector2() },
+    uRainVel: { value: new THREE.Vector2() },
+    uRainFall: { value: 0 },
+    uRainBoxes: { value: new THREE.Vector4(...RAIN_BOXES) },
+    uRainShow: { value: new THREE.Vector4() },
     uRainAmt: { value: 0 },
   };
   const rain = new THREE.Mesh(
@@ -380,7 +499,6 @@ export function createWeather(deps: SystemDeps): PageSystem {
   );
   rain.frustumCulled = false;
   rain.renderOrder = 8;
-  rain.visible = false;
   scene.add(rain);
 
   // ----- lightning: camera-facing ribbons rebuilt at each strike (no per-frame work) -----
@@ -400,6 +518,8 @@ export function createWeather(deps: SystemDeps): PageSystem {
   boltGeo.setAttribute('aAcross', new THREE.BufferAttribute(boltAcross, 1));
   boltGeo.setAttribute('aHalo', new THREE.BufferAttribute(boltHalo, 1));
   boltGeo.setIndex(new THREE.BufferAttribute(boltIndex, 1));
+  // Nothing to draw until the first strike builds a bolt.
+  boltGeo.setDrawRange(0, 0);
   const boltUniforms = { uBolt: { value: 0 } };
   const bolt = new THREE.Mesh(
     boltGeo,
@@ -410,12 +530,13 @@ export function createWeather(deps: SystemDeps): PageSystem {
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
+      // Light only adds, so the order of the faces does not matter: one pass draws both sides.
       side: THREE.DoubleSide,
+      forceSinglePass: true,
     }),
   );
   bolt.frustumCulled = false;
   bolt.renderOrder = 6;
-  bolt.visible = false;
   scene.add(bolt);
   const mainPts = new Float32Array(MAIN_PTS * 3);
   const branchPts = new Float32Array(BRANCHES * BRANCH_PTS * 3);
@@ -541,6 +662,8 @@ export function createWeather(deps: SystemDeps): PageSystem {
   beamGeo.setAttribute('aLocal', new THREE.Float32BufferAttribute(beamLocal, 3));
   beamGeo.setAttribute('aBeam', new THREE.Float32BufferAttribute(beamId, 1));
   beamGeo.setIndex(beamIndex);
+  // Nothing to draw until a clearing places the beams.
+  beamGeo.setDrawRange(0, 0);
   const beamData = Array.from({ length: BEAMS }, () => new THREE.Vector4());
   const beamUniforms = { uBeams: { value: beamData }, uSunDir: u.uSunDir, uSunColor: u.uSunColor, uCamPos: u.uCamPos, uBeamAmt: { value: 0 } };
   const beams = new THREE.Mesh(
@@ -552,12 +675,11 @@ export function createWeather(deps: SystemDeps): PageSystem {
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
-      side: THREE.DoubleSide,
+      // Front faces only: the near side of each shaft, once. Both sides would double its light.
     }),
   );
   beams.frustumCulled = false;
   beams.renderOrder = 7;
-  beams.visible = false;
   scene.add(beams);
 
   function placeBeams(f: FrameCtx): void {
@@ -566,6 +688,7 @@ export function createWeather(deps: SystemDeps): PageSystem {
       const r = 250 + rand() * 350;
       beamData[b].set(f.cam.target.x + Math.cos(a) * r, f.cam.target.z + Math.sin(a) * r, 25 + rand() * 35, 0.6 + 0.4 * rand());
     }
+    beamGeo.setDrawRange(0, Infinity);
   }
 
   let lastPhase: StormState['phase'] = 'none';
@@ -629,20 +752,26 @@ export function createWeather(deps: SystemDeps): PageSystem {
         strikeTimer = Math.max(strikeTimer, 3);
       }
       const b = boltAt(sinceStrike, prefs.fewerFlashes);
-      bolt.visible = b > 0;
+      bolt.visible = b > 0 || firstFrame;
       boltUniforms.uBolt.value = b;
       st.flash = prefs.fewerFlashes ? 0 : flashAt(sinceStrike);
 
-      // Rain streaks: more drops as it rains harder, in a box that grows with the view.
+      // Rain streaks: more drops as it rains harder. The drops' motion is integrated here, so
+      // they move at real speeds however the wind changes and however long the game has run.
       const drops = Math.round(rainMax * clamp(st.rain * 1.1, 0, 1));
-      rain.visible = drops > 0;
+      advanceRain(motion, st.windX, st.windZ, st.wind, st.gust, dt, drops > 0);
+      rain.visible = drops > 0 || firstFrame;
       rainGeo.instanceCount = drops;
-      rainUniforms.uBox.value = clamp(f.cam.dist * 0.35, 25, 160);
+      rainUniforms.uRainDrift.value.set(motion.driftX, motion.driftZ);
+      rainUniforms.uRainVel.value.set(motion.velX, motion.velZ);
+      rainUniforms.uRainFall.value = motion.fall;
+      rainBoxWeights(f.cam.dist, rainUniforms.uRainShow.value);
       rainUniforms.uRainAmt.value = st.rain;
 
       const beamAmt = st.beams * (1 - u.uNight.value);
-      beams.visible = beamAmt > 0.01;
+      beams.visible = beamAmt > 0.01 || firstFrame;
       beamUniforms.uBeamAmt.value = beamAmt;
+      firstFrame = false;
     },
     dispose() {
       scene.remove(rain, bolt, beams);

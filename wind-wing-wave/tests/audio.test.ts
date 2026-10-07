@@ -7,8 +7,10 @@ import { PLANT_BYTES, type LifeInfo } from '../src/engine/protocol';
 import { BED_SECONDS, crossfadeLoop } from '../src/audio/beds';
 import { habitatPresence, makeCensus, popsNear, takeCensus, type CensusFields } from '../src/audio/census';
 import { chimeLength, chimeNotes, inScale, midiHz, popNote, tinkleNote, type ChimeKind } from '../src/audio/chimes';
-import { fillBrown, fillImpulse, fillPink, fillWhite } from '../src/audio/graph';
+import { NODE_HARD_CAP, NODE_SOFT_CAP, fillBrown, fillImpulse, fillPink, fillWhite, nodeRoom, routeNodes, type AudioGraph } from '../src/audio/graph';
+import { Layer, layerNodes, type LayerDef } from '../src/audio/layers';
 import * as mix from '../src/audio/mix';
+import { THUNDER_NODES, chimeNodes, phraseNodes, scheduleChime, schedulePhrase, scheduleThunder } from '../src/audio/play';
 import * as sfx from '../src/audio/sfx';
 import { BED_KINDS, MAX_HZ, MIN_HZ, VOICE_KINDS, phraseLength, repeatPhrase, voicePhrase, type PhraseSpec } from '../src/audio/voices';
 
@@ -372,5 +374,139 @@ describe('sound sources made in code', () => {
     for (let i = 1; i < loopLen; i++) step = Math.max(step, Math.abs(out[i] - out[i - 1]));
     expect(Math.abs(out[0] - out[loopLen - 1])).toBeLessThanOrEqual(step * 1.5);
     for (const s of Object.values(BED_SECONDS)) expect(s).toBeGreaterThan(4);
+  });
+});
+
+describe('the node budget', () => {
+  /**
+   * Just enough of a WebAudio context to count the nodes a player makes (WebAudio itself is not
+   * available in tests): every create call is counted, params and connections do nothing.
+   */
+  function countingContext() {
+    const made = { n: 0 };
+    const param = () => ({
+      value: 0,
+      setValueAtTime() {},
+      linearRampToValueAtTime() {},
+      exponentialRampToValueAtTime() {},
+      setTargetAtTime() {},
+      cancelScheduledValues() {},
+    });
+    const node = (extra: Record<string, unknown>) => {
+      made.n++;
+      return { connect: (to: unknown) => to, disconnect() {}, start() {}, stop() {}, ...extra };
+    };
+    const ctx = {
+      currentTime: 0,
+      sampleRate: 24000,
+      createGain: () => node({ gain: param() }),
+      createOscillator: () => node({ type: 'sine', frequency: param() }),
+      createBufferSource: () => node({ buffer: null, loop: false }),
+      createBiquadFilter: () => node({ type: 'lowpass', frequency: param(), Q: param() }),
+      createStereoPanner: () => node({ pan: param() }),
+    };
+    return { ctx: ctx as unknown as BaseAudioContext, made };
+  }
+  const noise = { duration: 2 } as AudioBuffer;
+
+  it('new calls give way first; chimes and thunder may use the reserve; nothing passes the hard cap', () => {
+    expect(NODE_SOFT_CAP).toBeLessThan(NODE_HARD_CAP);
+    expect(nodeRoom(NODE_SOFT_CAP - 6, 6, false)).toBe(true);
+    expect(nodeRoom(NODE_SOFT_CAP - 5, 6, false)).toBe(false);
+    expect(nodeRoom(NODE_SOFT_CAP - 5, 6, true)).toBe(true);
+    expect(nodeRoom(NODE_HARD_CAP - 5, 6, true)).toBe(false);
+    expect(routeNodes(0)).toBe(1);
+    expect(routeNodes(0.3)).toBe(2);
+  });
+
+  it('a sound costs what it is counted at: every voice, tool sound, chime and thunder', () => {
+    const rand = mulberry32(21);
+    const phrases: PhraseSpec[] = [];
+    for (const kind of VOICE_KINDS) for (const pitch of [300, 1200, 4000]) phrases.push(voicePhrase(kind, pitch, rand));
+    phrases.push(sfx.clatterPhrase(3, rand), sfx.thudPhrase(3), sfx.rubPhrase(rand), sfx.scoopPhrase(rand), sfx.steamHissPhrase(rand));
+    phrases.push(sfx.bubblePhrase(rand), sfx.tinklePhrase(rand), sfx.popPhrase(1, rand), sfx.burnPhrase(rand), sfx.clickPhrase(), sfx.pagePhrase());
+    for (const p of phrases) {
+      const { ctx, made } = countingContext();
+      const s = schedulePhrase(ctx, p, 0, 0.5, noise, 0);
+      expect(made.n).toBe(phraseNodes(p));
+      expect(s.nodes.length).toBe(phraseNodes(p));
+    }
+    for (const kind of ['wind', 'wave', 'wing', 'species', 'milestone', 'age', 'first', 'ending'] as ChimeKind[]) {
+      const { ctx, made } = countingContext();
+      const notes = chimeNotes(kind);
+      const s = scheduleChime(ctx, notes, 0, 0.1, noise);
+      expect(made.n, kind).toBe(chimeNodes(notes));
+      expect(s.nodes.length, kind).toBe(chimeNodes(notes));
+    }
+    const { ctx, made } = countingContext();
+    scheduleThunder(ctx, 0, 1500, noise, rand);
+    expect(made.n).toBe(THUNDER_NODES);
+  });
+
+  it('a running layer counts its nodes into the budget, and gives them back when it stops', () => {
+    const { ctx, made } = countingContext();
+    const graph = { ctx, bus: { ambience: {}, life: {}, weather: {}, tools: {}, chimes: {} }, layerNodes: 0 } as unknown as AudioGraph;
+    const defs: LayerDef[] = [
+      { bus: 'tools', source: 'brown', filters: [{ type: 'lowpass', freq: 160, q: 0.9 }], am: { rate: 4.5, depth: 0.6 }, pan: true, prio: 10, tau: 0.12 },
+      { bus: 'weather', source: 'white', filters: [{ type: 'highpass', freq: 1000, q: 0.5 }, { type: 'lowpass', freq: 9000, q: 0.5 }], prio: 8, tau: 1 },
+      { bus: 'life', source: 'crickets', prio: 3, tau: 2 },
+    ];
+    for (const def of defs) {
+      made.n = 0;
+      const layer = new Layer(def);
+      layer.start(graph, noise, 0);
+      expect(graph.layerNodes).toBe(made.n);
+      expect(graph.layerNodes).toBe(layerNodes(def));
+      layer.stop();
+      expect(graph.layerNodes).toBe(0);
+    }
+    expect(layerNodes(defs[0])).toBe(7); // source, filter, flutter (gain, LFO, depth), gain, panner
+  });
+
+  it('a layer that loses its slot fades out and stops within a second, not after the usual quiet wait', () => {
+    const { ctx } = countingContext();
+    const graph = { ctx, bus: { ambience: {}, life: {}, weather: {}, tools: {}, chimes: {} }, layerNodes: 0 } as unknown as AudioGraph;
+    const layer = new Layer({ bus: 'ambience', source: 'pink', filters: [{ type: 'lowpass', freq: 500, q: 0.8 }], prio: 6, tau: 1.5 });
+    layer.start(graph, noise, 0);
+    layer.target = 0.3;
+    for (let i = 0; i < 150; i++) layer.update(i / 15, 1 / 15);
+    expect(layer.level).toBeGreaterThan(0.25);
+    layer.evicted = true;
+    let t = 0;
+    while (!layer.spent && t < 5) {
+      layer.update(10 + t, 1 / 15);
+      t += 1 / 15;
+    }
+    expect(t).toBeLessThan(1.2);
+    // A layer that is only quiet (still owning its slot) waits a while before it stops.
+    layer.evicted = false;
+    layer.target = 0;
+    expect(layer.spent).toBe(false);
+  });
+});
+
+describe('surf', () => {
+  it('swells and brightens on its own rhythm, so the baked loop never repeats exactly', () => {
+    let worstStep = 0;
+    const apart = [0, 0];
+    let n = 0;
+    for (let t = 0; t < 900; t += 0.1) {
+      const v = mix.surfSwell(t);
+      expect(v).toBeGreaterThanOrEqual(0.7);
+      expect(v).toBeLessThanOrEqual(1.1);
+      worstStep = Math.max(worstStep, Math.abs(mix.surfSwell(t + 0.1) - v));
+      // Compare each moment with the same moment one loop later (the surf beds are 12 and 13 s).
+      apart[0] += Math.abs(mix.surfSwell(t + BED_SECONDS.surf) - v);
+      apart[1] += Math.abs(mix.surfSwell(t + BED_SECONDS.surfRock) - v);
+      n++;
+    }
+    expect(worstStep).toBeLessThan(0.03); // smooth: no audible steps
+    expect(apart[0] / n).toBeGreaterThan(0.05);
+    expect(apart[1] / n).toBeGreaterThan(0.05);
+    for (let t = 0; t < 300; t += 0.7) {
+      expect(mix.surfCutoff(t, 0)).toBeGreaterThanOrEqual(1800);
+      expect(mix.surfCutoff(t, 1)).toBeGreaterThanOrEqual(mix.surfCutoff(t, 0));
+      expect(mix.surfCutoff(t, 1)).toBeLessThanOrEqual(8000);
+    }
   });
 });

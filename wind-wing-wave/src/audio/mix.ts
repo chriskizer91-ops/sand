@@ -8,7 +8,7 @@
  * Levels are linear amplitudes (1 = full scale; the busiest moments stay well below that).
  */
 import type { VoiceSpec } from '../content/speciesTypes';
-import { smoothstep } from '../engine/noise';
+import { smoothstep, valueNoise2 } from '../engine/noise';
 import { DAY_START, DUSK_START, NIGHT_START, SUNRISE, SUNSET } from '../render/daylight';
 
 const frac = (x: number) => x - Math.floor(x);
@@ -95,6 +95,21 @@ export function rustleLevel(green: number, strength: number, gust: number): numb
 /** Surf: louder near the shore (m) and in storms. */
 export function surfLevel(shoreDist: number, storm: number): number {
   return (0.45 / (1 + Math.max(0, shoreDist) / 35)) * (1 + 0.4 * storm);
+}
+
+/**
+ * The sea's own swell on top of the surf loop (about 0.7..1.1 at real time t, s). The baked surf
+ * holds only a couple of waves, so on its own the same pair would come round every 12-13 s.
+ * Slow noise whose rhythm never lines up with the loop makes some passes bigger and some
+ * smaller, so no two sound the same.
+ */
+export function surfSwell(t: number): number {
+  return 0.7 + 0.4 * (0.65 * valueNoise2(t / 6.1, 0.5, 31) + 0.35 * valueNoise2(t / 2.9, 0.5, 32));
+}
+
+/** Cut-off (Hz) of the surf's low-pass: bright crashing passes and duller, softer ones; brighter in storms. */
+export function surfCutoff(t: number, storm: number): number {
+  return Math.min(8000, 1800 + 4200 * valueNoise2(t / 8.3, 0.5, 33) + 2000 * storm);
 }
 
 /** The god view's high air: a soft, slowly swelling wind. */

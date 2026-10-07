@@ -122,7 +122,14 @@ vec3 spectrum(float t) {
 
 void main() {
   vec3 d = normalize(vDir);
-  float up = max(d.y, 0.0);
+  // Below the horizon the sky is all haze. The sea is see-through and drawn after the sky, so
+  // from the god view most of the screen lands here: answer it before any of the sky's work.
+  if (d.y <= 0.0) {
+    gl_FragColor = vec4(uFogColor * (1.0 + uFlash) + (ign(gl_FragCoord.xy) - 0.5) / 255.0, 1.0);
+    #include <colorspace_fragment>
+    return;
+  }
+  float up = d.y;
   vec3 col = mix(uHorizon, uZenith, pow(up, 0.55));
 
   // Warm glow toward the sun near the horizon (sunrise and sunset).
@@ -144,7 +151,8 @@ void main() {
       float tw = 0.75 + 0.25 * sin(uTime * (1.3 + 2.5 * h.z) + h.y * 40.0);
       star = (1.0 - smoothstep(0.0, 0.3, dd)) * (0.25 + 0.75 * h.y * h.y) * tw;
     }
-    float mw = band * (0.35 + 0.65 * vnoise3(sd * 7.0));
+    // The band's mottling is only worked out where the band shows.
+    float mw = band > 0.01 ? band * (0.35 + 0.65 * vnoise3(sd * 7.0)) : 0.0;
     col += (vec3(1.0, 0.97, 0.92) * star * 1.5 + vec3(0.5, 0.56, 0.78) * mw * 0.06) * uStars * smoothstep(0.0, 0.2, up);
   }
 
@@ -193,7 +201,7 @@ void main() {
     col += vec3(0.025) * uRainbow * mask * (1.0 - smoothstep(36.0, 40.4, ang));
   }
 
-  // The far sea and the sky meet in the haze colour; below the horizon is all haze.
+  // The far sea and the sky meet in the haze colour.
   col = mix(col, uFogColor, exp(-up * 14.0));
   col *= 1.0 + uFlash;
   col += (ign(gl_FragCoord.xy) - 0.5) / 255.0;
@@ -534,7 +542,8 @@ export function createSky(deps: SystemDeps): PageSystem {
   );
   dome.frustumCulled = false;
   // Drawn after the other solid things: it sits at the far plane, so the depth test skips every
-  // sky pixel already covered by land or sea (no wasted shading at the god view).
+  // sky pixel already covered by land. The sea is see-through and drawn later, over the sky, so
+  // the pixels under it take the shader's cheap below-the-horizon path instead.
   dome.renderOrder = 100;
   scene.add(dome);
 
@@ -620,6 +629,9 @@ export function createSky(deps: SystemDeps): PageSystem {
   scene.add(cap);
   const slots: CapSlot[] = Array.from({ length: CAP_SLOTS }, () => ({ x: 0, z: 0, h: 0, tx: 0, tz: 0, th: 0, presence: 0, want: 0 }));
   let seenLife: LifeInfo | null = null;
+  // The cap mesh starts visible but empty, so its shader is built with the first frame (or a
+  // precompile at load) rather than the moment the first cap cloud forms.
+  let firstFrame = true;
 
   // ----- distant islands -----
   const isles = new THREE.Mesh(
@@ -695,7 +707,8 @@ export function createSky(deps: SystemDeps): PageSystem {
       }
       // Only draw the slots in use (slots past the last active one cost nothing).
       capGeo.instanceCount = active * CAP_PUFFS;
-      cap.visible = active > 0;
+      cap.visible = active > 0 || firstFrame;
+      firstFrame = false;
     },
     dispose() {
       scene.remove(dome, trade, cap, isles);
