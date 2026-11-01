@@ -77,3 +77,51 @@ Each stroke opens an undo record. The first time a chunk is changed during that 
 ## 15. A finished vertical slice before anything else
 - **What:** build Home Cay (boat, island, beachcombing, sandcastles, dinghy, shark, rations, upkeep, garden, one passage) to finished quality, in parts v0.2–v0.6, each played by the owner. More islands and features come after.
 - **Why:** the owner wants a well-built game. Finishing a small piece shows what "finished" means before the game grows.
+
+---
+
+## Decisions from building v0.2 (technical; each is easy to change)
+
+## 16. The sea, sky and frame drawing come from the raft game
+- **What:** the water, sky, day/night light and frame pipeline are TypeScript ports of the raft game (`render/ocean.ts`, `sky.ts`, `daylight.ts`, `pipeline.ts`).
+  - Each frame first draws a small picture of everything except the water, so the water can show what's beneath it.
+  - The waves are one sum of sines, shared by the screen and by anything that floats.
+  - Filmic tone mapping and a soft glow (bloom).
+- **Changed for the islands:**
+  - The swell is scaled by the depth of the sea floor: nothing over the beach (so holes dug in the cove hold still water), gentle in the lagoon, full beyond the reef.
+  - The water colours are Caribbean turquoise.
+  - The sand's own under-water darkening was reduced, so it isn't darkened twice.
+- **Quality levels:** Pretty, Balanced (laptop default), Phone (phone default: sharper than "Fast" and with shadows, but no glow), and Fast.
+  - "Auto" steps down by itself when the frame rate stays under 40: glow off, then lower sharpness, then shadows off.
+
+## 17. Home Cay wraps around the old cove exactly
+- **What:** `world/homeCay.ts` is an island of about 125 × 62 m, with a fringing reef about 95 m off the coast and a channel to the south-west. Inside the cove's editable sand (and 1 m around it), the ground is the old lagoon formula, unchanged.
+- **Why:** the sand engine and v0.1 saves keep working, and the generator version stays 1.
+- **Drawing:** the island's ground is meshed in 16 m squares.
+  - Spacing is 0.8 m where you walk, 0.25 m around the cove's edge, 2–2.7 m in the lagoon and 8 m in the deep.
+  - Short skirts hide cracks between different levels of detail.
+  - Squares that are all dry land are skipped in the under-water picture.
+
+## 18. Far-away untouched cove sand is drawn by a stand-in
+- **What:** more than 22 m from you, any 1.9 m tile of the cove that you haven't changed (no spot differs from the untouched beach by more than 4.5 cm) is hidden. A simple copy of the untouched beach shows in its place.
+- **Why:** the full-detail sand is about 440,000 triangles, which is too many to draw from the boat on a phone. Anything you have built always shows.
+- **Known cost:** from the boat, a hole or moat dug in a tile you've built on looks filled in.
+
+## 19. One save holds everything
+- **What:** the clock, where you are, and every find (on the sand, in your basket, in the locker, in the logbook) are stored in the save file's header, next to the sand. It is still one file.
+- **Old v0.1 saves:** they load with the sand as it was. You start aboard on the morning of day 1.
+
+## 20. The day, and the finds
+- **The day:** about 24 real minutes. Daylight runs 6 am–8 pm and nights pass about twice as fast.
+- **Wash-ups:** new finds wash up along the high-tide line at 5:30 each morning, 11–15 of them. At most 48 lie about; the tide takes the oldest back.
+- **Your basket:** holds 12.
+- **Small finds are drawn larger than life:** under 5 cm at 1.6×, under 10 cm at 1.35×, so you can spot them from standing height.
+
+## 21. The boat
+- **What:** an 8.4 m sloop (`render/sloop.ts`) with a walkable-deck description:
+  - cockpit sole 0.40 m and side decks 0.80 m above the water;
+  - the cabin top is a step up;
+  - lifelines keep you aboard unless you jump;
+  - the gap at the starboard stern leads to the swim ladder.
+- **Rocking:** your view moves with the boat. It leans with 60% of the boat's roll, so it feels like a boat without being queasy.
+- **At anchor:** 31 m off the cove, bow to the east wind, in about 3 m of water. It swings gently on its anchor.

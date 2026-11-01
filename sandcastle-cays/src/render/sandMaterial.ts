@@ -129,7 +129,9 @@ sCol *= mix(0.55, 1.0, sAo * sAo);
 // Under the water: absorb reds first, and let light dance on the sand.
 float sDepth = uWaterLevel - vWorld.y;
 if (sDepth > 0.0) {
-  vec3 absorb = exp(-sDepth * vec3(2.2, 0.55, 0.38));
+  // The water itself tints what's under it (render/ocean.ts); here only a
+  // little light is lost on the way down.
+  vec3 absorb = exp(-sDepth * vec3(0.3, 0.07, 0.05));
   sCol *= absorb;
   float ca = sc_caustics(vWorld.xz * 0.42, uTime * 0.55);
   sCol += vec3(0.85, 0.95, 0.9) * ca * 0.35 * smoothstep(0.0, 0.08, sDepth) * exp(-sDepth * 1.2);

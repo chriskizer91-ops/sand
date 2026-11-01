@@ -144,6 +144,88 @@ export class SandAudio {
     if (wet > 0.5) this.grain(1400, 2.5, 0.12 * wet, 0.05, 0.01); // wet slap
   }
 
+
+  // ---------- life aboard and ashore ----------
+
+  /** One footstep: soft and crunchy on sand, hollow on the deck, sloshing in the shallows. */
+  footstep(surface: 'sand' | 'deck' | 'shallows' | 'water'): void {
+    if (!this.ctx || !this.enabled) return;
+    const r = this.rand();
+    if (surface === 'sand') {
+      this.grain(1100 + r * 900, 1.1, 0.05, 0.07);
+      this.grain(2600 + r * 1400, 2.0, 0.025, 0.05, 0.015);
+    } else if (surface === 'deck') {
+      // A dull knock on hollow planks.
+      const ctx = this.ctx;
+      const t = ctx.currentTime;
+      const o = ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(150 + r * 40, t);
+      o.frequency.exponentialRampToValueAtTime(90, t + 0.09);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.11, t + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+      o.connect(g).connect(this.master);
+      o.start(t);
+      o.stop(t + 0.14);
+      this.grain(900 + r * 300, 1.5, 0.025, 0.04);
+    } else if (surface === 'shallows') {
+      this.grain(600 + r * 500, 0.7, 0.07, 0.16);
+      this.grain(1800 + r * 900, 1.2, 0.03, 0.12, 0.05);
+    } else {
+      // A swimming stroke: a soft whoosh of water.
+      this.grain(500 + r * 300, 0.6, 0.06, 0.32);
+      this.grain(1300 + r * 600, 0.9, 0.025, 0.25, 0.08);
+    }
+  }
+
+  /** Jumping or climbing into the water (0..1 for how big). */
+  splash(size: number): void {
+    if (!this.ctx || !this.enabled) return;
+    const n = 3 + Math.round(size * 6);
+    for (let i = 0; i < n; i++) this.grain(400 + this.rand() * 1800, 0.6, 0.05 + size * 0.08, 0.15 + size * 0.35, i * 0.02);
+  }
+
+  /** A little rising chime: something new for the logbook (or a softer one for a pick-up). */
+  chime(first: boolean): void {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx;
+    const notes = first ? [784, 988, 1319] : [1047];
+    notes.forEach((freq, i) => {
+      const t = ctx.currentTime + i * 0.09;
+      const o = ctx.createOscillator();
+      o.type = 'triangle';
+      o.frequency.value = freq;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(first ? 0.05 : 0.03, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + (first ? 0.9 : 0.35));
+      o.connect(g).connect(this.master);
+      o.start(t);
+      o.stop(t + 1);
+    });
+  }
+
+  /** Climbing the ladder: a couple of creaks and knocks. */
+  ladder(): void {
+    if (!this.ctx || !this.enabled) return;
+    for (let i = 0; i < 3; i++) this.grain(700 + this.rand() * 300, 3, 0.05, 0.08, i * 0.35);
+  }
+
+  /** The locker lid closing on your finds. */
+  locker(): void {
+    if (!this.ctx || !this.enabled) return;
+    this.footstep('deck');
+    for (let i = 0; i < 5; i++) this.grain(2500 + this.rand() * 2500, 4, 0.02, 0.05, 0.05 + i * 0.03);
+  }
+
+  /** How near the surf is (0 far .. 1 standing in it): louder lapping close to the beach. */
+  setShore(near: number): void {
+    this.shore = near;
+  }
+  private shore = 1;
+
   click(): void {
     if (!this.ctx || !this.enabled) return;
     this.grain(2400, 3, 0.12, 0.025);
@@ -203,7 +285,7 @@ export class SandAudio {
     if (!this.ctx || !this.enabled) return;
     const ctx = this.ctx;
     const now = ctx.currentTime;
-    this.waveGain.gain.setTargetAtTime(0.05 + 0.13 * lap, now, 0.25);
+    this.waveGain.gain.setTargetAtTime((0.05 + 0.13 * lap) * (0.35 + 0.65 * this.shore), now, 0.25);
     this.waveFilter.frequency.setTargetAtTime(350 + 900 * lap, now, 0.3);
     this.nextGull -= dt;
     if (this.nextGull <= 0) {

@@ -1,10 +1,10 @@
 /** The colour palette, kept in one place. All colours are sRGB hex, as a designer would pick them. */
 
 export const PALETTE = {
-  sandDry: 0xf3e6c8,
-  sandDamp: 0xdcc497,
-  sandWet: 0xc2a576,
-  sandSoaked: 0xb0926a,
+  sandDry: 0xf2deb6,
+  sandDamp: 0xdabd8a,
+  sandWet: 0xbf9e6a,
+  sandSoaked: 0xab8b60,
   waterShallow: 0x8ff0e4,
   waterMid: 0x2fc2cf,
   waterDeep: 0x1279b8,
@@ -14,8 +14,8 @@ export const PALETTE = {
   sun: 0xfff2d6,
   hemiSky: 0xcfe9ff,
   hemiGround: 0xe8d4a8,
-  rock: 0xb6ad9c,
-  rockDark: 0x8d8574,
+  rock: 0xc2b7a0,
+  rockDark: 0x857a69,
   grass: 0x6fae4a,
   grassDark: 0x4f8f36,
   leaf: 0x4f9d3c,

@@ -1,5 +1,5 @@
 /** The on-screen buttons, panels and messages (plain HTML on top of the 3D view). */
-import { GAME_VERSION, LITRES_PER_CELL, type BrushSize, type DryingSpeed, type ToolId } from '../config';
+import { BASKET_CAPACITY, GAME_VERSION, LITRES_PER_CELL, type BrushSize, type DryingSpeed, type ToolId } from '../config';
 import type { CheckResult } from '../checks/sandChecks';
 import { wetnessWord } from '../engine/material';
 import { ICONS, sizeIcon } from './icons';
@@ -20,6 +20,8 @@ export interface UiActions {
   setQuality(q: Settings['quality']): void;
   runChecks(): void;
   click(): void;
+  logbook(): void;
+  newGame(): void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, string> = {}, html = ''): HTMLElementTagNameMap[K] {
@@ -76,7 +78,9 @@ export class Ui {
     top.appendChild(el('div', { class: 'spacer' }));
     this.undoBtn = this.roundButton(top, ICONS.undo, 'Undo', () => actions.undo());
     this.undoBtn.disabled = true;
-    this.roundButton(top, ICONS.home, 'Show the whole beach', () => actions.home());
+    this.undoBtn.dataset.build = '1';
+    this.roundButton(top, ICONS.home, 'Show the whole beach', () => actions.home()).dataset.build = '1';
+    this.roundButton(top, ICONS.book, 'Logbook', () => actions.logbook()).dataset.fp = '1';
     this.roundButton(top, ICONS.camera, 'Take a photo', () => actions.photo());
     this.roundButton(top, ICONS.menu, 'Menu', () => this.togglePanel(this.menu));
     hud.appendChild(top);
@@ -132,13 +136,13 @@ export class Ui {
     const card = el('div', { class: 'card' });
     card.innerHTML = `
       <h1>Sandcastle Cays</h1>
-      <p class="sub">The Calm Lagoon · v${GAME_VERSION}</p>
-      <p>Dig wet sand near the water, pile it up, pat it firm. Build anything, as big as you like.</p>
-      <p class="small">One finger: use the tool · Two fingers: move the camera<br>Trackpad: click to build · two-finger swipe to look around · pinch to zoom</p>`;
+      <p class="sub">Home Cay · v${GAME_VERSION}</p>
+      <p>You live aboard a little sailboat at anchor off Home Cay. Swim ashore, comb the beach for what the sea washed up, and kneel on the cove to build in the sand.</p>
+      <p class="small">Phone: left thumb to walk · right thumb to look · tap things to pick them up<br>Laptop: W A S D to walk · mouse or trackpad to look · E to pick up · Space to jump</p>`;
     const prog = el('div', { class: 'progress' }, '<div></div>');
     this.progressBar = prog.firstElementChild as HTMLDivElement;
-    this.progressText = el('div', { class: 'small' }, 'Shaping the beach…');
-    this.startBtn = el('button', { class: 'big' }, 'Start building') as HTMLButtonElement;
+    this.progressText = el('div', { class: 'small' }, 'Shaping the island…');
+    this.startBtn = el('button', { class: 'big' }, 'Go aboard') as HTMLButtonElement;
     this.startBtn.disabled = true;
     this.startBtn.addEventListener('click', () => this.actions.start());
     card.append(prog, this.progressText, this.startBtn);
@@ -149,14 +153,14 @@ export class Ui {
   setProgress(done: number, total: number): void {
     const pct = total > 0 ? Math.round((done / total) * 100) : 100;
     this.progressBar.style.width = `${pct}%`;
-    this.progressText.textContent = pct < 100 ? `Shaping the beach… ${pct}%` : 'Ready!';
+    this.progressText.textContent = pct < 100 ? `Shaping the island… ${pct}%` : 'Ready!';
   }
 
   setReady(resumed: boolean): void {
     this.setProgress(1, 1);
-    this.progressText.textContent = resumed ? 'Your beach is just as you left it.' : 'Ready!';
+    this.progressText.textContent = resumed ? 'Everything is just as you left it.' : 'Ready!';
     this.startBtn.disabled = false;
-    this.startBtn.textContent = resumed ? 'Keep building' : 'Start building';
+    this.startBtn.textContent = resumed ? 'Carry on' : 'Go aboard';
   }
 
   hideStart(): void {
@@ -187,10 +191,10 @@ export class Ui {
     close.addEventListener('click', () => this.togglePanel(this.menu, false));
     h.appendChild(close);
     this.menu.appendChild(h);
-    this.menu.appendChild(el('h3', {}, 'Your beach'));
-    const save = el('button', { class: 'wide' }, 'Save beach to a file');
+    this.menu.appendChild(el('h3', {}, 'Your game'));
+    const save = el('button', { class: 'wide' }, 'Save to a file');
     save.addEventListener('click', () => this.actions.saveFile());
-    const load = el('button', { class: 'wide' }, 'Load beach from a file');
+    const load = el('button', { class: 'wide' }, 'Load from a file');
     load.addEventListener('click', () => this.actions.loadFile());
     this.menu.append(save, load);
     this.menu.appendChild(el('p', { class: 'small' }, 'The game also saves by itself every minute. A file is a safe backup you can keep.'));
@@ -220,14 +224,21 @@ export class Ui {
       this.togglePanel(this.checks, true);
       this.actions.runChecks();
     });
-    const fresh = el('button', { class: 'wide danger' }, 'Start a fresh beach');
+    const fresh = el('button', { class: 'wide danger' }, 'Smooth the cove’s sand');
     fresh.addEventListener('click', () => {
-      if (confirm('Smooth the whole beach back to how it started? Your current beach will be gone (save it to a file first if you want to keep it).')) {
+      if (confirm('Smooth the cove’s sand back to how it started? Your sandcastles will be gone (your finds and logbook stay).')) {
         this.togglePanel(this.menu, false);
         this.actions.newBeach();
       }
     });
-    this.menu.append(helpBtn, checkBtn, fresh);
+    const over = el('button', { class: 'wide danger' }, 'Start over completely');
+    over.addEventListener('click', () => {
+      if (confirm('Start a whole new game? Your castles, finds and logbook will all be gone (save to a file first if you want to keep them).')) {
+        this.togglePanel(this.menu, false);
+        this.actions.newGame();
+      }
+    });
+    this.menu.append(helpBtn, checkBtn, fresh, over);
     this.menu.appendChild(el('p', { class: 'small' }, `Sandcastle Cays v${GAME_VERSION} · made entirely in code`));
     document.body.appendChild(this.menu);
   }
@@ -236,25 +247,36 @@ export class Ui {
     this.help = el('div', { class: 'panel hidden', role: 'dialog', 'aria-label': 'How to play' });
     this.help.innerHTML = `
       <h2>How to play</h2>
-      <h3>Tools</h3>
+      <h3>Getting about</h3>
+      <ul>
+        <li><b>Phone</b>: put your left thumb down anywhere on the left and slide it to walk (push it all the way to run). Drag with your right thumb to look. Tap a find to pick it up. The round button does what the label says; the arrow jumps.</li>
+        <li><b>Laptop</b>: click once so the mouse turns your head (Esc lets go). W A S D or arrows to walk, Shift to run, Space to jump, E (or click) to pick up and use, L for the logbook.</li>
+        <li><b>Leaving the boat</b>: walk to the swim ladder at the stern (the back of the boat). Climb back up the same ladder. You can also jump over the side.</li>
+      </ul>
+      <h3>Beachcombing</h3>
+      <ul>
+        <li>Every morning the sea leaves new things along the high-tide line: shells, sea glass, driftwood, rope, sea beans and more.</li>
+        <li>Your basket holds ${BASKET_CAPACITY}. Empty it into the locker in the boat’s cockpit. The logbook keeps every kind you’ve found.</li>
+      </ul>
+      <h3>Building (kneel on the cove’s sand)</h3>
       <ul>
         <li><b>Dig</b>: drag on the sand to scoop it into your hands. Dig near the water, or dig down a little, for damp sand.</li>
         <li><b>Pile</b>: drag to pour what you're holding. Damp sand holds its shape, dry sand slides into soft cones.</li>
         <li><b>Pat</b>: tap to pack sand firm (packed damp sand stands tall and holds tunnels). Rub to smooth.</li>
         <li><b>Size</b>: small, medium or large hands.</li>
       </ul>
-      <h3>Phone</h3>
+      <h3>Phone, while building</h3>
       <ul>
         <li>One finger: use the tool</li>
         <li>Two fingers: drag to swing around, pinch to zoom</li>
         <li>Quick two-finger tap: glide over to that spot</li>
       </ul>
-      <h3>Laptop</h3>
+      <h3>Laptop, while building</h3>
       <ul>
         <li>Click and drag: use the tool</li>
         <li>Two-finger swipe (or right-drag): swing around</li>
         <li>Pinch or mouse wheel: zoom · Right-click: glide there</li>
-        <li>Keys: W A S D to move, Q E to turn, 1 2 3 tools, [ ] size, Ctrl+Z undo</li>
+        <li>Keys: W A S D to move, Q E to turn, 1 2 3 tools, [ ] size, Ctrl+Z undo, Esc or B to stand up</li>
       </ul>
       <h3>Sand tips</h3>
       <ul>
@@ -307,6 +329,10 @@ export class Ui {
     const willShow = show ?? p.classList.contains('hidden');
     for (const other of [this.menu, this.help, this.checks]) if (other !== p) other.classList.add('hidden');
     p.classList.toggle('hidden', !willShow);
+  }
+
+  get panelOpen(): boolean {
+    return [this.menu, this.help, this.checks].some((p) => !p.classList.contains('hidden'));
   }
 
   closePanels(): void {

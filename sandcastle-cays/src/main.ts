@@ -1,142 +1,225 @@
 /**
- * Sandcastle Cays: the page. Sets up the 3D scene, starts the sand engine,
- * and connects your fingers, the buttons and the sounds to it.
+ * Sandcastle Cays: the page. Sets up Home Cay (island, sea, sky, your boat),
+ * puts you aboard in first person, runs beachcombing, and connects the sand
+ * engine for building when you kneel on the cove's sand.
  */
 import * as THREE from 'three';
-import { BRUSH_RADIUS, CELL, GAME_VERSION, LAGOON_DIMS, type BrushSize, type ToolId } from './config';
+import { BRUSH_RADIUS, CELL, DAY, GAME_VERSION, LAGOON_DIMS, PLAYER, type BrushSize, type ToolId } from './config';
 import { SandAudio } from './audio/audio';
 import { startEngine, type EngineHost } from './engine/host';
 import type { FromEngine, Ray, TickEvents } from './engine/protocol';
-import { LagoonTerrain } from './engine/terrain';
+import { decodeHeader, decompress } from './engine/save';
 import { OrbitCamera } from './input/camera';
 import { Controls } from './input/controls';
-import { BoatMotion, createBoat } from './render/boat';
-import { PALETTE } from './render/colors';
+import { FpInput } from './input/fpInput';
+import { BoatMotion } from './render/boatMotion';
 import { BrushCursor } from './render/cursor';
+import { Daylight, advanceClock, formatClock, type Clock } from './render/daylight';
+import { findModel } from './render/finds';
+import { HeldView } from './render/held';
+import { createIslandGround } from './render/island';
+import { createIslandLife } from './render/islandLife';
+import { Ocean, SeaFloorMap } from './render/ocean';
+import { Pipeline, type QualityName } from './render/pipeline';
 import { SandParticles } from './render/particles';
 import { createSandMaterial } from './render/sandMaterial';
 import { SandTiles } from './render/sandTiles';
-import { createDistantIslands, createOuterTerrain, createRocks, createVegetation, rockTop, type RegionBounds } from './render/scenery';
-import { createClouds, createSky } from './render/sky';
-import { Water } from './render/water';
-import { LAGOON_WAVES, waveHeight } from './render/waves';
+import { createDistantIslands, createRocks, createVegetation, rockTop, type RegionBounds } from './render/scenery';
+import { SKY, createSky } from './render/sky';
+import { createSloop } from './render/sloop';
+import { FINDS } from './content/finds';
+import { Beach, BeachView } from './game/beach';
+import { Player, type PlayerMode } from './player/player';
+import { GroundMap } from './world/ground';
+import { ANCHORAGE, HomeCayTerrain } from './world/homeCay';
 import { downloadFile, loadAutosave, loadSettings, pickFile, saveAutosave, saveSettings, testStorage, clearAutosave } from './storage/storage';
+import { Hud, cap } from './ui/hud';
 import { Ui } from './ui/ui';
 import type { CheckResult } from './checks/sandChecks';
 
 declare const __BUILD_TIME__: string;
 
 const settings = loadSettings();
-const terrain = new LagoonTerrain();
-const region: RegionBounds = {
-  x0: LAGOON_DIMS.originX,
-  x1: LAGOON_DIMS.originX + LAGOON_DIMS.cx * 16 * CELL,
-  z0: LAGOON_DIMS.originZ,
-  z1: LAGOON_DIMS.originZ + LAGOON_DIMS.cz * 16 * CELL,
-};
+const terrain = new HomeCayTerrain();
+const region: RegionBounds = terrain.region;
 const debug = location.hash.includes('debug');
 
 // ---------- renderer and scene ----------
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
-const dpr = window.devicePixelRatio || 1;
 const isTouch = matchMedia('(pointer: coarse)').matches;
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: dpr < 2, powerPreference: 'high-performance', alpha: false });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', alpha: false });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.NoToneMapping;
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.info.autoReset = false;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(PALETTE.skyHorizon);
-scene.fog = new THREE.Fog(PALETTE.skyHorizon, 60, 900);
-const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 2500);
+scene.fog = new THREE.FogExp2(SKY.horizon.getHex(), 0.003);
+const FP_FOV = 72;
+const BUILD_FOV = 50;
+const camera = new THREE.PerspectiveCamera(FP_FOV, 1, 0.05, 2500);
 
-const sunDir = new THREE.Vector3(0.55, 0.78, -0.3).normalize();
-const sun = new THREE.DirectionalLight(PALETTE.sun, 2.9);
-sun.castShadow = true;
-sun.shadow.bias = -0.0004;
-sun.shadow.normalBias = 0.02;
-scene.add(sun, sun.target);
-const hemi = new THREE.HemisphereLight(PALETTE.hemiSky, PALETTE.hemiGround, 1.35);
-scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff2d6, 3);
+const hemi = new THREE.HemisphereLight(0xcfe9ff, 0xe8d4a8, 0.5);
+scene.add(sun, hemi);
 
-scene.add(createSky(sunDir));
-const clouds = createClouds();
-scene.add(clouds);
-scene.add(createDistantIslands());
+const sky = createSky(scene, renderer);
+const distant = createDistantIslands();
+distant.name = 'distant';
+scene.add(distant);
 
+// The ground: the editable cove sand (from the engine), the rest of the island, rocks.
 const { material: sandMat, uniforms: sandUniforms } = createSandMaterial();
 const sand = new SandTiles(sandMat);
 scene.add(sand.group);
-const outer = createOuterTerrain(terrain, region, sandUniforms);
-scene.add(outer);
-const rocks = createRocks(terrain, region);
-scene.add(rocks.mesh);
+const islandGround = createIslandGround(terrain, { x0: -176, x1: 192, z0: -160, z1: 160 }, sandUniforms);
+islandGround.name = 'island';
+scene.add(islandGround);
+const coveRocks = createRocks(terrain, region);
+coveRocks.mesh.name = 'coveRocks';
+scene.add(coveRocks.mesh);
 const swayTime = { value: 0 };
-scene.add(createVegetation(terrain, region, swayTime));
+const covePlants = createVegetation(terrain, region, swayTime);
+covePlants.name = 'covePlants';
+scene.add(covePlants);
+const life = createIslandLife(terrain, swayTime);
+life.group.name = 'life';
+scene.add(life.group);
+const ground = new GroundMap(terrain);
+ground.rocks = [...coveRocks.blobs, ...life.rocks];
 
-const water = new Water(terrain, (x, z) => rockTop(rocks.blobs, x, z));
-scene.add(water.mesh);
-// The depth map of the editable beach exists from the start, so saved holes get their water.
-water.setRegion(LAGOON_DIMS.cx * 8, LAGOON_DIMS.cz * 8, CELL * 2, region.x0, region.z0);
+const seaFloor = new SeaFloorMap((x, z) => Math.max(terrain.heightAt(x, z), rockTop(ground.rocks, x, z)), 8, -10, 720, 300);
+const ocean = new Ocean(seaFloor, SKY.sunDir, SKY.sunColor, (scene.fog as THREE.FogExp2).color, isTouch ? 170 : 220);
+ocean.mesh.name = 'ocean';
+scene.add(ocean.mesh);
+const seaHeight = (x: number, z: number, t: number) => ocean.heightAt(x, z, t);
 
-const boat = createBoat();
-scene.add(boat);
-const ampAt = (x: number, z: number) => {
-  const still = terrain.heightAt(x, z);
-  const mask = Math.min(1, Math.max(0, (0.32 - still) / 0.42));
-  const deep = Math.min(1, Math.max(0, (-still - 0.6) / 2.4));
-  return mask * mask * (3 - 2 * mask) * (1 + 1.6 * deep * deep * (3 - 2 * deep));
-};
-const boatMotion = new BoatMotion(boat, 3.2, -17, 0.35, ampAt);
+// Your boat.
+const sloop = createSloop();
+scene.add(sloop.group);
+sloop.group.traverse((o) => {
+  if ((o as THREE.Mesh).isMesh) {
+    o.castShadow = true;
+    o.receiveShadow = true;
+  }
+});
+const boatMotion = new BoatMotion(sloop.group, ANCHORAGE.x, ANCHORAGE.z, ANCHORAGE.heading, sloop.length, sloop.beam, seaHeight);
 
 const particles = new SandParticles();
 scene.add(particles.points);
 const cursor = new BrushCursor();
 scene.add(cursor.mesh);
+cursor.hide();
+
+// What the under-the-water picture can skip: anything that never sits below the surface.
+const refractSkip: THREE.Object3D[] = [];
+const staticSkip: THREE.Object3D[] = [sky.mesh, particles.points, cursor.mesh, distant, covePlants];
+islandGround.traverse((o) => o.userData.dry && staticSkip.push(o));
+life.group.traverse((o) => o.userData.dry && staticSkip.push(o));
+const sandDry = new Set<THREE.Object3D>();
+function rebuildRefractSkip(): void {
+  refractSkip.length = 0;
+  refractSkip.push(...staticSkip, ...sandDry);
+}
+rebuildRefractSkip();
+
+// Far away, untouched parts of the cove's sand are drawn by a simple stand-in
+// (the same shape, far fewer triangles). Anything you've built always shows.
+const TILE_M = 4 * 16 * CELL;
+const SAND_NEAR = 22;
+const standIn = islandGround.userData.standIn as THREE.Mesh;
+const standInAll = Array.from(standIn.geometry.index!.array as ArrayLike<number>);
+const standInTile: number[] = [];
+{
+  const pos = standIn.geometry.getAttribute('position');
+  const ntx = Math.ceil(LAGOON_DIMS.cx / 4);
+  for (let q = 0; q < standInAll.length; q += 6) {
+    const a = standInAll[q];
+    const d = standInAll[q + 5];
+    const cx = (pos.getX(a) + pos.getX(d)) / 2;
+    const cz = (pos.getZ(a) + pos.getZ(d)) / 2;
+    const tx = Math.max(0, Math.min(ntx - 1, Math.floor((cx - region.x0) / TILE_M)));
+    const tz = Math.max(0, Math.floor((cz - region.z0) / TILE_M));
+    standInTile.push(tx + tz * ntx);
+  }
+}
+const editedTiles = new Set<number>();
+let hiddenKey = '';
+function updateSandDetail(): void {
+  const hidden: number[] = [];
+  for (const m of sand.group.children) {
+    const tile = m.userData.tile as number;
+    const box = (m as THREE.Mesh).geometry.boundingBox!;
+    const cx = (box.min.x + box.max.x) / 2;
+    const cz = (box.min.z + box.max.z) / 2;
+    const far = Math.hypot(camera.position.x - cx, camera.position.z - cz) > SAND_NEAR;
+    m.visible = !far || editedTiles.has(tile);
+    if (!m.visible) hidden.push(tile);
+  }
+  const key = hidden.join(',');
+  if (key === hiddenKey) return;
+  hiddenKey = key;
+  const set = new Set(hidden);
+  const idx: number[] = [];
+  for (let q = 0; q < standInTile.length; q++) if (set.has(standInTile[q])) for (let k = 0; k < 6; k++) idx.push(standInAll[q * 6 + k]);
+  standIn.geometry.setIndex(idx);
+  standIn.visible = idx.length > 0;
+}
+
+const held = new HeldView();
+const pipeline = new Pipeline({
+  renderer,
+  scene,
+  camera,
+  vmScene: held.scene,
+  vmCamera: held.camera,
+  ocean,
+  sun,
+  sunDir: SKY.sunDir,
+  sky: sky.reflection,
+  aboveWaterOnly: refractSkip,
+});
+let envTex: THREE.Texture | null = null;
+const daylight = new Daylight(scene, sun, hemi, sky, ocean, (env) => (envTex = env));
 
 // ---------- quality ----------
 
-let pixelCap = 1.75;
-let shadowsOn = true;
+function qualityFor(q: typeof settings.quality): QualityName {
+  if (q === 'pretty') return 'high';
+  if (q === 'fast') return 'low';
+  return isTouch ? 'phone' : 'medium';
+}
 function applyQuality(): void {
-  const q = settings.quality;
-  pixelCap = q === 'fast' ? 1.25 : q === 'pretty' ? Math.min(dpr, 2.25) : Math.min(dpr, isTouch ? 1.75 : 2);
-  shadowsOn = q !== 'fast';
-  renderer.setPixelRatio(Math.min(dpr, pixelCap));
-  const size = q === 'pretty' || !isTouch ? 2048 : 1536;
-  if (sun.shadow.mapSize.x !== size) {
-    sun.shadow.mapSize.set(size, size);
-    sun.shadow.map?.dispose();
-    sun.shadow.map = null;
-  }
-  renderer.shadowMap.enabled = shadowsOn;
-  sand.group.traverse((o) => ((o as THREE.Mesh).castShadow = shadowsOn));
+  pipeline.setQuality(qualityFor(settings.quality));
   resize();
 }
 
 function resize(): void {
   const w = window.innerWidth;
   const h = window.innerHeight;
-  renderer.setSize(w, h, false);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
+  pipeline.resize(w, h);
   particles.setViewport(h * renderer.getPixelRatio(), camera.fov);
 }
 window.addEventListener('resize', resize);
 
-// ---------- camera ----------
-
-const cam = new OrbitCamera(
-  camera,
-  { minX: region.x0 + 0.5, maxX: region.x1 - 0.5, minZ: region.z0 + 0.5, maxZ: region.z1 - 0.3 },
-  (x, z) => water.groundAt(x, z),
-);
-cam.snap();
-
 // ---------- game state ----------
 
+const clock: Clock = { day: 1, hour: DAY.start };
+const beach = new Beach(terrain.tideline(0.6));
+const beachView = new BeachView(beach, findModel, (x, z) => ground.heightAt(x, z));
+scene.add(beachView.group);
+
+const ISLAND_CENTRE = { cx: 4, cz: 10, r: 200 };
+const player = new Player({
+  groundAt: (x, z) => ground.heightAt(x, z),
+  waterAt: (x, z) => seaHeight(x, z, time),
+  trunks: life.trunks,
+  boat: { obj: sloop.group, deck: sloop.deck, ladderTop: sloop.points.ladderTop, ladderBottom: sloop.points.ladderBottom, length: sloop.length },
+  bounds: ISLAND_CENTRE,
+});
+const START_YAW = Math.PI; // looking north, toward the island
+
+type ViewMode = 'fp' | 'build';
+let view: ViewMode = 'fp';
 let tool: ToolId = 'dig';
 let size: BrushSize = 1;
 let host: EngineHost | null = null;
@@ -151,6 +234,7 @@ let lastPerf: { simMs: number; meshMs: number; queue: number; chunks: number; di
 let changedSinceSave = false;
 let strokeWarned = false;
 let saveSeq = 1;
+let holdTime = false;
 const saveWaiters = new Map<number, (data: ArrayBuffer | null, error?: string) => void>();
 let checksWaiter: ((r: CheckResult[]) => void) | null = null;
 const audio = new SandAudio();
@@ -164,9 +248,10 @@ const ui = new Ui(
     undo: () => doUndo(),
     home: () => cam.home(),
     photo: () => takePhoto(),
-    saveFile: () => saveToFile(),
-    loadFile: () => loadFromFile(),
+    saveFile: () => void saveToFile(),
+    loadFile: () => void loadFromFile(),
     newBeach: () => newBeach(),
+    newGame: () => newGame(),
     setDrying: (d) => {
       settings.drying = d;
       saveSettings(settings);
@@ -185,16 +270,40 @@ const ui = new Ui(
     },
     runChecks: () => void runChecks(),
     click: () => audio.click(),
+    logbook: () => toggleLogbook(),
   },
   settings,
 );
 ui.setTool(tool);
 if (debug) ui.fpsEl.style.display = 'block';
 
+const hud = new Hud(
+  {
+    action: () => input.press('Action'),
+    jump: () => input.press('Space'),
+    logbook: () => toggleLogbook(),
+    standUp: () => exitBuild(),
+    click: () => audio.click(),
+  },
+  isTouch,
+);
+hud.setMode('none');
+
+function toggleLogbook(show?: boolean): void {
+  const open = show ?? !hud.logbookOpen;
+  if (open) {
+    ui.closePanels();
+    hud.renderLogbook(beach.state.found, beach.state.locker, beach.state.basket, formatClock(clock));
+    input.unlock();
+    input.clear();
+  }
+  hud.showLogbook(open);
+}
+
 function selectTool(t: ToolId): void {
   tool = t;
   ui.setTool(t);
-  if (started) {
+  if (started && view === 'build') {
     ui.hint(t);
     clearTimeout(hintTimer);
     hintTimer = window.setTimeout(() => ui.hint(null), 4500);
@@ -209,8 +318,27 @@ function doUndo(): void {
   changedSinceSave = true;
 }
 
-// ---------- controls ----------
+// ---------- first-person input ----------
 
+const input = new FpInput(canvas);
+input.onInteract = () => {
+  if (started) audio.start();
+};
+input.onLockChange = () => updateLookHint();
+function updateLookHint(): void {
+  hud.setLookHint(!isTouch && started && view === 'fp' && !input.locked && !input.dragLook && !anyPanelOpen());
+}
+function anyPanelOpen(): boolean {
+  return ui.panelOpen || hud.logbookOpen;
+}
+
+// ---------- building (kneeling at the sand) ----------
+
+const cam = new OrbitCamera(
+  camera,
+  { minX: region.x0 + 0.5, maxX: region.x1 - 0.5, minZ: region.z0 + 0.5, maxZ: region.z1 - 0.3 },
+  (x, z) => ground.sandAt(x, z),
+);
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 function screenRay(x: number, y: number): THREE.Ray {
@@ -226,18 +354,16 @@ const controls = new Controls(canvas, cam, {
     return { ox: r.origin.x, oy: r.origin.y, oz: r.origin.z, dx: r.direction.x, dy: r.direction.y, dz: r.direction.z };
   },
   pickGround: (x, y) => {
-    // March along the ray over the ground-height map (fast and good enough for the camera).
     const r = screenRay(x, y);
     const p = r.origin.clone();
-    const step = 0.04;
-    for (let t = 0; t < 60; t += step) {
+    for (let t = 0; t < 60; t += 0.04) {
       p.copy(r.origin).addScaledVector(r.direction, t);
-      if (p.y <= Math.max(water.groundAt(p.x, p.z), terrain.waterLevel)) return p.clone();
+      if (p.y <= Math.max(ground.sandAt(p.x, p.z), terrain.waterLevel)) return p.clone();
     }
     return null;
   },
   stroke: (phase, ray) => {
-    if (!host || !ready || !started) return;
+    if (!host || !ready || !started || view !== 'build') return;
     if (phase === 'begin') {
       strokeWarned = false;
       ui.closePanels();
@@ -249,7 +375,7 @@ const controls = new Controls(canvas, cam, {
     }
   },
   hover: (ray) => {
-    if (!host || !ready) return;
+    if (!host || !ready || view !== 'build') return;
     host.send({ t: 'hover', ray });
   },
   undo: () => doUndo(),
@@ -263,25 +389,105 @@ const controls = new Controls(canvas, cam, {
     if (started) audio.start();
   },
 });
+controls.enabled = false;
 let cursorFromHover = !isTouch;
+
+/** Camera glide between standing (first person) and kneeling (building). */
+let blend: { t: number; fromPos: THREE.Vector3; fromQuat: THREE.Quaternion; toFp: boolean } | null = null;
+
+function canBuildHere(): boolean {
+  return player.mode === 'land' && ground.inRegion(player.feet.x, player.feet.z) && player.waterDepth < 0.05;
+}
+
+function enterBuild(): void {
+  if (view === 'build' || !canBuildHere()) return;
+  const fx = -Math.sin(player.yaw);
+  const fz = -Math.cos(player.yaw);
+  const tx = player.feet.x + fx * 1.3;
+  const tz = player.feet.z + fz * 1.3;
+  blend = { t: 0, fromPos: camera.position.clone(), fromQuat: camera.quaternion.clone(), toFp: false };
+  cam.setState([player.yaw, 0.62, 2.6, tx, ground.sandAt(tx, tz) + 0.05, tz]);
+  view = 'build';
+  camera.fov = BUILD_FOV;
+  camera.updateProjectionMatrix();
+  controls.enabled = true;
+  input.enabled = false;
+  input.unlock();
+  input.clear();
+  hud.setMode('build');
+  hud.setPrompt(null);
+  ui.hint(tool);
+  clearTimeout(hintTimer);
+  hintTimer = window.setTimeout(() => ui.hint(null), 6000);
+  updateLookHint();
+}
+
+function exitBuild(): void {
+  if (view !== 'build') return;
+  host?.send({ t: 'stroke', phase: 'cancel', tool, size, ray: null });
+  blend = { t: 0, fromPos: camera.position.clone(), fromQuat: camera.quaternion.clone(), toFp: true };
+  // Stand facing the castle.
+  player.yaw = Math.atan2(-(cam.target.x - player.feet.x), -(cam.target.z - player.feet.z));
+  player.pitch = -0.35;
+  view = 'fp';
+  camera.fov = FP_FOV;
+  camera.updateProjectionMatrix();
+  controls.enabled = false;
+  input.enabled = true;
+  cursor.hide();
+  ui.hint(null);
+  hud.setMode('fp');
+  updateLookHint();
+}
+
+window.addEventListener('keydown', (e) => {
+  if (!started) return;
+  if (view === 'build' && (e.code === 'Escape' || e.code === 'KeyB')) exitBuild();
+  else if (e.code === 'KeyL' && view === 'fp') toggleLogbook();
+  else if (e.code === 'Escape' && hud.logbookOpen) toggleLogbook(false);
+});
 
 // ---------- engine ----------
 
 function onEngine(msg: FromEngine): void {
   switch (msg.t) {
-    case 'tile':
+    case 'tile': {
       sand.update(msg.tile, msg.positions, msg.normals, msg.attrs, msg.indices);
-      water.patch(msg.hx, msg.hz, 32, msg.heights);
-      if (!shadowsOn) sand.group.traverse((o) => ((o as THREE.Mesh).castShadow = false));
+      ground.patch(msg.hx, msg.hz, 32, msg.heights);
+      // Has this tile been built on or dug? (Compare with the untouched beach.)
+      let diff = 0;
+      for (let z = 0; z < 32; z++) {
+        for (let x = 0; x < 32; x++) {
+          const wx = region.x0 + ((msg.hx + x) * 2 + 0.5) * CELL;
+          const wz = region.z0 + ((msg.hz + z) * 2 + 0.5) * CELL;
+          diff = Math.max(diff, Math.abs(msg.heights[x + z * 32] - terrain.heightAt(wx, wz)));
+        }
+      }
+      if (diff > 0.045) editedTiles.add(msg.tile);
+      else editedTiles.delete(msg.tile);
+      hiddenKey = '?';
+      sandDry.clear();
+      for (const m of sand.group.children) {
+        (m as THREE.Mesh).castShadow = sun.castShadow;
+        m.userData.tile = Number(m.name.slice(5));
+        const box = (m as THREE.Mesh).geometry.boundingBox;
+        if (box && box.min.y > 0.12) sandDry.add(m);
+      }
+      rebuildRefractSkip();
       break;
+    }
     case 'clear':
       sand.clear();
+      editedTiles.clear();
+      sandDry.clear();
+      rebuildRefractSkip();
+      hiddenKey = '?';
       break;
     case 'progress':
       ui.setProgress(msg.done, msg.total);
       break;
     case 'ready':
-      water.setRegion(msg.mapW, msg.mapH, msg.mapCell, msg.originX, msg.originZ);
+      ground.setRegion(msg.mapW, msg.mapH, msg.mapCell, msg.originX, msg.originZ);
       if (!ready) {
         ready = true;
         ui.setReady(resumed);
@@ -296,7 +502,7 @@ function onEngine(msg: FromEngine): void {
       lastPerf = msg.perf;
       ui.setUndo(msg.undo);
       const ev = msg.events;
-      if (msg.hit && (cursorFromHover || controls.busy)) {
+      if (view === 'build' && msg.hit && (cursorFromHover || controls.busy)) {
         cursor.show(msg.hit.x, msg.hit.y, msg.hit.z, msg.hit.nx, msg.hit.ny, msg.hit.nz, BRUSH_RADIUS[tool][size], tool);
       } else cursor.hide();
       if (ev.pats > 0) {
@@ -314,9 +520,6 @@ function onEngine(msg: FromEngine): void {
       }
       if (ev.dug || ev.poured || ev.pats || ev.rubbed || ev.slid || ev.landed) changedSinceSave = true;
       pendingEvents = mergeEvents(pendingEvents, ev);
-      if (debug) {
-        ui.fpsEl.textContent = `${fpsShown} fps · ${host?.mode} · sim ${msg.perf.simMs.toFixed(1)}ms mesh ${msg.perf.meshMs.toFixed(1)}ms · queue ${msg.perf.queue} · chunks ${msg.perf.chunks} · dirty ${msg.perf.dirty} · tris ${Math.round(sand.triangleCount / 1000)}k · grains ${msg.np}`;
-      }
       break;
     }
     case 'saved': {
@@ -327,8 +530,9 @@ function onEngine(msg: FromEngine): void {
     }
     case 'loaded':
       if (msg.ok) {
-        if (msg.header?.camera) cam.setState(msg.header.camera);
-        ui.toast('Beach loaded');
+        if (msg.header?.game) restoreGame(msg.header.game);
+        else if (msg.header?.camera) cam.setState(msg.header.camera);
+        ui.toast('Game loaded');
         changedSinceSave = true;
       } else ui.toast(`Couldn't load that file: ${msg.error}`, 4000);
       break;
@@ -360,6 +564,40 @@ function mergeEvents(a: TickEvents | null, b: TickEvents): TickEvents {
   };
 }
 
+// ---------- saving ----------
+
+interface GameSave {
+  version: string;
+  clock: Clock;
+  player: { mode: PlayerMode; pos: number[]; yaw: number; pitch: number };
+  beach: unknown;
+}
+
+function gameState(): GameSave {
+  return { version: GAME_VERSION, clock: { ...clock }, player: player.state, beach: beach.state };
+}
+
+function restoreGame(raw: unknown): void {
+  const g = raw as Partial<GameSave> | null;
+  if (!g || typeof g !== 'object') return;
+  if (g.clock && Number.isFinite(g.clock.day) && Number.isFinite(g.clock.hour)) {
+    clock.day = Math.max(1, Math.floor(g.clock.day));
+    clock.hour = ((g.clock.hour % 24) + 24) % 24;
+  }
+  beach.state = Beach.restore(g.beach);
+  beachView.sync();
+  boatMotion.update(time, 1);
+  const p = g.player;
+  if (p && Array.isArray(p.pos) && p.pos.length === 3 && p.pos.every(Number.isFinite)) {
+    const v = new THREE.Vector3(p.pos[0], p.pos[1], p.pos[2]);
+    if (p.mode === 'deck') player.placeAboard(v, p.yaw ?? START_YAW);
+    else player.placeWorld(v.x, v.z, p.yaw ?? START_YAW);
+    if (Number.isFinite(p.pitch)) player.pitch = p.pitch as number;
+  }
+  daylight.refresh();
+  washIfDue();
+}
+
 function requestSave(): Promise<ArrayBuffer | null> {
   return new Promise((resolve) => {
     if (!host || !ready) return resolve(null);
@@ -368,13 +606,13 @@ function requestSave(): Promise<ArrayBuffer | null> {
       if (error) console.warn('Save failed:', error);
       resolve(data);
     });
-    host.send({ t: 'save', id, header: { camera: cam.state } });
+    host.send({ t: 'save', id, header: { camera: cam.state, game: gameState() } });
   });
 }
 
 let saving = false;
 async function autosave(force = false): Promise<void> {
-  if (saving || !ready || !started || (!changedSinceSave && !force)) return;
+  if (saving || !ready || !started) return;
   saving = true;
   try {
     const data = await requestSave();
@@ -382,7 +620,9 @@ async function autosave(force = false): Promise<void> {
   } finally {
     saving = false;
   }
+  void force;
 }
+// The clock, you and the finds always change, so save every minute while playing.
 setInterval(() => void autosave(), 60000);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') void autosave();
@@ -397,8 +637,8 @@ async function saveToFile(): Promise<void> {
   }
   const d = new Date();
   const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
-  downloadFile(data, `sandcastle-cays-lagoon-${stamp}.sandsave`);
-  ui.toast('Beach saved to a file');
+  downloadFile(data, `sandcastle-cays-${stamp}.sandsave`);
+  ui.toast('Saved to a file');
 }
 
 async function loadFromFile(): Promise<void> {
@@ -409,18 +649,31 @@ async function loadFromFile(): Promise<void> {
 
 function newBeach(): void {
   host?.send({ t: 'reset' });
+  changedSinceSave = true;
+  ui.toast('The cove’s sand is smooth again');
+}
+
+function newGame(): void {
+  if (view === 'build') exitBuild();
+  host?.send({ t: 'reset' });
   void clearAutosave();
-  cam.home();
-  ui.toast('A fresh, smooth beach');
+  clock.day = 1;
+  clock.hour = DAY.start;
+  beach.state = Beach.fresh();
+  beach.washUp(1);
+  beachView.sync();
+  player.placeAboard(sloop.points.spawn, START_YAW);
+  daylight.refresh();
+  ui.toast('A fresh start at Home Cay');
 }
 
 function takePhoto(): void {
   cursor.hide();
-  renderer.render(scene, camera);
+  pipeline.render(false, player.feet);
   canvas.toBlob((blob) => {
     if (!blob) return;
     const d = new Date();
-    downloadFile(blob, `sandcastle-${d.toISOString().slice(0, 16).replace(/[:T]/g, '-')}.png`, 'image/png');
+    downloadFile(blob, `sandcastle-cays-${d.toISOString().slice(0, 16).replace(/[:T]/g, '-')}.png`, 'image/png');
     ui.toast('Photo saved');
   }, 'image/png');
 }
@@ -441,10 +694,8 @@ async function runChecks(): Promise<void> {
   extra.push({
     label: 'Saving works in this browser',
     pass: where !== 'none',
-    detail: where === 'browser' ? 'yes (browser storage)' : where === 'backup' ? 'yes (backup storage, smaller)' : 'no: use "Save beach to a file" to keep your work',
+    detail: where === 'browser' ? 'yes (browser storage)' : where === 'backup' ? 'yes (backup storage, smaller)' : 'no: use "Save to a file" to keep your game',
   });
-  const fpsStart = frames;
-  const t0 = performance.now();
   const results = await new Promise<CheckResult[]>((resolve) => {
     checksWaiter = resolve;
     host?.send({ t: 'checks', id: 1 });
@@ -452,15 +703,26 @@ async function runChecks(): Promise<void> {
   // Measure smoothness for a few seconds after the checks.
   const f0 = frames;
   const s0 = performance.now();
-  await new Promise((r) => setTimeout(r, 3000));
+  await new Promise((r) => setTimeout(r, 4000));
   const fps = ((frames - f0) / (performance.now() - s0)) * 1000;
-  void fpsStart;
-  void t0;
-  extra.push({ label: 'Smooth on this device', pass: fps >= 28, detail: `${Math.round(fps)} frames per second (30 or more is smooth)` });
+  extra.push({
+    label: 'Smooth on this device',
+    pass: fps >= 28,
+    detail: `${Math.round(fps)} frames per second (30 or more is smooth) · graphics: ${pipeline.quality}, sharpness ${pipeline.pixelRatio.toFixed(2)}`,
+  });
   ui.showChecks(results, extra);
 }
 
 // ---------- start ----------
+
+async function readSaveHeader(save: ArrayBuffer): Promise<unknown> {
+  try {
+    const raw = await decompress(new Uint8Array(save.slice(0)));
+    return decodeHeader(raw).game ?? null;
+  } catch {
+    return null;
+  }
+}
 
 async function boot(): Promise<void> {
   applyQuality();
@@ -472,6 +734,13 @@ async function boot(): Promise<void> {
     save = null;
   }
   resumed = !!save;
+  const game = save ? await readSaveHeader(save) : null;
+  player.placeAboard(sloop.points.spawn, START_YAW);
+  if (game) restoreGame(game);
+  else {
+    beach.washUp(clock.day);
+    beachView.sync();
+  }
   host.send({ t: 'init', save, settings: { drying: settings.drying }, focus: [0, 0.2, 0.8] }, save ? [save] : []);
   console.log(`Sandcastle Cays v${GAME_VERSION} (${__BUILD_TIME__}), engine on ${host.mode}`);
 }
@@ -481,9 +750,88 @@ function startPlaying(): void {
   started = true;
   ui.hideStart();
   if (settings.sound) audio.start();
-  ui.hint(tool);
-  hintTimer = window.setTimeout(() => ui.hint(null), 7000);
+  view = 'fp';
+  input.enabled = true;
+  hud.setMode('fp');
+  if (!isTouch) void input.lock();
+  updateLookHint();
   canvas.focus();
+  if (!resumed) {
+    window.setTimeout(
+      () => hud.showCard('Home Cay', isTouch ? 'Your boat is anchored off the island. Walk to the ladder at the back to climb down and swim ashore.' : 'Your boat is anchored off the island. Walk (W A S D) to the ladder at the back to climb down and swim ashore.', 7000),
+      800,
+    );
+  }
+}
+
+/** New finds wash up each morning. */
+function washIfDue(): void {
+  const st = beach.state;
+  if (st.lastWash < clock.day && clock.hour >= DAY.washUpHour) {
+    const n = beach.washUp(clock.day);
+    beachView.sync();
+    if (started && n > 0 && clock.hour < DAY.washUpHour + 1.5) hud.showCard('The tide has been in', 'New things have washed up along the beaches.', 4500);
+  }
+}
+
+// ---------- what you can do right now ----------
+
+type Action =
+  | { kind: 'pick'; id: number; label: string }
+  | { kind: 'climb'; label: string }
+  | { kind: 'climbdown'; label: string }
+  | { kind: 'locker'; label: string }
+  | { kind: 'build'; label: string }
+  | null;
+
+const center = new THREE.Vector2(0, 0);
+const tmpV = new THREE.Vector3();
+function currentAction(): Action {
+  if (player.mode === 'climb') return null;
+  if (player.nearLadder()) return { kind: 'climb', label: 'Climb aboard' };
+  if (player.atLadderTop()) return { kind: 'climbdown', label: 'Climb down the ladder' };
+  raycaster.setFromCamera(center, camera);
+  const f = beachView.pick(raycaster.ray, camera.position, PLAYER.reach);
+  if (f) return { kind: 'pick', id: f.id, label: `Pick up the ${FINDS[f.kind].name.toLowerCase()}` };
+  if (player.mode === 'deck') {
+    const lk = sloop.points.locker;
+    if (Math.hypot(player.pos.x - lk.x, player.pos.z - lk.z) < 1.4) {
+      if (beach.state.basket.length) return { kind: 'locker', label: 'Empty your basket into the locker' };
+    }
+  }
+  if (canBuildHere()) return { kind: 'build', label: 'Kneel and build' };
+  return null;
+}
+
+function doAction(a: Action): void {
+  if (!a) return;
+  if (a.kind === 'pick') pickUp(a.id);
+  else if (a.kind === 'climb') {
+    if (player.climbAboard()) audio.ladder();
+  } else if (a.kind === 'climbdown') {
+    if (player.climbDown()) audio.ladder();
+  } else if (a.kind === 'locker') {
+    const n = beach.emptyBasket();
+    audio.locker();
+    hud.showCard('Stowed', `${n} ${n === 1 ? 'find' : 'finds'} put away in the locker. The logbook lists everything aboard.`, 3500);
+    changedSinceSave = true;
+  } else if (a.kind === 'build') enterBuild();
+}
+
+function pickUp(id: number): void {
+  const r = beach.pickUp(id);
+  if (!r.ok) {
+    if (r.reason === 'full') ui.toast('Your basket is full. Empty it into the locker aboard.', 3200);
+    return;
+  }
+  beachView.sync();
+  held.pickupNudge();
+  audio.chime(r.first);
+  changedSinceSave = true;
+  if (navigator.vibrate) navigator.vibrate(10);
+  const info = FINDS[r.kind];
+  if (r.first) hud.showCard(`New: ${cap(info.name)}`, info.firstLine, 6000);
+  if (beach.basketFull) ui.toast('That fills your basket. Time to take it back aboard.', 3200);
 }
 
 // ---------- frame loop ----------
@@ -496,54 +844,130 @@ let fpsFrames = 0;
 let fpsTime = 0;
 let focusTimer = 0;
 let slowTime = 0;
-const tmpV = new THREE.Vector3();
-const shoreZ = terrain.shoreZ(0);
+let farWarned = 0;
+const sunView = new THREE.Vector3();
+const blendTarget = new THREE.Vector3();
 
 function frame(now: number): void {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   time += dt;
   frames++;
+  renderer.info.reset();
   host?.tick(dt);
-  controls.update(dt);
-  cam.update(dt);
+
+  boatMotion.update(time, dt);
+
+  // The clock (paused while a menu or the logbook is open).
+  if (started && !anyPanelOpen() && !holdTime) {
+    advanceClock(clock, dt);
+    washIfDue();
+  }
+
+  if (started && view === 'fp') {
+    input.update();
+    const paused = anyPanelOpen();
+    if (!paused) {
+      player.look(input.lookYaw, input.lookPitch);
+      const action = currentAction();
+      hud.setPrompt(action ? action.label : null, action?.kind === 'build' ? 'B' : 'E');
+      // Taps on a phone (or clicks in drag-look mode) pick up what they touch.
+      for (const tap of input.takeTaps()) {
+        const r = screenRay(tap.x, tap.y);
+        const f = beachView.pick(r, camera.position, PLAYER.reach + 0.4);
+        if (f) pickUp(f.id);
+      }
+      if (input.wasPressed('KeyE') || input.wasPressed('Use') || input.wasPressed('Action')) doAction(action);
+      if (input.wasPressed('KeyB') && canBuildHere()) enterBuild();
+      const jump = input.wasPressed('Space');
+      if (jump && player.nearLadder()) {
+        if (player.climbAboard()) audio.ladder();
+      }
+      const ev = player.update(dt, input.move, input.running, jump && player.mode !== 'swim');
+      for (const s of ev.steps) audio.footstep(s);
+      if (ev.splash > 0) audio.splash(ev.splash);
+      if (ev.climbed) audio.ladder();
+      if (ev.tooFar && time - farWarned > 8) {
+        farWarned = time;
+        ui.toast('That’s far enough from home for now.', 2500);
+      }
+    } else {
+      input.takeTaps();
+      hud.setPrompt(null);
+      player.update(dt, { x: 0, y: 0 }, false, false);
+    }
+    hud.setStick(input.stickView);
+    input.endFrame();
+  } else if (started) {
+    // Building: you stay where you knelt; the boat still rocks you if aboard.
+    player.update(dt, { x: 0, y: 0 }, false, false);
+  } else {
+    player.refresh();
+  }
+
+  // Camera.
+  if (view === 'build') {
+    controls.update(dt);
+    cam.update(dt);
+  } else {
+    player.applyCamera(camera, boatMotion.rollAngle);
+  }
+  if (blend) {
+    blend.t = Math.min(1, blend.t + dt / 0.55);
+    const k = blend.t * blend.t * (3 - 2 * blend.t);
+    blendTarget.copy(camera.position);
+    const q = camera.quaternion.clone();
+    camera.position.lerpVectors(blend.fromPos, blendTarget, k);
+    camera.quaternion.slerpQuaternions(blend.fromQuat, q, k);
+    if (blend.t >= 1) blend = null;
+  }
+  camera.updateMatrixWorld();
+  updateSandDetail();
 
   focusTimer -= dt;
   if (focusTimer <= 0 && host) {
     focusTimer = 0.3;
-    host.send({ t: 'focus', x: cam.target.x, y: cam.target.y, z: cam.target.z });
+    if (view === 'build') host.send({ t: 'focus', x: cam.target.x, y: cam.target.y, z: cam.target.z });
+    else host.send({ t: 'focus', x: player.feet.x - Math.sin(player.yaw) * 2, y: player.feet.y, z: player.feet.z - Math.cos(player.yaw) * 2 });
   }
 
-  // Sun, shadows and shaders.
-  const shadowHalf = Math.min(14, Math.max(3, cam.dist * 0.9));
-  const sc = sun.shadow.camera;
-  sc.left = -shadowHalf;
-  sc.right = shadowHalf;
-  sc.top = shadowHalf;
-  sc.bottom = -shadowHalf;
-  sc.near = 1;
-  sc.far = 60;
-  sc.updateProjectionMatrix();
-  const texel = (shadowHalf * 2) / sun.shadow.mapSize.x;
-  tmpV.copy(cam.target);
-  tmpV.x = Math.round(tmpV.x / texel) * texel;
-  tmpV.z = Math.round(tmpV.z / texel) * texel;
-  sun.target.position.copy(tmpV);
-  sun.position.copy(tmpV).addScaledVector(sunDir, 30);
+  // Light, sky and water.
+  const light = daylight.update(dt, time, clock);
+  sky.update(time, camera.position);
+  ocean.update(time, camera.position);
   sandUniforms.uTime.value = time;
-  sandUniforms.uSunView.value.copy(sunDir).transformDirection(camera.matrixWorldInverse);
-  particles.uniforms.uSunView.value.copy(sandUniforms.uSunView.value);
-  water.update(time, camera, sunDir);
+  sunView.copy(SKY.sunDir).transformDirection(camera.matrixWorldInverse);
+  sandUniforms.uSunView.value.copy(sunView);
+  particles.uniforms.uSunView.value.copy(sunView);
   swayTime.value = time;
-  boatMotion.update(time, dt);
   cursor.update(dt, time);
-  clouds.rotation.y += dt * 0.002;
+  beachView.update(player.feet);
 
-  const lapH = waveHeight(LAGOON_WAVES, 0, shoreZ, time, 1);
+  // What you're carrying.
+  held.setContents(beach.state.basket);
+  held.update(dt, {
+    walking: Math.min(1, player.speed / 2),
+    hide: !started || view !== 'fp' || player.mode === 'swim' || player.mode === 'climb' || anyPanelOpen(),
+    sunDir: sunView,
+    sunColor: SKY.sunColor,
+    sunIntensity: sun.intensity,
+    hemiIntensity: hemi.intensity,
+    env: envTex,
+  });
+  hud.setBasket(beach.state.basket.length);
+  hud.setClock(formatClock(clock));
+  updateLookHint();
+
+  // Sound: louder surf near the beach.
+  const shoreDist = Math.abs(terrain.inland(player.feet.x, player.feet.z));
+  audio.setShore(Math.max(0, 1 - shoreDist / 40));
+  const lapH = seaHeight(player.feet.x, player.feet.z, time);
   audio.update(dt, Math.min(1, Math.max(0, 0.5 + lapH / 0.08)), pendingEvents, handWet / 255);
   pendingEvents = null;
 
-  renderer.render(scene, camera);
+  pipeline.shadowSpan = view === 'build' ? Math.min(14, Math.max(4, cam.dist * 1.1)) : 16;
+  pipeline.render(started && view === 'fp' && !blend, view === 'build' ? cam.target : player.feet);
+  void light;
 
   // Frame rate, and automatic quality when it drops.
   fpsFrames++;
@@ -557,15 +981,12 @@ function frame(now: number): void {
       else slowTime = 0;
       if (slowTime >= 3) {
         slowTime = 0;
-        const pr = renderer.getPixelRatio();
-        if (pr > 1.05) {
-          renderer.setPixelRatio(Math.max(1, pr - 0.25));
-          resize();
-        } else if (shadowsOn) {
-          shadowsOn = false;
-          renderer.shadowMap.enabled = false;
-        }
+        if (pipeline.stepDown()) resize();
       }
+    }
+    if (debug) {
+      const info = renderer.info.render;
+      ui.fpsEl.textContent = `${fpsShown} fps · ${host?.mode} · ${pipeline.quality} ×${pipeline.pixelRatio.toFixed(2)} · draws ${info.calls} · tris ${Math.round(info.triangles / 1000)}k · ${player.mode}${lastPerf ? ` · sim ${lastPerf.simMs.toFixed(1)}ms` : ''}`;
     }
   }
   void handAmount;
@@ -587,14 +1008,30 @@ void boot();
   get mode() {
     return host?.mode;
   },
+  get view() {
+    return view;
+  },
   get fps() {
     return fpsShown;
+  },
+  get frameCount() {
+    return frames;
   },
   get triangles() {
     return sand.triangleCount;
   },
   get hand() {
     return handAmount;
+  },
+  get perf() {
+    return lastPerf;
+  },
+  get undo() {
+    return undoCount;
+  },
+  get render() {
+    const r = renderer.info.render;
+    return { calls: r.calls, triangles: r.triangles };
   },
   start: () => startPlaying(),
   selectTool: (t: ToolId) => selectTool(t),
@@ -604,19 +1041,90 @@ void boot();
       host?.send({ t: 'checks', id: 2 });
     }),
   camera: cam,
+  player,
+  beach,
+  clock,
+  sloop,
+  input,
+  terrain,
   /** Screen position (CSS pixels) of a point in the world. */
   project: (x: number, y: number, z: number) => {
     const v = new THREE.Vector3(x, y, z).project(camera);
     const r = canvas.getBoundingClientRect();
     return { x: r.left + ((v.x + 1) / 2) * r.width, y: r.top + ((1 - v.y) / 2) * r.height };
   },
-  get perf() {
-    return lastPerf;
-  },
-  get undo() {
-    return undoCount;
-  },
-  ground: (x: number, z: number) => water.groundAt(x, z),
+  ground: (x: number, z: number) => ground.heightAt(x, z),
+  sea: (x: number, z: number) => seaHeight(x, z, time),
   demo: () => host?.send({ t: 'demo' }),
   debugSand: (mode: number) => (sandUniforms.uDebug.value = mode),
+  enterBuild,
+  exitBuild,
+  canBuildHere,
+  action: () => currentAction(),
+  doAction: () => doAction(currentAction()),
+  /** Stand at a world spot, looking along yaw/pitch. */
+  teleport: (x: number, z: number, yaw = 0, pitch = -0.2) => {
+    if (view === 'build') exitBuild();
+    player.placeWorld(x, z, yaw);
+    player.pitch = pitch;
+  },
+  aboard: (yaw = START_YAW, pitch = -0.1) => {
+    if (view === 'build') exitBuild();
+    player.placeAboard(sloop.points.spawn, yaw);
+    player.pitch = pitch;
+  },
+  setHour: (h: number) => {
+    clock.hour = h;
+    daylight.refresh();
+  },
+  holdTime: (on: boolean) => (holdTime = on),
+  envInterval: (s: number) => (daylight.envInterval = s),
+  save: () => autosave(true),
+  gameState,
+  /** Look at a find: aim the view at it from where you stand. */
+  lookAt: (x: number, y: number, z: number) => {
+    const e = player.eye;
+    player.yaw = Math.atan2(-(x - e.x), -(z - e.z));
+    player.pitch = Math.atan2(y - e.y, Math.hypot(x - e.x, z - e.z));
+  },
+  pickUp,
+  /** Test helper: walk (or swim) with a fixed stick input for some seconds, in small even steps (independent of the frame rate). */
+  walk: (seconds: number, x: number, y: number, run = false, steerToLadder = false) => {
+    for (let t = 0; t < seconds; t += 1 / 30) {
+      boatMotion.update(time, 1 / 30);
+      if (steerToLadder && player.mode === 'deck') {
+        // Head for a spot just past the top of the swim ladder.
+        const lt = sloop.points.ladderTop;
+        const goal = sloop.group.localToWorld(new THREE.Vector3(lt.x - 0.6, lt.y, lt.z));
+        player.yaw = Math.atan2(-(goal.x - player.feet.x), -(goal.z - player.feet.z));
+      }
+      player.update(1 / 30, { x, y }, run, false);
+    }
+    return player.mode;
+  },
+  emptyBasket: () => beach.emptyBasket(),
+  logbook: toggleLogbook,
+  quality: () => pipeline.quality,
+  get canvasPixels() {
+    return { w: renderer.domElement.width, h: renderer.domElement.height };
+  },
+  isTouch,
+  setQuality: (q: QualityName) => pipeline.setQuality(q),
+  vec: (x: number, y: number, z: number) => new THREE.Vector3(x, y, z),
+  get basket() {
+    return beach.state.basket.slice();
+  },
+  get playerMode() {
+    return player.mode;
+  },
+  heldVisible: () => held.scene.children.length > 0,
+  get feet() {
+    return player.feet.toArray();
+  },
+  ocean,
+  seaFloor,
+  sky,
+  scene,
+  sandInfo: () => ({ edited: editedTiles.size, shown: sand.group.children.filter((m) => m.visible).length, tiles: sand.group.children.length, standIn: standIn.visible }),
+  time: () => time,
 };

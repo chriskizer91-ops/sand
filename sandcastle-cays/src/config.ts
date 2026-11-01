@@ -1,6 +1,6 @@
 /** Shared constants. Plain numbers only, so both the page and the sand worker can use them. */
 
-export const GAME_VERSION = '0.1';
+export const GAME_VERSION = '0.2';
 
 /** Size of one sand cell in metres (3 cm). */
 export const CELL = 0.03;
@@ -67,3 +67,47 @@ export const DRYING_RATE: Record<DryingSpeed, number> = {
 export interface EngineSettings {
   drying: DryingSpeed;
 }
+
+// ---------- life aboard (v0.2 onward) ----------
+
+/**
+ * The clock. Daylight runs 6:00-20:00; nights pass faster. With these numbers
+ * a whole day is about 24 real minutes (18.7 of daylight, 5.8 of night).
+ */
+export const DAY = {
+  /** Hour of the day a new game starts. */
+  start: 7.5,
+  /** Real seconds per game hour in daylight and at night. */
+  secondsPerHourDay: 80,
+  secondsPerHourNight: 35,
+  /** Finds wash up along the tideline each morning at this hour. */
+  washUpHour: 5.5,
+};
+
+/** The first-person sailor. Metres and seconds. */
+export const PLAYER = {
+  eye: 1.62,
+  /** Eye height above the water while swimming. */
+  swimEye: 0.2,
+  walk: 1.9,
+  run: 3.6,
+  /** Wading in water deeper than this slows you down. */
+  wadeDepth: 0.35,
+  /** Water deeper than this (at your feet) and you swim. */
+  swimDepth: 1.15,
+  swim: 1.25,
+  swimFast: 1.9,
+  jump: 4.2,
+  gravity: 14,
+  radius: 0.28,
+  /** Highest step you can walk up without jumping. */
+  step: 0.5,
+  /** How far you can reach to pick something up. */
+  reach: 2.4,
+  /** Look sensitivity: radians per pixel for mouse, per CSS pixel for touch. */
+  mouseLook: 0.0023,
+  touchLook: 0.0055,
+};
+
+/** How many finds the basket holds. */
+export const BASKET_CAPACITY = 12;

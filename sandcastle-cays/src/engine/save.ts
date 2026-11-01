@@ -16,6 +16,8 @@ export interface SaveHeader {
   hand: { amount: number; wetSum: number };
   camera?: number[];
   generator?: number;
+  /** Everything outside the sand (clock, you, finds), from v0.2. */
+  game?: unknown;
 }
 
 function chunkDiffersFromGround(world: World, key: number): boolean {

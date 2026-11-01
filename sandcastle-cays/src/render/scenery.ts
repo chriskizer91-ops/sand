@@ -40,7 +40,7 @@ function axisCoords(innerMin: number, innerMax: number, step: number, outer: num
 }
 
 const color = new THREE.Color();
-function rgb(hex: number): [number, number, number] {
+export function rgb(hex: number): [number, number, number] {
   color.setHex(hex);
   return [color.r, color.g, color.b];
 }
@@ -124,8 +124,8 @@ export function createOuterTerrain(terrain: Terrain, region: RegionBounds, sandU
 }
 
 /** A rounded boulder: a sphere pushed in and out by noise. */
-function boulder(rand: () => number, size: number): THREE.BufferGeometry {
-  const ico = new THREE.IcosahedronGeometry(1, 3);
+export function boulder(rand: () => number, size: number, detail = 3): THREE.BufferGeometry {
+  const ico = new THREE.IcosahedronGeometry(1, detail);
   ico.deleteAttribute('normal');
   ico.deleteAttribute('uv');
   const g = mergeVertices(ico);
@@ -140,10 +140,18 @@ function boulder(rand: () => number, size: number): THREE.BufferGeometry {
     const x = pos.getX(v);
     const y = pos.getY(v);
     const z = pos.getZ(v);
-    const r = 1 + 0.18 * n.noise(x * 1.7 + y, z * 1.7 - y) + 0.07 * n.noise(x * 4.1, y * 4.1 + z);
+    // Weathered limestone: lumpy, with sharper ridges and pitted hollows.
+    const ridge = 1 - Math.abs(n.noise(x * 2.6 - y, z * 2.6 + y * 1.3));
+    const r = 1 + 0.16 * n.noise(x * 1.7 + y, z * 1.7 - y) + 0.08 * ridge * ridge + 0.05 * n.noise(x * 6.1, y * 6.1 + z);
     pos.setXYZ(v, x * r * size * sx, y * r * size * 0.62, z * r * size * sz);
-    const t = 0.5 + 0.5 * n.noise(x * 3 + 10, z * 3 + y * 2);
-    for (let c = 0; c < 3; c++) cols[v * 3 + c] = dark[c] + (light[c] - dark[c]) * t;
+    let t = 0.55 + 0.45 * n.noise(x * 3 + 10, z * 3 + y * 2);
+    // Pits and lichen speckles.
+    const pit = n.noise(x * 9 + 3, z * 9 - y * 7);
+    if (pit > 0.45) t *= 0.62;
+    // Paler on top where the sun bleaches it, darker low down where spray and algae reach.
+    t *= 0.78 + 0.32 * Math.min(1, Math.max(0, y * 0.5 + 0.6));
+    const warm = 0.03 * n.noise(x * 1.3 + 7, z * 1.3);
+    for (let c = 0; c < 3; c++) cols[v * 3 + c] = Math.max(0, dark[c] + (light[c] - dark[c]) * t + (c === 0 ? warm : c === 2 ? -warm : 0));
   }
   g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
   g.computeVertexNormals();
@@ -187,7 +195,7 @@ export function createRocks(terrain: Terrain, region: RegionBounds): { mesh: THR
     for (let z = region.z0 - 2.5; z < region.z1 + 1.5; ) {
       const size = 0.55 + rand() * 0.9;
       const x = edge + side * (size * 0.55 + rand() * 0.6);
-      const g = boulder(rand, size);
+      const g = boulder(rand, size, 2);
       g.rotateY(rand() * Math.PI * 2);
       place(g, size, x, terrain.heightAt(x, z) + size * 0.12, z);
       // Some bigger rocks further out on the headland.
@@ -195,7 +203,7 @@ export function createRocks(terrain: Terrain, region: RegionBounds): { mesh: THR
         const s2 = 0.9 + rand() * 1.6;
         const x2 = edge + side * (1.6 + rand() * 3.5);
         const z2 = z + rand() * 1.2;
-        const g2 = boulder(rand, s2);
+        const g2 = boulder(rand, s2, 2);
         g2.rotateY(rand() * Math.PI * 2);
         place(g2, s2, x2, terrain.heightAt(x2, z2) + s2 * 0.1, z2);
       }
@@ -207,7 +215,7 @@ export function createRocks(terrain: Terrain, region: RegionBounds): { mesh: THR
     const s = 0.3 + rand() * 0.7;
     const x = (rand() - 0.5) * 30;
     const z = region.z0 - 6 - rand() * 18;
-    const g = boulder(rand, s);
+    const g = boulder(rand, s, 2);
     place(g, s, x, terrain.heightAt(x, z) + s * 0.35, z);
   }
   const merged = mergeGeometries(parts);
@@ -218,7 +226,7 @@ export function createRocks(terrain: Terrain, region: RegionBounds): { mesh: THR
 }
 
 /** Vertex shader patch that makes leaves sway in the breeze. */
-function swayMaterial(time: { value: number }): THREE.MeshLambertMaterial {
+export function swayMaterial(time: { value: number }): THREE.MeshLambertMaterial {
   const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = time;
@@ -244,7 +252,7 @@ function withSway(g: THREE.BufferGeometry, swayFn: (x: number, y: number, z: num
   return g;
 }
 
-function paint(g: THREE.BufferGeometry, fn: (x: number, y: number, z: number) => [number, number, number]): THREE.BufferGeometry {
+export function paint(g: THREE.BufferGeometry, fn: (x: number, y: number, z: number) => [number, number, number]): THREE.BufferGeometry {
   const pos = g.getAttribute('position') as THREE.BufferAttribute;
   const c = new Float32Array(pos.count * 3);
   for (let v = 0; v < pos.count; v++) {
@@ -258,7 +266,7 @@ function paint(g: THREE.BufferGeometry, fn: (x: number, y: number, z: number) =>
 }
 
 /** One palm frond: a drooping rib with saw-toothed leaflets. */
-function frond(length: number, droop: number, rand: () => number): THREE.BufferGeometry {
+export function frond(length: number, droop: number, rand: () => number): THREE.BufferGeometry {
   const segs = 14;
   const pos: number[] = [];
   const idx: number[] = [];
@@ -295,7 +303,7 @@ function frond(length: number, droop: number, rand: () => number): THREE.BufferG
 }
 
 /** A coconut palm, curving up from (0,0,0) and leaning toward +x. */
-function palm(height: number, lean: number, rand: () => number): THREE.BufferGeometry {
+export function palm(height: number, lean: number, rand: () => number): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const trunkCol = rgb(PALETTE.trunk);
   // Curved, ringed trunk.
@@ -305,7 +313,7 @@ function palm(height: number, lean: number, rand: () => number): THREE.BufferGeo
     pts.push(new THREE.Vector3(lean * height * t * t, height * t, 0));
   }
   const curve = new THREE.CatmullRomCurve3(pts);
-  const trunk = new THREE.TubeGeometry(curve, 24, 0.12, 8, false);
+  const trunk = new THREE.TubeGeometry(curve, 16, 0.12, 7, false);
   const tp = trunk.getAttribute('position') as THREE.BufferAttribute;
   for (let v = 0; v < tp.count; v++) {
     const y = tp.getY(v);
@@ -338,7 +346,7 @@ function palm(height: number, lean: number, rand: () => number): THREE.BufferGeo
   }
   // Coconuts.
   for (let c = 0; c < 4; c++) {
-    const g = new THREE.SphereGeometry(0.13, 8, 6);
+    const g = new THREE.SphereGeometry(0.13, 7, 5);
     g.deleteAttribute('uv');
     const a = (c / 4) * Math.PI * 2;
     g.translate(top.x + Math.cos(a) * 0.17, top.y - 0.18, top.z + Math.sin(a) * 0.17);
@@ -349,7 +357,7 @@ function palm(height: number, lean: number, rand: () => number): THREE.BufferGeo
   return mergeWithSway(parts);
 }
 
-function mergeWithSway(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
+export function mergeWithSway(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
   for (const p of parts) {
     if (p.getAttribute('uv')) p.deleteAttribute('uv');
   }
@@ -366,13 +374,27 @@ function mergeWithSway(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
 }
 
 /** A sea-grape bush: a cluster of round leafy blobs. */
-function bush(rand: () => number, size: number): THREE.BufferGeometry {
+export function bush(rand: () => number, size: number): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const n = 5 + Math.floor(rand() * 4);
   const a = rgb(PALETTE.grassDark);
   const b = rgb(PALETTE.leafLight);
   for (let k = 0; k < n; k++) {
-    const g = new THREE.IcosahedronGeometry(size * (0.45 + rand() * 0.35), 1);
+    const ico = new THREE.IcosahedronGeometry(size * (0.45 + rand() * 0.35), 1);
+    ico.deleteAttribute('normal');
+    ico.deleteAttribute('uv');
+    const g = mergeVertices(ico);
+    // Leafy lumps, then smooth shading so it reads as foliage, not facets.
+    const gp = g.getAttribute('position') as THREE.BufferAttribute;
+    const seed = rand() * 100;
+    for (let v = 0; v < gp.count; v++) {
+      const x = gp.getX(v);
+      const y = gp.getY(v);
+      const z = gp.getZ(v);
+      const k = 1 + 0.12 * Math.sin(x * 9 + seed) * Math.sin(z * 8 - seed) + 0.06 * Math.sin(y * 13 + seed);
+      gp.setXYZ(v, x * k, y * k * 0.85, z * k);
+    }
+    g.computeVertexNormals();
     const ang = rand() * Math.PI * 2;
     const r = rand() * size * 0.7;
     g.translate(Math.cos(ang) * r, size * (0.25 + rand() * 0.45), Math.sin(ang) * r);
@@ -388,7 +410,7 @@ function bush(rand: () => number, size: number): THREE.BufferGeometry {
 }
 
 /** Tufts of beach grass. */
-function grassTuft(rand: () => number): THREE.BufferGeometry {
+export function grassTuft(rand: () => number): THREE.BufferGeometry {
   const pos: number[] = [];
   const cols: number[] = [];
   const g1 = rgb(PALETTE.grass);

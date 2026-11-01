@@ -21,6 +21,16 @@ export const ICONS = {
   menu: svg('<path d="M4 7h16M4 12h16M4 17h16"/>'),
   close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
   camera: svg('<path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>'),
+  /** A notebook with a shell on the cover. */
+  book: svg('<path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z" fill="currentColor" fill-opacity=".15"/><path d="M5 17a3 3 0 0 1 3-3h11"/><path d="M10 8.5c1-1.5 3-1.5 4 0" /><path d="M9.5 10h5"/>'),
+  /** A woven basket. */
+  basket: svg('<path d="M4 10h16l-2 9H6z" fill="currentColor" fill-opacity=".18"/><path d="M8 10c0-3 1.8-5 4-5s4 2 4 5"/><path d="M5 13.5h14M6 16.5h12" opacity=".6"/>'),
+  /** Standing up from the sand. */
+  stand: svg('<circle cx="12" cy="4.5" r="2"/><path d="M12 7v7M12 14l-3 6M12 14l3 6M8 10l4-2 4 2"/>'),
+  /** Jump / climb: an arrow up. */
+  up: svg('<path d="M12 19V6M6.5 11.5L12 6l5.5 5.5"/>'),
+  /** A hand reaching to take something. */
+  grab: svg('<path d="M7 12V7.5a1.3 1.3 0 0 1 2.6 0V11M9.6 11V5.5a1.3 1.3 0 0 1 2.6 0V11M12.2 11V6.5a1.3 1.3 0 0 1 2.6 0V12M14.8 12V9a1.3 1.3 0 0 1 2.6 0v5c0 3.5-2.5 6-6 6H11c-2.3 0-3.6-1-4.8-2.6L4 14.5a1.4 1.4 0 0 1 2.2-1.7l.8 1"/>'),
   bucket: svg('<path d="M5 8h14l-1.6 12H6.6z" fill="currentColor" fill-opacity=".18"/><path d="M5 8c0-3 3-5 7-5s7 2 7 5"/>'),
 };
 
