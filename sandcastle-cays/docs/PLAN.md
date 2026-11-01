@@ -1,52 +1,71 @@
 # The plan (agreed with the owner)
 
-**Sandcastle Cays** (working name) is a calm sandcastle game on small Caribbean islands. It runs in Chrome on a Pixel 7a and a Windows laptop with a trackpad. Each version is delivered as a single HTML file. Hosting on GitHub Pages comes later.
+**Sandcastle Cays** (working name) is a calm game about living aboard a small sailboat in the Caribbean. You comb beaches for what the sea washes up, build sandcastles, keep your boat in good repair, grow a little food, and sail between small islands. It runs in Chrome on a Pixel 7a and on a Windows laptop with a trackpad. Each version is one HTML file.
 
-## The sand
-- A grid of small cells (a few centimetres each), drawn as smooth, soft sand. Each cell knows how much sand it holds, how wet it is, and how packed it is.
+*Changed on 2026-11-01 (see DECISIONS 9–15):* sandcastle building used to be the whole game. Now it is one of the main things you do in a bigger, peaceful sailboat life. The owner's raft survival game is the source for the water, the sky, gathering, the shark, tools and upkeep, made gentle.
+
+## The feel
+- **Peaceful, but with something to look after.** You manage things rather than fight to survive. Nothing kills you, and you never lose your save.
+- **Realistic water and light; a slightly storybook boat, sailor and objects.** The mix should look like one style, not two.
+- **Seen through your own eyes** (first person), on the phone and on the laptop.
+- **Everything is made in code:** models, sounds, sky, water. Code may paint textures such as wood grain and water ripples when the game starts (agreed 2026-11-01).
+
+## What you do
+- **Beachcombing.** Finds wash up along the tideline: shells, sea glass, driftwood, rope, coconuts, fishing floats, the odd crate, bottles with notes. You carry them in a basket and stow them aboard. A logbook keeps every kind you have found, with a true fact about it.
+- **Sandcastles.** Kneel on a beach to build with the sand engine: dig, pile, pat, then bucket, carve, water and drip. Finds can decorate castles (driftwood beams, shells, feather flags).
+- **Living aboard.** Your boat is your home. You keep rations of food and water, about a month's worth when the stores are full. They run down slowly, so they are something to plan around, not a hunger meter. Running low is the worst that can happen. Fishing, fruit from islands, and rain water top them up.
+- **Upkeep.** The boat occasionally needs repair: a worn sail, a leak, a scraped dinghy. Repairs use what you find.
+- **Gardening.** Pots of herbs and vegetables on deck, and a garden at your home anchorage on Home Cay.
+- **The shark.** It isn't always there: it shows up now and then, in certain waters (reef edges, channels). It can make you drop your basket of finds or bump the dinghy so it needs repairs. Bait lures it away.
+- **Sailing.** Real wind: you steer, the sails trim themselves (with an option to trim by hand), and you can't sail straight into the wind. A chart of the islands you've found.
+
+## How we build it: one small piece at a time, finished properly
+First a **vertical slice**: a small piece of the game made to finished quality, played by the owner on the phone and the laptop, and adjusted until it feels right. Only then do we add more islands and features.
+
+**The slice is Home Cay**, delivered in parts:
+1. **v0.2, Aboard and ashore:**
+   - first person on phone and laptop;
+   - the new sea and sky (from the raft game), with day and night;
+   - your sloop at anchor off Home Cay: walk the deck, swim ashore, walk the island;
+   - beachcombing with a basket, a locker aboard and the logbook;
+   - kneel on the cove beach to build sandcastles.
+2. **v0.3, The dinghy and the reef:**
+   - rowing the dinghy;
+   - the shark, now and then, off the reef;
+   - dropped finds that wash up later;
+   - dinghy repairs.
+3. **v0.4, Living aboard:**
+   - rations and stores;
+   - fishing and the galley;
+   - fresh water;
+   - boat upkeep with a workbench and recipes that unlock as you find new materials;
+   - deck pots and the Home Cay garden.
+4. **v0.5, First passage:**
+   - sailing with real wind;
+   - the chart;
+   - a second cay with different sand and finds.
+5. **v0.6, Polish:** a full pass on look, sound, feel, text and phone speed. This is the finished slice.
+
+## After the slice (ideas agreed along the way)
+- **Tides:** the tide wins wherever it reaches. Castles near the waves are gone by high tide; castles above the high-tide line last.
+- **Sands that play differently:** fine white Bahamas sand, pink sand, coarse golden sand, black volcanic sand.
+- **Finds have jobs:** driftwood is a beam (lintels, bridges, longer arches); feathers are flags; rocks anchor walls; shells and sea glass decorate.
+- **Moulds instead of money:** start with the classic castle bucket; others wash up (square keep, cone spire, starfish, brick).
+- **Little residents:** hermit crabs move into towers with a room and a door; sandpipers; gulls on the tallest tower.
+- **Messages in bottles:** a gentle story told in notes.
+- **Weather:** rain, storms with a warning, golden-hour light, glowing water at night.
+- **More:** music; snorkelling for finds; hosting on GitHub Pages; working offline once added to the home screen.
+
+## The sand (unchanged)
+- A grid of small cells (3 cm each), drawn as smooth, soft sand. Each cell knows how much sand it holds, how wet it is, and how packed it is.
 - Dry sand slumps, damp sand holds, packed sand is strongest, soaked sand drips, and the sun dries it. Arches and tunnels work.
-- Every grain you pile comes from somewhere you dug. Your first moat gives you your first wet sand. You can carry plenty.
-
-## Big builds
-- The whole beach is yours. A castle can be as big as the sand you're willing to move, even a whole dune; it just takes time.
-- To keep the phone smooth, distant parts of the beach may be drawn in less detail. Details smaller than a few centimetres stay soft and rounded.
-
-## Two kinds of beach
-- **The calm lagoon:** no tide. What you build stays.
-- **Tidal beaches:** the tide wins wherever it reaches.
-  - Near the waves at low tide: gone by high tide.
-  - Just below the high-tide line: only lapped, wearing down to a mound you'll find next day if it was big enough.
-  - Above the high-tide line: it lasts.
+- Every grain you pile comes from somewhere you dug.
 
 ## Saving
-Play for hours and come back to the same castle. It saves automatically, plus a "save to file" button as a backup (a file opened straight from a phone's downloads doesn't always keep its saves).
-
-## Controls
-- Phone: one finger sculpts, two fingers swing the camera, pinch zooms.
-- Trackpad: click to sculpt, two-finger swipe to swing, pinch to zoom.
-- Undo is always there. The Pixel gives small buzzes when you pat sand.
-
-## Stages (each tested by the owner)
-1. **The calm lagoon**: the sand, the tools (dig, pile, pat, bucket, carve, water, drip), controls, saving, sounds and a photo button. Delivered in two parts:
-   - 1a: the sand with dig, pile and pat;
-   - 1b: bucket, carve, water and drip.
-2. **Tides**: a tidal beach, day and night (about an hour of play per day, two high tides, rest to skip ahead, time pauses while the game is closed), waves that wear castles down, and the logbook.
-3. **Finds**: shells, sea glass, driftwood beams, feather flags, and moulds that wash up.
-4. **Sailing**: the boat, wind and D-pad/arrow steering, a few islands each with its own sand, and the cabin.
-5. **Later**: crabs and birds, messages in bottles, weather, glowing water at night, music, GitHub hosting.
-
-## Ideas agreed along the way
-- Finds have jobs: driftwood is a beam (lintels, bridges, longer arches) and floats away in the tide; feathers are flags; rocks anchor walls; shells and sea glass decorate.
-- Moulds instead of money: start with the classic castle bucket; others wash up (square keep, cone spire, starfish, brick).
-- Sands that play differently: fine white Bahamas sand, pink sand, coarse golden sand, black volcanic sand.
-- Little residents: hermit crabs move into towers with a room and a door; sandpipers; gulls on the tallest tower.
-- Messages in bottles as the only goals, all optional.
-- The boat as a tiny home: logbook, tide clock, one small shelf for finds.
-- A little cartoon sailor on the boat; cartoon hands when building.
-- Sounds made in code; weather and golden-hour light; works offline once added to the home screen.
+Play for hours and come back to the same boat, island and castles. It saves automatically, and a "save to file" button is there as a backup.
 
 ## How the owner can trust it works
-- Automatic checks of the sand rules.
-- Tests in a real browser slowed to phone speed, with screenshots.
-- A check page inside the game that runs on the owner's own phone.
+- Automatic checks of the sand rules and the game rules.
+- Tests in a real browser as a laptop and as a Pixel-sized phone, with screenshots.
+- A checks page inside the game that runs on the owner's own phone, including the frame rate.
 - A plain-language note of what changed in every version (`CHANGELOG.md`).

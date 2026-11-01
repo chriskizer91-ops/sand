@@ -43,3 +43,37 @@ Newest at the bottom. Each entry: what we decided, and why.
 
 ## 8. Undo
 Each stroke opens an undo record. The first time a chunk is changed during that record (by the tool or by sand sliding afterwards), a copy is saved. Undo restores those copies and what was in your hands. Drying doesn't make copies, to save memory.
+
+---
+
+## Decisions from 2026-11-01: from a sandcastle game to sailboat living
+
+## 9. Sandcastle building becomes one part of a sailboat-living game
+- **What:** the game is now about living aboard a small sailboat: beachcombing, sandcastles, boat upkeep, rations, gardening and sailing. Sandcastle building stays a main activity, reached by kneeling on a beach.
+- **Source material:** the owner's raft survival game (shared as a zip in this session). Its water, sky, gathering, tools, upkeep, planters and shark are the starting point, made peaceful. Code taken from it is marked "from the raft game" in comments.
+- **Also useful:** Wind, Wing & Wave (branch `claude/jolly-pascal-d3lqs6`) has plants, birds, turtles, storms and a field-guide journal made in code.
+
+## 10. First person, on both the phone and the laptop
+- **What:** you see through your own eyes, like the raft game.
+  - Laptop: W A S D to move, the mouse or trackpad to look (the pointer is captured after a click; Esc lets it go), E or a click to use, Space to jump or climb.
+  - Phone: the left thumb moves (a stick appears where it lands), the right thumb drags to look, a tap uses what you're looking at, and buttons show for jump and actions.
+- **Building is the exception:** kneeling to build switches to the sandcastle camera (swing, zoom), because castles need to be seen from all sides.
+- **Why:** the owner prefers it. Showing a character on screen would not make it cheaper to draw. The camera is simpler, and the water looks best from eye level.
+
+## 11. Rations: something to manage, not a hunger meter
+- **What:** food and water are stores measured in days. Full stores last about a month of game days, so you never feel hungry minute to minute. Running low is the worst that can happen. Fishing, island fruit and rain top the stores up. It should not be trivially easy.
+- **Not decided yet:** what happens at zero. The leaning is that your sailor tires (slower, shorter trips) and nothing worse. To settle in v0.4.
+
+## 12. The shark is occasional and never deadly
+- **What:** it is only around sometimes, and only in certain waters (reef edges, channels). It can make you drop your basket of finds (they wash up later) or bump the dinghy so it needs repair. Bait lures it away. It never kills you.
+
+## 13. The look: realistic water and light, slightly storybook everything else
+- **What:** the sea, sky and light follow the raft game (see-through water, reflections, sun glints, foam, tone mapping, bloom). The boat, sailor, finds and plants are simple, rounded and warm. They should feel like one world, not two styles side by side.
+
+## 14. Code may paint textures
+- **What:** textures such as wood grain, rope, woven baskets and water ripples may be painted pixel by pixel by code when the game starts, as the raft game does. There are still no picture, texture or sound files in the repo.
+- **Why:** the owner agreed (2026-11-01). The rule against images was about files, not about code-made detail.
+
+## 15. A finished vertical slice before anything else
+- **What:** build Home Cay (boat, island, beachcombing, sandcastles, dinghy, shark, rations, upkeep, garden, one passage) to finished quality, in parts v0.2–v0.6, each played by the owner. More islands and features come after.
+- **Why:** the owner wants a well-built game. Finishing a small piece shows what "finished" means before the game grows.
