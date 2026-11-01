@@ -288,3 +288,14 @@ describe('the ladder from the deck', async () => {
     expect(p.mode).toBe('swim');
   });
 });
+
+describe('save files made inside the claude.ai link', () => {
+  it('a .json-wrapped save opens the same as a plain one', async () => {
+    const { unwrapSave } = await import('../src/storage/storage');
+    const raw = new Uint8Array([1, 2, 3, 250, 0, 77]);
+    const wrapped = new TextEncoder().encode(JSON.stringify({ format: 'sandcastle-cays-save', data: Buffer.from(raw).toString('base64') }));
+    expect(Array.from(new Uint8Array(unwrapSave(wrapped.buffer as ArrayBuffer)))).toEqual(Array.from(raw));
+    // A plain save passes straight through.
+    expect(Array.from(new Uint8Array(unwrapSave(raw.buffer as ArrayBuffer)))).toEqual(Array.from(raw));
+  });
+});

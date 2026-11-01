@@ -226,17 +226,17 @@ export class Ui {
     });
     const fresh = el('button', { class: 'wide danger' }, 'Smooth the cove’s sand');
     fresh.addEventListener('click', () => {
-      if (confirm('Smooth the cove’s sand back to how it started? Your sandcastles will be gone (your finds and logbook stay).')) {
+      this.askSure('Smooth the cove’s sand back to how it started? Your sandcastles will be gone (your finds and logbook stay).', 'Smooth it', () => {
         this.togglePanel(this.menu, false);
         this.actions.newBeach();
-      }
+      });
     });
     const over = el('button', { class: 'wide danger' }, 'Start over completely');
     over.addEventListener('click', () => {
-      if (confirm('Start a whole new game? Your castles, finds and logbook will all be gone (save to a file first if you want to keep them).')) {
+      this.askSure('Start a whole new game? Your castles, finds and logbook will all be gone (save to a file first if you want to keep them).', 'Start over', () => {
         this.togglePanel(this.menu, false);
         this.actions.newGame();
-      }
+      });
     });
     this.menu.append(helpBtn, checkBtn, fresh, over);
     this.menu.appendChild(el('p', { class: 'small' }, `Sandcastle Cays v${GAME_VERSION} · made entirely in code`));
@@ -329,6 +329,29 @@ export class Ui {
     const willShow = show ?? p.classList.contains('hidden');
     for (const other of [this.menu, this.help, this.checks]) if (other !== p) other.classList.add('hidden');
     p.classList.toggle('hidden', !willShow);
+  }
+
+  /** An "are you sure?" box drawn in the page (browser pop-ups are blocked inside the claude.ai link). */
+  askSure(question: string, yesLabel: string, yes: () => void): void {
+    const back = el('div', { class: 'screen sure', role: 'dialog', 'aria-label': 'Are you sure?' });
+    const card = el('div', { class: 'card' });
+    card.appendChild(el('p', {}, question));
+    const row = el('div', { class: 'row', style: 'justify-content:center;margin-top:12px' });
+    const no = el('button', { class: 'pill' }, 'Keep it');
+    const ok = el('button', { class: 'pill on' }, yesLabel);
+    no.addEventListener('click', () => {
+      this.actions.click();
+      back.remove();
+    });
+    ok.addEventListener('click', () => {
+      this.actions.click();
+      back.remove();
+      yes();
+    });
+    row.append(no, ok);
+    card.appendChild(row);
+    back.appendChild(card);
+    document.body.appendChild(back);
   }
 
   get panelOpen(): boolean {

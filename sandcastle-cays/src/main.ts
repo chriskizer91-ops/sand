@@ -32,7 +32,7 @@ import { Beach, BeachView } from './game/beach';
 import { Player, type PlayerMode } from './player/player';
 import { GroundMap } from './world/ground';
 import { ANCHORAGE, HomeCayTerrain } from './world/homeCay';
-import { downloadFile, loadAutosave, loadSettings, pickFile, saveAutosave, saveSettings, testStorage, clearAutosave } from './storage/storage';
+import { downloadFile, loadAutosave, loadSettings, pickFile, saveAutosave, saveSettings, testStorage, clearAutosave, unwrapSave } from './storage/storage';
 import { Hud, cap } from './ui/hud';
 import { Ui } from './ui/ui';
 import type { CheckResult } from './checks/sandChecks';
@@ -637,13 +637,14 @@ async function saveToFile(): Promise<void> {
   }
   const d = new Date();
   const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
-  downloadFile(data, `sandcastle-cays-${stamp}.sandsave`);
-  ui.toast('Saved to a file');
+  if (await downloadFile(data, `sandcastle-cays-${stamp}.sandsave`)) ui.toast('Saved to a file');
+  else ui.toast('Not saved to a file this time');
 }
 
 async function loadFromFile(): Promise<void> {
-  const data = await pickFile('.sandsave,application/octet-stream');
-  if (!data || !host) return;
+  const picked = await pickFile('.sandsave,.json,application/octet-stream,application/json');
+  if (!picked || !host) return;
+  const data = unwrapSave(picked);
   host.send({ t: 'load', id: saveSeq++, data }, [data]);
 }
 
@@ -673,8 +674,9 @@ function takePhoto(): void {
   canvas.toBlob((blob) => {
     if (!blob) return;
     const d = new Date();
-    downloadFile(blob, `sandcastle-cays-${d.toISOString().slice(0, 16).replace(/[:T]/g, '-')}.png`, 'image/png');
-    ui.toast('Photo saved');
+    void downloadFile(blob, `sandcastle-cays-${d.toISOString().slice(0, 16).replace(/[:T]/g, '-')}.png`, 'image/png').then((ok) => {
+      if (ok) ui.toast('Photo saved');
+    });
   }, 'image/png');
 }
 

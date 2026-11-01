@@ -1,5 +1,26 @@
 # What changed, version by version (plain language)
 
+## v0.2.1, Play from a link
+The same game as v0.2, now also playable from a private claude.ai link, so you don't have to download each version. Every new version replaces what's behind the same link; the downloadable files stay in `builds/` as before.
+
+**What changed**
+- "Are you sure?" questions (smoothing the sand, starting over) now appear as boxes inside the game. The link blocks the browser's own pop-ups.
+- Inside the link, "Save to a file" and the photo button go through Claude's own save prompt. Saves made there come out as a small `.json` file, and "Load from a file" opens either kind.
+
+**Inside the link, good to know**
+- Your game saves itself in that browser as usual, but the link may not keep saves as reliably as the downloaded file. Use "Save to a file" now and then.
+- The link keeps your saved game when it's updated to a new version.
+
+**Checks that passed before sending**
+- 103 automatic checks (one new: save files made inside the link open again).
+- In the full browser run, 36 of 37 checks passed.
+  - The one miss was the sand engine's speed check at simulated phone speed in backup mode: its busiest step took 24.6 ms against a 20 ms safety line. The real limit is 33 ms.
+  - Run on its own three more times, it passed each time (12–19 ms).
+  - It's a timing measurement that varies on this shared build machine, and no sand code has changed since v0.1.
+
+**Not tested**
+- The game inside the claude.ai link itself: the tests can only open the file directly. Please tell me if anything doesn't work there.
+
 ## v0.2, Aboard and ashore (Home Cay slice, part 1)
 The game is now about living aboard your boat. You see the world through your own eyes, on the phone and on the laptop. This is the first piece of the Home Cay slice (see PLAN.md).
 

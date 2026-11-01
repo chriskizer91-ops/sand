@@ -148,7 +148,52 @@ export async function clearAutosave(): Promise<void> {
   }
 }
 
-export function downloadFile(data: ArrayBuffer | Blob, name: string, type = 'application/octet-stream'): void {
+interface ClaudeDownloads {
+  save(req: { filename: string; data: Blob | ArrayBuffer | string }): Promise<{ status: string }>;
+}
+declare global {
+  interface Window {
+    claude?: { use(name: string): Promise<unknown> };
+  }
+}
+
+/** When the game runs from its claude.ai link, files go through Claude's own save prompt. */
+async function claudeDownloads(): Promise<ClaudeDownloads | null> {
+  try {
+    if (!window.claude?.use) return null;
+    return ((await window.claude.use('downloads')) as ClaudeDownloads | null) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when the game is running inside its claude.ai link (a sandboxed page). */
+export function inClaudeLink(): boolean {
+  return typeof window !== 'undefined' && !!window.claude?.use;
+}
+
+/**
+ * Hand a file to the player. Returns false if it couldn't be saved (or they said no).
+ * Inside the claude.ai link only some file kinds are allowed, so a save is
+ * wrapped as a small .json file (loading accepts both).
+ */
+export async function downloadFile(data: ArrayBuffer | Blob, name: string, type = 'application/octet-stream'): Promise<boolean> {
+  const dl = await claudeDownloads();
+  if (dl) {
+    let filename = name;
+    let payload: Blob | string = data instanceof Blob ? data : new Blob([data], { type });
+    if (!/\.(png|json)$/i.test(name)) {
+      const buf = data instanceof Blob ? await data.arrayBuffer() : data;
+      payload = JSON.stringify({ format: 'sandcastle-cays-save', data: toBase64(buf) });
+      filename = name.replace(/\.[a-z]+$/i, '') + '.json';
+    }
+    try {
+      await dl.save({ filename, data: payload });
+      return true;
+    } catch {
+      return false;
+    }
+  }
   const blob = data instanceof Blob ? data : new Blob([data], { type });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -158,6 +203,20 @@ export function downloadFile(data: ArrayBuffer | Blob, name: string, type = 'app
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
+  return true;
+}
+
+/** A save file is either the raw save or the .json wrapper made inside the claude.ai link. */
+export function unwrapSave(data: ArrayBuffer): ArrayBuffer {
+  const head = new Uint8Array(data, 0, Math.min(1, data.byteLength));
+  if (head[0] !== 0x7b) return data; // not "{"
+  try {
+    const j = JSON.parse(new TextDecoder().decode(data)) as { format?: string; data?: string };
+    if (j.format !== 'sandcastle-cays-save' || typeof j.data !== 'string') return data;
+    return fromBase64(j.data);
+  } catch {
+    return data;
+  }
 }
 
 export function pickFile(accept: string): Promise<ArrayBuffer | null> {
