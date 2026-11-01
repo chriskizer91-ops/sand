@@ -1,5 +1,17 @@
 # What changed, version by version (plain language)
 
+## v0.2.2, Overboard fix
+**What changed**
+- **Jumping off the side works.** Before, jumping over the lifelines could leave you stuck against the side of the boat. Now you fly out clear of the hull and land in the sea. If you ever end up pressed against the boat, it eases you away, and swimming away from it always works.
+- If you land on the narrow edge of the deck outside the lifelines, walking off it drops you into the sea.
+
+**Checks that passed before sending**
+- 107 automatic checks, including new ones: jumping off either side of the boat (also when it has swung round), and swimming away from the hull.
+- All 38 browser checks, as a laptop and as a Pixel-sized phone, including a new one: jump over the side, land in the sea and swim away.
+
+**Not tested**
+- How it feels with your thumbs on the phone.
+
 ## v0.2.1, Play from a link
 The same game as v0.2, now also playable from a private claude.ai link, so you don't have to download each version. Every new version replaces what's behind the same link; the downloadable files stay in `builds/` as before.
 

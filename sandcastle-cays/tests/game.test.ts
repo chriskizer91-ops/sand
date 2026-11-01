@@ -299,3 +299,63 @@ describe('save files made inside the claude.ai link', () => {
     expect(Array.from(new Uint8Array(unwrapSave(raw.buffer as ArrayBuffer)))).toEqual(Array.from(raw));
   });
 });
+
+describe('jumping off the side of the boat', async () => {
+  const { createSloop } = await import('../src/render/sloop');
+  const sloop = createSloop();
+  sloop.group.updateMatrixWorld(true);
+  const world: PlayerWorld = { groundAt: () => -3, waterAt: () => 0, trunks: [], boat: { obj: sloop.group, deck: sloop.deck, ladderTop: sloop.points.ladderTop, ladderBottom: sloop.points.ladderBottom, length: sloop.length }, bounds: { cx: 0, cz: 0, r: 100 } };
+
+  for (const side of [1, -1]) {
+    it(`over the ${side > 0 ? 'starboard' : 'port'} rail: you land in the water clear of the hull and can swim away`, () => {
+      const p = new Player(world);
+      // Stand on the side deck beside the mast, facing out over the rail.
+      p.placeAboard(new THREE.Vector3(0.6, 0.8, side * 1.15), side > 0 ? Math.PI : 0);
+      const face = side > 0 ? Math.PI : 0; // +z is yaw PI (forward = -cos(yaw) = +1), -z is yaw 0
+      p.yaw = face;
+      let jumped = false;
+      for (let i = 0; i < 60 * 3 && p.mode !== 'swim'; i++) {
+        p.update(1 / 60, { x: 0, y: 1 }, false, !jumped);
+        jumped = true;
+        if (p.mode === 'deck' && i % 40 === 39) jumped = false; // jump again if the first didn't clear
+      }
+      expect(p.mode).toBe('swim');
+      // Let the splash settle, then swim straight away from the boat for 3 seconds.
+      for (let i = 0; i < 60; i++) p.update(1 / 60, { x: 0, y: 0 }, false, false);
+      const z0 = Math.abs(p.feet.z);
+      for (let i = 0; i < 180; i++) p.update(1 / 60, { x: 0, y: 1 }, false, false);
+      expect(Math.abs(p.feet.z)).toBeGreaterThan(z0 + 2);
+    });
+  }
+
+  it('if you end up pressed against the hull, you can always swim away', () => {
+    const p = new Player(world);
+    // Put a swimmer right inside the hull's edge (as a bad landing would).
+    p.placeWorld(0, 1.3, Math.PI);
+    p.update(1 / 60, { x: 0, y: 0 }, false, false);
+    for (let i = 0; i < 180; i++) p.update(1 / 60, { x: 0, y: 1 }, false, false);
+    expect(Math.abs(p.feet.z)).toBeGreaterThan(3);
+  });
+});
+
+describe('jumping off a boat that has swung round on its anchor', async () => {
+  const { createSloop } = await import('../src/render/sloop');
+  const sloop = createSloop();
+  sloop.group.position.set(5, 0.1, -12);
+  sloop.group.rotation.set(0.04, -0.9, 0.06);
+  sloop.group.updateMatrixWorld(true);
+  const world: PlayerWorld = { groundAt: () => -3, waterAt: () => 0, trunks: [], boat: { obj: sloop.group, deck: sloop.deck, ladderTop: sloop.points.ladderTop, ladderBottom: sloop.points.ladderBottom, length: sloop.length }, bounds: { cx: 0, cz: 0, r: 100 } };
+  it('you still land clear and can swim away', () => {
+    const p = new Player(world);
+    p.placeAboard(new THREE.Vector3(0, 0.8, 1.15), 0);
+    // Face out over the starboard rail, whichever way the boat points.
+    const out = sloop.group.localToWorld(new THREE.Vector3(0, 0.8, 4)).sub(p.feet);
+    p.yaw = Math.atan2(-out.x, -out.z);
+    for (let i = 0; i < 60 * 4 && p.mode !== 'swim'; i++) p.update(1 / 60, { x: 0, y: 1 }, false, i % 45 === 0);
+    expect(p.mode).toBe('swim');
+    for (let i = 0; i < 60; i++) p.update(1 / 60, { x: 0, y: 0 }, false, false);
+    const start = p.feet.clone();
+    for (let i = 0; i < 180; i++) p.update(1 / 60, { x: 0, y: 1 }, false, false);
+    expect(p.feet.distanceTo(start)).toBeGreaterThan(2);
+  });
+});

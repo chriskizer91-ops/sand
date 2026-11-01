@@ -59,6 +59,7 @@ export class Player {
   private bobPhase = 0;
   private bob = 0;
   private stride = 0;
+  private launch: { x: number; z: number } | null = null;
   private climb: { t: number; dir: 'up' | 'down'; from: THREE.Vector3; to: THREE.Vector3 } | null = null;
   /** World position of the eye, updated each frame. */
   readonly eye = new THREE.Vector3();
@@ -198,12 +199,14 @@ export class Player {
             this.startClimbDown();
             return true;
           }
-          // Anywhere else, only by jumping clear of the lifelines.
-          if (!high) return false;
-          if (h === null) {
+          // Already standing outside the lifelines (on the edge of the deck)? Step off into the sea.
+          const onEdge = !deck.insideLifelines(this.pos.x, this.pos.z);
+          if (h === null && (high || onEdge)) {
             this.leaveBoat(nx, nz, ev);
             return true;
           }
+          // Anywhere else, only by jumping clear of the lifelines.
+          if (!high) return false;
         }
         if (h === null) return false;
         if (deck.blocked(nx, nz, PLAYER.radius * 0.8)) return false;
@@ -250,9 +253,17 @@ export class Player {
       for (const t of w.trunks) {
         if (Math.abs(t.x - nx) < 1 && Math.abs(t.z - nz) < 1 && Math.hypot(t.x - nx, t.z - nz) < t.r + PLAYER.radius) return false;
       }
-      if (this.insideHull(nx, nz)) return false;
+      // The hull is solid, but moving away from it is always allowed.
+      const penNew = this.hullPen(nx, nz);
+      if (penNew > 0 && !this.airborne && penNew >= this.hullPen(this.pos.x, this.pos.z) - 1e-4) return false;
       return true;
     };
+    // Flying off the boat: keep going out over the water, clear of the hull.
+    if (this.launch && this.airborne) {
+      this.pos.x += this.launch.x * dt;
+      this.pos.z += this.launch.z * dt;
+    }
+    if (!this.airborne) this.launch = null;
     if (l > 0) {
       const nx = this.pos.x + vx;
       const nz = this.pos.z + vz;
@@ -262,6 +273,7 @@ export class Player {
       } else if (canGo(this.pos.x + vx, this.pos.z)) this.pos.x += vx;
       else if (canGo(this.pos.x, this.pos.z + vz)) this.pos.z += vz;
     }
+    if (!this.airborne) this.pushOutOfHull(dt);
     // Stay within reach of home.
     const b = w.bounds;
     const dx = this.pos.x - b.cx;
@@ -351,11 +363,27 @@ export class Player {
     }
   }
 
-  private insideHull(x: number, z: number): boolean {
+  /** How far x, z is inside the hull's footprint (plus a little room), in metres; 0 when clear. */
+  private hullPen(x: number, z: number): number {
     const b = this.world.boat;
     b.obj.worldToLocal(tmp2.set(x, 0, z));
-    const hb = b.deck.halfBeam(tmp2.x, false);
-    return hb > 0 && Math.abs(tmp2.z) < hb + 0.25;
+    const hb = b.deck.halfBeam(tmp2.x, true);
+    if (hb <= 0) return 0;
+    return Math.max(0, hb + 0.3 - Math.abs(tmp2.z));
+  }
+
+  /** If you're pressed into the hull, ease you out sideways (so you can never get stuck against it). */
+  private pushOutOfHull(dt: number): void {
+    const pen = this.hullPen(this.pos.x, this.pos.z);
+    if (pen <= 0) return;
+    const b = this.world.boat;
+    b.obj.worldToLocal(tmp2.set(this.pos.x, 0, this.pos.z));
+    const side = tmp2.z >= 0 ? 1 : -1;
+    tmp2.z += side * Math.min(pen, Math.max(0.02, 2.5 * dt));
+    tmp2.y = 0;
+    b.obj.localToWorld(tmp2);
+    this.pos.x = tmp2.x;
+    this.pos.z = tmp2.z;
   }
 
   private startClimbDown(): void {
@@ -366,12 +394,20 @@ export class Player {
 
   private leaveBoat(lx: number, lz: number, ev: PlayerEvents): void {
     const b = this.world.boat;
+    // Which way is "away from the boat" here? Out to the side, or off the bow or stern.
+    const hb = b.deck.halfBeam(lx, true);
+    const outLocal = hb > 0.3 ? new THREE.Vector3(0, 0, lz >= 0 ? 1 : -1) : new THREE.Vector3(lx >= 0 ? 1 : -1, 0, 0);
     tmp.set(lx, this.pos.y, lz);
     b.obj.localToWorld(tmp);
     this.pos.copy(tmp);
+    const q = b.obj.getWorldQuaternion(tmpQ);
+    outLocal.applyQuaternion(q);
+    outLocal.y = 0;
+    outLocal.normalize().multiplyScalar(2.2);
+    this.launch = { x: outLocal.x, z: outLocal.z };
     this.mode = 'swim';
     this.airborne = true;
-    this.vy = Math.min(this.vy, 0);
+    this.vy = Math.max(this.vy, 1.5);
     ev.splash = 0.2;
   }
 

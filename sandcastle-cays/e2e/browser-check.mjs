@@ -190,6 +190,29 @@ async function standBy(page, f) {
   await waitFrames(page, 6);
   await shot(page, '03-swimming-by-the-boat.png');
 
+  // Jump over the side: you land clear of the hull and can swim away (owner found you could get stuck).
+  await G(page, () => {
+    const g = window.__game;
+    g.player.placeAboard(g.vec(0, 0.8, 1.15), 0);
+    const out = g.sloop.group.localToWorld(g.vec(0, 0.8, 4)).sub(g.player.feet);
+    g.player.yaw = Math.atan2(-out.x, -out.z);
+    g.player.pitch = -0.1;
+  });
+  await waitFrames(page, 2);
+  await page.keyboard.down('KeyW');
+  for (let i = 0; i < 6; i++) {
+    await page.keyboard.press('Space');
+    if (await G(page, () => window.__game.playerMode === 'swim')) break;
+    await waitFrames(page, 4);
+  }
+  await page.keyboard.up('KeyW');
+  const overboard = await G(page, () => window.__game.playerMode === 'swim');
+  const fBefore = await G(page, () => window.__game.feet);
+  await G(page, () => window.__game.walk(3, 0, 1));
+  const fAfter = await G(page, () => window.__game.feet);
+  const swamAway = Math.hypot(fAfter[0] - fBefore[0], fAfter[2] - fBefore[2]);
+  step('Laptop: jumping over the side lands you in the sea, free to swim away', overboard && swamAway > 2, `${overboard ? 'in the water' : 'still aboard'}, swam ${swamAway.toFixed(1)} m in 3 s`);
+
   // Swim ashore to the cove.
   await G(page, () => window.__game.teleport(0, -16, Math.PI, -0.05));
   await waitFrames(page, 3);

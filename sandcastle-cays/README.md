@@ -2,7 +2,7 @@
 
 A calm game about living aboard a small sailboat in the Caribbean: comb the beaches for what the sea washes up, build sandcastles, and (coming) keep your boat in repair, grow food and sail between islands. Everything (sand, water, sky, boat, finds, sounds) is made in code. See [`docs/PLAN.md`](docs/PLAN.md) for the agreed plan.
 
-**Current version: 0.2.1, "Aboard and ashore"** (0.2.1 adds playing from a link) (the first part of the Home Cay slice):
+**Current version: 0.2.2, "Aboard and ashore"** (0.2.1 added playing from a link; 0.2.2 fixes getting stuck after jumping overboard) (the first part of the Home Cay slice):
 - your boat at anchor off Home Cay, seen through your own eyes;
 - the new sea and sky from the raft game, with day and night;
 - swimming ashore and walking the island;
@@ -12,7 +12,7 @@ A calm game about living aboard a small sailboat in the Caribbean: comb the beac
 ## Playing it
 **Easiest:** open the game's private link, https://claude.ai/artifact/3F64yxNHrsCbRvwY9mdk3f, which always has the latest version. (For Claude sessions: it's the claude.ai artifact with slug `1229d053-31f1-46e8-be80-cc430658ecc6`; republish `builds/` files to it with each new version.)
 
-Or download the file: `builds/sandcastle-cays-v0.2.1.html`.
+Or download the file: `builds/sandcastle-cays-v0.2.2.html`.
 - **Laptop:** download the file and double-click it (opens in Chrome or Edge).
 - **Pixel phone:** download the file, then open it from Files > Downloads with Chrome.
 
