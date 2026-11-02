@@ -143,3 +143,15 @@ Each stroke opens an undo record. The first time a chunk is changed during that 
 - **The autopilot ("Sail to …"):** follows waypoints through the reef gap, beats upwind at 52° off the wind, tacks when the other tack is 25° better, then heads into the wind, lowers sail and anchors. The checks confirm the passage legs are deep enough all the way.
 - **The world:** Home Cay owns the open sea floor. Pink Sand Cay sits on its own shelf at (−210, −300), fading into that floor at the edge of its area. Its anchorage is on the sheltered north-west side.
 - **Controls at the helm:** you stay at the tiller and look around freely; the walking keys and stick become steering and sails.
+
+## 24. A small outboard motor (v0.3.1; numbers in `src/game/sailing.ts`)
+- **What:** a tiny outboard (about 3.5 hp) on the stern, for getting in and out of tight spots when the wind is wrong. The owner asked for it after trying v0.3.
+- **How fast:** about 2.3 m/s (4.5 knots) flat out ahead, about 1 m/s astern. It eases in and out over about half a second. With the sails drawing as well it adds less, and the two together never beat the boat's top speed by more than a little.
+- **Steps:** full astern, slow astern, off, slow ahead, half ahead, full ahead (R for faster, F for slower, or the two "Motor" buttons).
+- **Steering:** the motor pushes water past the rudder, so you can steer at low speed and even when stopped. Going astern, the steering reverses, as on a real boat.
+- **Anchor:** starting the motor raises the anchor for you. Dropping the anchor stops the motor. Letting go of the helm stops the motor too, unless she is sailing herself somewhere.
+- **The autopilot uses it:** to motor the last stretch into an anchorage, to motor a short way straight upwind instead of tacking, and to get out of irons.
+- **The model:** it tilts down into the water when running and tilts up out of the water when stopped. Its propeller spins and the cowl shakes a little.
+- **Navigation lights** came with it. At anchor the masthead light is on; under way the red and green sidelights and the white sternlight are on. They glow at night and are plain coloured lenses by day.
+- **Not yet:** fuel. It could join the rations in v0.4 as one more thing to manage.
+

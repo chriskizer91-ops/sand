@@ -18,7 +18,7 @@ const PAL = {
   groundDay: C(0x2a8a96),
   groundNight: C(0x03111a),
   sunNoon: C(0xfff0d8),
-  sunLow: C(0xffa060),
+  sunLow: C(0xff9248),
   moon: C(0x8aa0d8),
   sunsetGlow: C(0xffa877),
   duskZenith: C(0x3e5f9e),
@@ -111,7 +111,7 @@ export class Daylight {
         SKY.sunDir.y = 0.08;
         SKY.sunDir.normalize();
       }
-      SKY.sunColor.copy(PAL.sunLow).lerp(PAL.sunNoon, smoothstep(0.05, 0.45, sy));
+      SKY.sunColor.copy(PAL.sunLow).lerp(PAL.sunNoon, smoothstep(0.12, 0.5, sy));
     } else {
       SKY.sunDir.copy(SKY.moonDir);
       if (SKY.sunDir.y < 0.1) {
@@ -131,8 +131,9 @@ export class Daylight {
     const dim = 1 - 0.5 * SKY.cover;
     this.sun.color.copy(SKY.sunColor);
     this.sun.intensity = sy > 0.02 ? 3.3 * smoothstep(0.0, 0.18, sy) * dim : 1.5 * night;
-    this.hemi.intensity = 0.55 * (0.55 + 0.45 * daylight);
-    this.hemi.color.copy(SKY.horizon).lerp(PAL.horizonDay, 0.5);
+    // Golden hour: less cool sky-fill, so the low warm sun shows.
+    this.hemi.intensity = 0.55 * (0.55 + 0.45 * daylight) * (1 - 0.35 * sunset);
+    this.hemi.color.copy(SKY.horizon).lerp(PAL.horizonDay, 0.5 * (1 - sunset));
     this.hemi.groundColor.copy(this.tmp.setRGB(0.78, 0.7, 0.55).multiplyScalar(0.3 + 0.7 * daylight));
 
     const fog = this.scene.fog as THREE.FogExp2;

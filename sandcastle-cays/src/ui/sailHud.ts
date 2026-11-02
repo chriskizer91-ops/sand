@@ -16,6 +16,8 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string,
 export interface SailHudActions {
   sailUp(): void;
   sailDown(): void;
+  motorUp(): void;
+  motorDown(): void;
   anchor(): void;
   chart(): void;
   leaveHelm(): void;
@@ -35,6 +37,8 @@ export interface SailReadout {
   anchored: boolean;
   aground: boolean;
   course: string | null;
+  /** The outboard: 'off', 'slow ahead', 'full astern'... */
+  motor: string;
 }
 
 const NOGO_DEG = 38;
@@ -54,6 +58,8 @@ export class SailHud {
   private bar: HTMLDivElement;
   private sailLabel: HTMLSpanElement;
   private anchorLabel: HTMLSpanElement;
+  private motorUpLabel: HTMLSpanElement;
+  private motorDownLabel: HTMLSpanElement;
   private last = '';
 
   constructor(
@@ -91,8 +97,9 @@ export class SailHud {
     };
     button(ICONS.sailDown, 'Less sail', 'S', () => actions.sailDown());
     this.sailLabel = button(ICONS.sailUp, 'More sail', 'W', () => actions.sailUp());
+    this.motorDownLabel = button(ICONS.motorDown, 'Motor', 'F', () => actions.motorDown());
+    this.motorUpLabel = button(ICONS.motorUp, 'Motor', 'R', () => actions.motorUp());
     this.anchorLabel = button(ICONS.anchor, 'Anchor', 'X', () => actions.anchor());
-    button(ICONS.chart, 'Chart', 'M', () => actions.chart());
     button(ICONS.stand, 'Let go', 'E', () => actions.leaveHelm());
     document.body.appendChild(this.bar);
   }
@@ -102,6 +109,7 @@ export class SailHud {
     this.panel.classList.toggle('hide', !dial);
     this.bar.classList.toggle('hide', !helm);
     document.body.classList.toggle('athelm', helm);
+    document.body.classList.toggle('sailing', dial);
   }
 
   update(r: SailReadout): void {
@@ -112,9 +120,11 @@ export class SailHud {
     const a1 = ((deg + NOGO_DEG - 90) * Math.PI) / 180;
     this.wedge.setAttribute('d', `M0 0 L${(46 * Math.cos(a0)).toFixed(1)} ${(46 * Math.sin(a0)).toFixed(1)} A46 46 0 0 1 ${(46 * Math.cos(a1)).toFixed(1)} ${(46 * Math.sin(a1)).toFixed(1)} Z`);
     let l1: string;
+    const motoring = r.motor !== 'off';
     if (r.anchored) l1 = '<b>At anchor</b>';
-    else if (r.aground) l1 = '<b class="bad">Aground!</b> Steer for deeper water';
-    else l1 = `<b>${r.knots.toFixed(1)} knots</b> · ${r.point === 'in irons' ? '<b class="bad">in irons</b> (sails flapping)' : r.point}`;
+    else if (r.aground) l1 = `<b class="bad">Aground!</b> ${motoring ? 'Motor astern, or steer' : 'Steer'} for deeper water`;
+    else if (motoring && r.sail < 0.05) l1 = `<b>${r.knots.toFixed(1)} knots</b> · motoring, ${r.motor}`;
+    else l1 = `<b>${r.knots.toFixed(1)} knots</b> · ${r.point === 'in irons' ? (motoring ? 'motoring into the wind' : '<b class="bad">in irons</b> (sails flapping)') : r.point}${motoring ? ' + motor' : ''}`;
     const heading = `heading ${compassWord(r.compass)}`;
     const l2 = r.course ? `Sailing for ${r.course} · ${heading}` : `${heading} · wind ${r.windKnots.toFixed(0)} knots`;
     const key = l1 + l2;
@@ -126,6 +136,9 @@ export class SailHud {
     const sails = r.sailSet <= 0.01 ? 'Sails down' : r.sailSet < 0.99 ? 'Half sail' : 'Full sail';
     this.sailLabel.textContent = r.sailSet >= 0.99 ? sails : 'More sail';
     this.anchorLabel.textContent = r.anchored ? 'Raise anchor' : 'Drop anchor';
+    // The motor buttons say what the next press does.
+    this.motorUpLabel.textContent = r.motor === 'off' ? 'Motor ahead' : r.motor.includes('astern') ? 'Slower astern' : r.motor === 'full ahead' ? 'Full ahead' : 'Faster';
+    this.motorDownLabel.textContent = r.motor === 'off' ? 'Motor astern' : r.motor.includes('astern') ? (r.motor === 'full astern' ? 'Full astern' : 'Faster astern') : 'Slower';
     void this.dial;
   }
 }

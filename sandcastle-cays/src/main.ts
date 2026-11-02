@@ -230,6 +230,10 @@ const clock: Clock = { day: 1, hour: DAY.start };
 const beach = new Beach([...terrain.tideline(0.6), ...world.pink.tideline(0.6)]);
 const beachView = new BeachView(beach, findModel, (x, z) => ground.heightAt(x, z));
 scene.add(beachView.group);
+scene.add(beachView.glints);
+// Glints never sit under the water: the water picture can skip them.
+staticSkip.push(beachView.glints);
+rebuildRefractSkip();
 
 /** You can swim and walk anywhere around both cays. */
 const ISLAND_CENTRE = { cx: -100, cz: -140, r: 430 };
@@ -319,6 +323,8 @@ hud.setMode('none');
 let atHelm = false;
 let course: Course | null = null;
 let helmTipShown = false;
+let ironsTime = 0;
+let ironsTipShown = false;
 let lastSea = 0;
 const RIG_SPEED = { boom: 0 };
 interface Rig {
@@ -328,6 +334,8 @@ interface Rig {
   setFill(f: number, t: number): void;
   setRudder(a: number): void;
   setAnchored(down: boolean): void;
+  setMotor?(throttle: number, time: number): void;
+  setLights?(mode: 'anchor' | 'underway', night: number): void;
 }
 const rig: Rig | null = sloop.rig ?? null;
 
@@ -335,6 +343,8 @@ const sailHud = new SailHud(
   {
     sailUp: () => sailUp(),
     sailDown: () => sailDown(),
+    motorUp: () => motorUp(),
+    motorDown: () => motorDown(),
     anchor: () => toggleAnchor(),
     chart: () => toggleChart(),
     leaveHelm: () => leaveHelm(),
@@ -373,7 +383,7 @@ function toggleChart(show?: boolean): void {
 }
 
 function renderChart(): void {
-  chart.render(boat, wind.from, course ? course.name : null, player.aboard, player.aboard ? null : { x: player.feet.x, z: player.feet.z });
+  chart.render(boat, wind.from, course ? course.name : null, player.aboard, player.aboard ? null : { x: player.feet.x, z: player.feet.z }, course ? course.waypoints : []);
 }
 
 function nearHelm(): boolean {
@@ -391,16 +401,58 @@ function takeHelm(): void {
     hud.showCard(
       'You have the helm',
       isTouch
-        ? 'Steer with your left thumb. Raise the sails with “More sail”. You can’t sail straight into the wind: if the sails flap, turn away from it.'
-        : 'A and D steer, W and S raise and lower the sails, X drops or raises the anchor, M opens the chart, E lets go. You can’t sail straight into the wind: if the sails flap, turn away from it.',
+        ? 'Steer with your left thumb. Raise the sails with “More sail”, or use the motor buttons. You can’t sail straight into the wind: if the sails flap, turn away from it (or use the motor).'
+        : 'A and D steer, W and S raise and lower the sails, R and F work the motor, X drops or raises the anchor, M opens the chart, E lets go. You can’t sail straight into the wind: if the sails flap, turn away from it (or use the motor).',
       9000,
     );
   }
 }
 
+/** The outboard's settings: full astern, half astern, off, slow ahead, half ahead, full ahead. */
+const THROTTLE_STEPS = [-1, -0.5, 0, 0.35, 0.65, 1];
+function throttleIndex(): number {
+  const t = boat.throttle ?? 0;
+  let best = 2;
+  for (let i = 0; i < THROTTLE_STEPS.length; i++) if (Math.abs(THROTTLE_STEPS[i] - t) < Math.abs(THROTTLE_STEPS[best] - t)) best = i;
+  return best;
+}
+function setThrottle(i: number): void {
+  const was = boat.throttle ?? 0;
+  const t = THROTTLE_STEPS[Math.max(0, Math.min(THROTTLE_STEPS.length - 1, i))];
+  if (boat.anchored && t !== 0) {
+    // As with the sails: the anchor comes up first.
+    weighAnchor(boat);
+    audio.anchorChain(false);
+    ui.toast('Anchor up', 1800);
+  }
+  boat.throttle = t;
+  if (course) stopCourse(null);
+  if (was === 0 && t !== 0) audio.motorStart();
+  changedSinceSave = true;
+}
+function motorUp(): void {
+  setThrottle(throttleIndex() + 1);
+}
+function motorDown(): void {
+  setThrottle(throttleIndex() - 1);
+}
+function motorWord(t: number): string {
+  if (t === 0) return 'off';
+  if (t < -0.75) return 'full astern';
+  if (t < 0) return 'slow astern';
+  if (t < 0.5) return 'slow ahead';
+  if (t < 0.9) return 'half ahead';
+  return 'full ahead';
+}
+
 function leaveHelm(): void {
   if (!atHelm) return;
   atHelm = false;
+  // Nobody leaves an outboard running with no one at the tiller.
+  if ((boat.throttle ?? 0) !== 0 && !course) {
+    boat.throttle = 0;
+    ui.toast('You throttle the motor off as you let go of the tiller.', 3000);
+  }
   if (!boat.anchored && boat.sail > 0.05 && !course) ui.toast('With nobody steering she’ll turn into the wind and slow down.', 3500);
 }
 
@@ -1072,6 +1124,7 @@ function frame(now: number): void {
   if (course) {
     const ap = autopilot(boat, wind, course);
     boat.sailSet = ap.sailSet;
+    boat.throttle = ap.throttle;
     steer = ap.steer;
     if (ap.arrived) {
       const name = course.name;
@@ -1093,6 +1146,19 @@ function frame(now: number): void {
     changedSinceSave = true;
   }
   if (sailEv.floated) ui.toast('Afloat again', 1800);
+  // Stuck head to wind at the helm for a while? A gentle tip, once.
+  if (atHelm && !boat.anchored && boat.sail > 0.5 && Math.abs(boat.motor ?? 0) < 0.05 && Math.abs(boat.speed) < 0.3 && Math.abs(windAngle(boat, wind)) < SAILING.noGo) ironsTime += dt;
+  else ironsTime = 0;
+  if (ironsTime > 5 && !ironsTipShown) {
+    ironsTipShown = true;
+    hud.showCard(
+      'In irons',
+      isTouch
+        ? 'The wind is straight ahead, so the sails can’t fill. Hold the steering hard to one side until the wind comes from the side, or give her a little motor.'
+        : 'The wind is straight ahead, so the sails can’t fill. Hold A or D until the wind comes from the side (the arrow on the dial moves out of the red wedge), or press R for a little motor.',
+      9000,
+    );
+  }
   // She stays among the cays for now.
   {
     const dx = boat.x + 100;
@@ -1125,6 +1191,8 @@ function frame(now: number): void {
     rig.setFill(sailFill(twa), time);
     rig.setRudder(boat.rudder);
     rig.setAnchored(boat.anchored);
+    rig.setMotor?.(boat.motor ?? 0, time);
+    rig.setLights?.(boat.anchored ? 'anchor' : 'underway', daylight.info.night);
   }
 
   // The clock (paused while a menu or the logbook is open).
@@ -1150,6 +1218,8 @@ function frame(now: number): void {
         if (input.wasPressed('KeyW') || input.wasPressed('ArrowUp')) sailUp();
         if (input.wasPressed('KeyS') || input.wasPressed('ArrowDown')) sailDown();
         if (input.wasPressed('KeyX')) toggleAnchor();
+        if (input.wasPressed('KeyR')) motorUp();
+        if (input.wasPressed('KeyF')) motorDown();
         if (input.wasPressed('KeyE') || input.wasPressed('Use') || input.wasPressed('Action')) leaveHelm();
         // Taking the wheel back from the autopilot.
         if (course && Math.abs(input.move.x) > 0.3) stopCourse('You have the helm.');
@@ -1219,13 +1289,14 @@ function frame(now: number): void {
   particles.uniforms.uSunView.value.copy(sunView);
   swayTime.value = time;
   cursor.update(dt, time);
-  beachView.update(player.feet);
+  beachView.update(player.feet, time, daylight.info.daylight, window.innerHeight * renderer.getPixelRatio());
 
   // What you're carrying.
   held.setContents(beach.state.basket);
   held.update(dt, {
     walking: Math.min(1, player.speed / 2),
-    hide: !started || view !== 'fp' || player.mode === 'swim' || player.mode === 'climb' || anyPanelOpen(),
+    // Both hands on the tiller at the helm, so the basket is put down.
+    hide: !started || view !== 'fp' || player.mode === 'swim' || player.mode === 'climb' || anyPanelOpen() || atHelm,
     sunDir: sunView,
     sunColor: SKY.sunColor,
     sunIntensity: sun.intensity,
@@ -1249,9 +1320,11 @@ function frame(now: number): void {
         anchored: boat.anchored,
         aground: boat.aground,
         course: course ? course.name : null,
+        motor: motorWord(boat.throttle ?? 0),
       });
       if (chart.open) renderChart();
     }
+    audio.setMotor(Math.abs(boat.motor ?? 0), aboard || Math.hypot(player.feet.x - boat.x, player.feet.z - boat.z) < 60);
     audio.setSailing(Math.abs(boat.speed), wind.speed, boat.sail * (1 - sailFill(windAngle(boat, wind))) * (boat.anchored ? 0 : 1), boat.heel, aboard);
   }
   hud.setClock(formatClock(clock));
@@ -1437,6 +1510,8 @@ void boot();
   },
   sailUp,
   sailDown,
+  motorUp,
+  motorDown,
   toggleAnchor,
   startCourse,
   get course() {
@@ -1452,6 +1527,7 @@ void boot();
       if (course) {
         const ap = autopilot(boat, wind, course);
         boat.sailSet = ap.sailSet;
+        boat.throttle = ap.throttle;
         st = ap.steer;
         if (ap.arrived && !dropAnchor(boat, seaBed)) course = null;
       }

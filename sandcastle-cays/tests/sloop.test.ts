@@ -32,7 +32,7 @@ function expectStandable(x: number, z: number, label: string): number {
 }
 
 describe('sloop model', () => {
-  it('builds within the phone budget (<= 50k triangles, <= 12 draw calls, rig included)', () => {
+  it('builds within the phone budget (<= 50k triangles, <= 13 draw calls, rig, motor and lights included)', () => {
     let tris = 0;
     for (const m of meshes) {
       const g = m.geometry;
@@ -41,7 +41,7 @@ describe('sloop model', () => {
     console.log(`sloop: ${tris} triangles in ${meshes.length} meshes`);
     expect(tris).toBe(boat.triangles);
     expect(boat.triangles).toBeLessThanOrEqual(50000);
-    expect(meshes.length).toBeLessThanOrEqual(12);
+    expect(meshes.length).toBeLessThanOrEqual(13);
   });
 
   it('has the agreed size: about 8.4 m long, 2.8 m beam, with a keel below', () => {
@@ -55,8 +55,8 @@ describe('sloop model', () => {
     expect(box.min.y).toBeCloseTo(-boat.draft, 1);
   });
 
-  it('casts shadows, and the deck receives them', () => {
-    for (const m of meshes) expect(m.castShadow, m.name).toBe(true);
+  it('casts shadows (all but the light glows), and the deck receives them', () => {
+    for (const m of meshes) if (m.name !== 'sloop-nav-lights') expect(m.castShadow, m.name).toBe(true);
     const teak = meshes.find((m) => m.name === 'sloop-teak');
     expect(teak?.receiveShadow).toBe(true);
   });
@@ -364,8 +364,114 @@ describe('rig (sailing)', () => {
       const p = m.geometry.getAttribute('position').array;
       for (let i = 0; i < p.length; i++) if (!Number.isFinite(p[i])) throw new Error(`${m.name} has a bad vertex`);
     });
-    expect(n).toBeLessThanOrEqual(12);
+    expect(n).toBeLessThanOrEqual(13);
     expect(tris).toBeLessThanOrEqual(50000);
     reset();
+  });
+});
+
+describe('outboard and navigation lights', () => {
+  const rig = boat.rig;
+  const mesh = (name: string) => boat.group.getObjectByName(name) as THREE.Mesh;
+  let clock = 100;
+  /** Runs the motor at this throttle for a while, a frame at a time, as the game does. */
+  const runMotor = (throttle: number, seconds: number) => {
+    for (let t = 0; t < seconds; t += 1 / 30) rig.setMotor(throttle, (clock += 1 / 30));
+  };
+  /** Exact boat-local box of a mesh's vertices (optionally only some of them). */
+  const boxOf = (m: THREE.Mesh, keep: (p: THREE.Vector3) => boolean = () => true) => {
+    boat.group.updateMatrixWorld(true);
+    const toBoat = new THREE.Matrix4().copy(boat.group.matrixWorld).invert().multiply(m.matrixWorld);
+    const p = m.geometry.getAttribute('position');
+    const box = new THREE.Box3();
+    const v = new THREE.Vector3();
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i);
+      if (keep(v)) box.expandByPoint(v.clone().applyMatrix4(toBoat));
+    }
+    return box;
+  };
+
+  it('starts tilted up, prop out of the water', () => {
+    runMotor(0, 1.2);
+    const st = rig.status();
+    expect(st.motorDown).toBe(0);
+    expect(st.propTip.y).toBeGreaterThan(0.2);
+    expect(st.propTip.z).toBeLessThan(-0.3); // port side
+    expect(boxOf(mesh('sloop-outboard')).min.y).toBeGreaterThan(0);
+  });
+
+  it('tilts down smoothly when running, prop about half a metre under, and back up at 0', () => {
+    runMotor(0, 1.2);
+    runMotor(1, 0.4);
+    const mid = rig.status().motorDown;
+    expect(mid).toBeGreaterThan(0.3);
+    expect(mid).toBeLessThan(0.7);
+    runMotor(1, 1.0);
+    const st = rig.status();
+    expect(st.motorDown).toBe(1);
+    expect(st.propTip.y).toBeLessThan(-0.3);
+    expect(st.propTip.y).toBeGreaterThan(-0.7);
+    expect(boxOf(mesh('sloop-outboard')).min.y).toBeLessThan(-0.4);
+    // the propeller spins while running
+    const prop = () => Float32Array.from(mesh('sloop-outboard').geometry.getAttribute('position').array);
+    const a = prop();
+    runMotor(-0.5, 0.1);
+    const b = prop();
+    expect(a.some((x, i) => Math.abs(x - b[i]) > 0.005)).toBe(true);
+    runMotor(0, 1.2);
+    expect(rig.status().motorDown).toBe(0);
+    expect(rig.status().propTip.y).toBeGreaterThan(0.2);
+  });
+
+  it('keeps clear of the swim ladder and the rudder blade, up or down', () => {
+    const ladder = new THREE.Box3(
+      new THREE.Vector3(points.ladderBottom.x - 0.08, points.ladderBottom.y - 0.2, points.ladderTop.z - 0.22),
+      new THREE.Vector3(points.ladderTop.x + 0.15, points.ladderTop.y + 0.6, points.ladderTop.z + 0.22),
+    );
+    for (const throttle of [0, 1]) {
+      runMotor(throttle, 1.2);
+      const motor = boxOf(mesh('sloop-outboard'));
+      expect(motor.intersectsBox(ladder), `ladder, throttle ${throttle}`).toBe(false);
+      for (const r of [-0.6, 0, 0.6]) {
+        rig.setRudder(r);
+        const blade = boxOf(mesh('sloop-rudder'), (p) => p.y < 0.9); // the blade, below the tiller and rudder head
+        expect(motor.intersectsBox(blade), `rudder ${r}, throttle ${throttle}`).toBe(false);
+      }
+      rig.setRudder(0);
+    }
+    runMotor(0, 1.2);
+  });
+
+  it('does not change the walkable deck', () => {
+    const p = rig.status().propTip;
+    expect(deck.heightAt(p.x, p.z)).toBeNull();
+    expect(deck.heightAt(-4.5, -0.55)).toBeNull();
+    expect(deck.insideLifelines(-4.5, -0.55)).toBe(false);
+    expect(deck.heightAt(points.ladderTop.x, points.ladderTop.z)).toBeCloseTo(points.ladderTop.y, 2);
+    expect(deck.insideLifelines(points.ladderTop.x, points.ladderTop.z)).toBe(true);
+  });
+
+  it('lights the right lamps for the mode, and only at night', () => {
+    const lights = mesh('sloop-nav-lights');
+    const col = () => lights.geometry.getAttribute('color').array as Float32Array;
+    const lit = (test: (r: number, g: number, b: number) => boolean) => {
+      const c = col();
+      for (let i = 0; i < c.length; i += 4) if (c[i + 3] > 0.99 && test(c[i], c[i + 1], c[i + 2])) return true;
+      return false;
+    };
+    rig.setLights('anchor', 0);
+    expect(lit((r, g, b) => Math.max(r, g, b) > 1.01)).toBe(false); // daytime: plain lenses
+    rig.setLights('anchor', 1);
+    let st = rig.status().lights;
+    expect(st.anchorOn && !st.sidelightsOn && !st.sternOn).toBe(true);
+    expect(lit((r, g, b) => r > 2 && g > 2 && b > 2)).toBe(true); // white masthead light glowing
+    expect(lit((r, g) => r > 2 && g < r / 3)).toBe(false);
+    rig.setLights('underway', 1);
+    st = rig.status().lights;
+    expect(!st.anchorOn && st.sidelightsOn && st.sternOn).toBe(true);
+    expect(lit((r, g) => r > 2 && g < r / 3)).toBe(true); // red to port
+    expect(lit((r, g) => g > 2 && r < g / 3)).toBe(true); // green to starboard
+    rig.setLights('anchor', 0);
   });
 });

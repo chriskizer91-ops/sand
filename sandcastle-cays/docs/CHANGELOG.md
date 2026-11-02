@@ -1,5 +1,32 @@
 # What changed, version by version (plain language)
 
+## v0.3.1, A little outboard (and a polish pass)
+**What changed**
+- **A small outboard motor** on the stern, for when the wind isn't helping: getting out of an anchorage, through the reef gap, or out of irons.
+  - At the helm: R for more motor, F for less (or the two "Motor" buttons on the phone).
+  - Six steps: full astern, slow astern, off, slow ahead, half ahead, full ahead. Flat out ahead is about 4.5 knots; astern is slow.
+  - You can steer with it even when you're barely moving. Going astern, the steering is reversed, as on a real boat.
+  - Starting it raises the anchor for you. Dropping the anchor or letting go of the tiller stops it.
+  - You can see it: it tilts down into the water when it runs and back up when it stops, with a spinning propeller. It putters, too.
+  - "Sail to …" uses it as well: to motor the last bit into the anchorage, to go a short way straight into the wind, and to get unstuck.
+- **Navigation lights:** a white masthead light at anchor; red, green and a white stern light when you're under way. They glow at night.
+- **Polish:**
+  - finds on the beach catch the sun with a little sparkle, so they're easier to spot from a distance;
+  - the basket is out of your hand while you're steering;
+  - a tip if you sit "in irons" (pointing into the wind) for a while;
+  - the chart draws a dashed line showing the way she's sailing herself;
+  - warmer light at sunrise and sunset;
+  - tip cards no longer cover the wind dial;
+  - the helm buttons are tidier (the chart is on the top bar).
+
+**Checks before sending**
+CHECKS_PLACEHOLDER
+
+**Not tested, or known**
+- How the motor feels with your thumbs, and whether it's too strong or too weak. Tell me.
+- How the lights look on your Pixel at night (the test browser has no real graphics chip).
+- There's no fuel yet; it could join the rations in v0.4.
+
 ## v0.3, First passage
 You can sail now. Take the helm, raise the sails, find your way out through the gap in the reef, and sail to a second island, Pink Sand Cay.
 

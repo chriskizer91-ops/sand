@@ -127,7 +127,7 @@ export class Chart {
    * Redraw with the boat (heading in radians, +x = east) and the wind (blowing from, radians).
    * `courseTo` is the place being sailed to, if any; `aboard` decides whether you can sail from here.
    */
-  render(boat: { x: number; z: number; heading: number }, windFrom: number, courseTo: string | null, aboard: boolean, you: { x: number; z: number } | null): void {
+  render(boat: { x: number; z: number; heading: number }, windFrom: number, courseTo: string | null, aboard: boolean, you: { x: number; z: number } | null, route: { x: number; z: number }[] = []): void {
     if (!this.base) this.base = this.drawBase();
     const css = Math.min(340, window.innerWidth - 52);
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -178,6 +178,22 @@ export class Chart {
       ctx.fillText('wind', cx, cy + 22 * k);
       ctx.fillStyle = 'rgba(30,50,60,.75)';
       ctx.fillText('N ↑', 22 * k, 20 * k);
+    }
+    // The way she's sailing: a dashed line through the marks still ahead.
+    if (route.length) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,.9)';
+      ctx.lineWidth = 2 * k;
+      ctx.setLineDash([5 * k, 5 * k]);
+      ctx.beginPath();
+      const [bx, by] = this.toPx(boat.x, boat.z, S);
+      ctx.moveTo(bx, by);
+      for (const p of route) {
+        const [px, py] = this.toPx(p.x, p.z, S);
+        ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      ctx.restore();
     }
     // You (when not aboard) and your boat.
     if (you) {

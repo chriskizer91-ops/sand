@@ -21,12 +21,13 @@
  * varnish, cream gelcoat, teal boot stripe. Wood grain and deck planks are
  * painted by code into DataTextures (DECISIONS 14). The fixed parts are merged into
  * seven meshes, one per material; the moving rig (boom, sails, lines, rudder) adds four
- * more, so eleven draw calls in all.
+ * more, plus the outboard and the navigation lights: thirteen draw calls in all.
  *
  * THE RIG (createSloop().rig): setSail hoists the main and unrolls the jib, setBoom swings
  * the boom about the gooseneck, setJib sheets the jib to a side, setFill fills or luffs the
  * sails, setRudder turns rudder and tiller about the raked rudder stock, setAnchored shows
- * the anchor line or stows the anchor on the bow roller.
+ * the anchor line or stows the anchor on the bow roller, setMotor tilts the outboard down
+ * and spins its prop, setLights shows the anchor light or the sidelights and sternlight.
  */
 import * as THREE from 'three';
 
@@ -961,6 +962,10 @@ const COL = {
   ring: rgb(0xef5a3a),
   ringWhite: rgb(0xf6f2ea),
   galv: rgb(0x9ea6ab),
+  motorCowl: rgb(0xefe8d7),
+  cowlBand: rgb(0xe8664c),
+  motorGrey: rgb(0xbfc3bf),
+  prop: rgb(0x3b4046),
   flagA: rgb(0xef6a48),
   flagB: rgb(0xf7efd9),
   flagC: rgb(0x2fb5b0),
@@ -1487,7 +1492,7 @@ function buildRig(metal: Part, cloth: Part): void {
   metal.add(new THREE.CylinderGeometry(0.056, 0.078, mastH, 16, 1, false), COL.alu, M(MAST_X, mastY0 + mastH / 2, 0, 0, 0, 0, 1, 1, 0.68));
   metal.add(roundedBox(0.22, 0.05, 0.16, 0.015), COL.dark, M(MAST_X, mastY0 + 0.02, 0)); // mast step
   metal.add(roundedBox(0.26, 0.12, 0.1, 0.02), COL.dark, M(MAST_X + 0.02, MAST_TOP + 0.03, 0)); // masthead
-  metal.add(new THREE.SphereGeometry(0.035, 10, 6), COL.steel, M(MAST_X, MAST_TOP + 0.12, 0)); // anchor light
+  metal.add(new THREE.CylinderGeometry(0.03, 0.034, 0.02, 12), COL.dark, M(MAST_X, MAST_TOP + 0.1, 0)); // anchor-light base (lens: navLights)
   rod(metal, V(MAST_X - 0.08, MAST_TOP + 0.08, 0), V(MAST_X - 0.08, MAST_TOP + 0.9, 0), 0.006, 4, COL.dark); // VHF aerial
   // Spreaders.
   const spY = 6.5;
@@ -1572,8 +1577,9 @@ function buildLifelines(metal: Part, cloth: Part): void {
       rod(metal, V(x, deckY(x, z), z), V(x, topY(x), z), tubeR, 7, COL.steel);
     }
     rod(metal, V(4.0, deckY(4.0, 0.06), s * 0.06), V(4.08, topY(4.08), s * 0.04), tubeR, 7, COL.steel);
-    // Navigation light on the pulpit: red to port, green to starboard.
-    metal.add(roundedBox(0.07, 0.05, 0.04, 0.012), s < 0 ? COL.red : COL.green, M(3.95, topY(3.95) - 0.06, s * edge(3.95) * 0.85 + s * 0.02));
+    // Housing for the sidelight on the pulpit (the lens itself is in navLights).
+    const sl = sidelightPos(s);
+    metal.add(roundedBox(0.075, 0.055, 0.016, 0.006), COL.dark, M(sl.x - 0.005, sl.y, sl.z - s * 0.02));
   }
   // Stern pushpit: two corner pieces, leaving the gap over the ladder.
   const sternX = X_AFT + 0.07;
@@ -1587,6 +1593,10 @@ function buildLifelines(metal: Part, cloth: Part): void {
     ];
     return pts;
   };
+  // Sternlight housing under the stern rail (lens in navLights).
+  const stl = sternlightPos();
+  metal.add(roundedBox(0.02, 0.06, 0.075, 0.006), COL.dark, M(stl.x + 0.02, stl.y + 0.005, stl.z));
+  metal.add(roundedBox(0.02, 0.04, 0.02, 0.005), COL.dark, M(stl.x + 0.02, stl.y + 0.045, stl.z));
   for (const s of [-1, 1]) {
     const endZ = s < 0 ? GAP_Z0 : GAP_Z1;
     tube(metal, curve(corner(s, topY, endZ), 20), tubeR, 7, COL.steel, true);
@@ -1762,6 +1772,10 @@ export interface SloopRig {
   setRudder(angle: number): void;
   /** Anchor down: the line runs from the bow roller into the water. Up: no line in the water, anchor stowed on the bow roller. */
   setAnchored(down: boolean): void;
+  /** Throttle -1 (full astern) .. 0 (off) .. 1 (full ahead). The outboard tilts down (about 0.8 s) when |throttle| > 0 and up again at 0; the prop spins (direction by sign, speed by amount) and the cowl shivers while running. Call every frame with the time in seconds. */
+  setMotor(throttle: number, time: number): void;
+  /** 0 = day (lights look off), 1 = full night glow. 'anchor' lights the white masthead light only; 'underway' lights the red/green sidelights and the white sternlight. */
+  setLights(mode: 'anchor' | 'underway', night: number): void;
   /** Current state and where the moving bits are (boat-local), for tests, debugging and game logic. */
   status(): SloopRigStatus;
 }
@@ -1783,6 +1797,12 @@ export interface SloopRigStatus {
   jibClew: THREE.Vector3;
   rudderTrailingEdge: THREE.Vector3;
   tillerEnd: THREE.Vector3;
+  throttle: number;
+  /** 0 = outboard tilted up (stowed), 1 = down and in the water. */
+  motorDown: number;
+  /** The propeller hub (boat-local), for bubbles and foam. */
+  propTip: THREE.Vector3;
+  lights: { mode: 'anchor' | 'underway'; night: number; anchorOn: boolean; sidelightsOn: boolean; sternOn: boolean };
 }
 
 interface RigState {
@@ -1793,6 +1813,10 @@ interface RigState {
   time: number;
   rudder: number;
   anchored: boolean;
+  throttle: number;
+  tilt: number; // 0 = up, 1 = down
+  motorTime: number;
+  propAngle: number;
 }
 
 const STEM_HEAD = V(4.25, 1.05, 0); // forestay foot
@@ -2304,11 +2328,12 @@ ${hullBandGlsl()}
 function buildMovingRig(
   metalMat: THREE.Material,
   clothMat: THREE.Material,
+  gelMat: THREE.Material,
   varnishTex: THREE.Texture,
   rudderPart: Part,
   rudderInfo: RudderInfo,
 ): { objects: THREE.Object3D[]; rig: SloopRig; triangles: number } {
-  const st: RigState = { sail: 0, boom: 0, jib: 0, fill: 1, time: 0, rudder: 0, anchored: true };
+  const st: RigState = { sail: 0, boom: 0, jib: 0, fill: 1, time: 0, rudder: 0, anchored: true, throttle: 0, tilt: 0, motorTime: NaN, propAngle: 0 };
 
   // Boom: its own group, pivoting about the vertical axis through the gooseneck.
   const boomPart = new Part();
@@ -2382,7 +2407,19 @@ function buildMovingRig(
   };
   const rudderSign = rudderInfo.trailingEdge.clone().applyMatrix4(rudderMatrix(0.3, 1)).z > 0 ? 1 : -1;
 
-  for (const m of [boomMesh, dynMesh, sailMesh, rudderMesh]) {
+  // Outboard: its own group pivoting on the bracket; the propeller spins inside the same mesh.
+  const motor = new DynPart();
+  const segProp = buildOutboard(motor);
+  const motorGeom = motor.part.geometry();
+  motor.bind(motorGeom);
+  const motorMesh = new THREE.Mesh(motorGeom, gelMat);
+  motorMesh.name = 'sloop-outboard';
+  const motorGroup = new THREE.Group();
+  motorGroup.name = 'sloop-outboard-pivot';
+  motorGroup.add(motorMesh);
+  const lights = new NavLights();
+
+  for (const m of [boomMesh, dynMesh, sailMesh, rudderMesh, motorMesh]) {
     m.castShadow = true;
     m.receiveShadow = true;
   }
@@ -2433,6 +2470,24 @@ function buildMovingRig(
   applySails();
   applyBoom();
   applyRudder();
+  const applyMotor = () => {
+    const e = smooth01(st.tilt);
+    const running = Math.abs(st.throttle) > 0.01 && st.tilt > 0.98;
+    const sh = running ? Math.sqrt(Math.abs(st.throttle)) : 0;
+    const t = st.motorTime || 0;
+    motorGroup.position.set(MOTOR_PIVOT.x, MOTOR_PIVOT.y + sh * 0.0015 * Math.sin(t * 171), MOTOR_PIVOT.z + sh * 0.001 * Math.sin(t * 133 + 1));
+    motorGroup.rotation.set(sh * 0.003 * Math.sin(t * 97), 0, MOTOR_UP * (1 - e) + sh * 0.004 * Math.sin(t * 151));
+    motorGroup.updateMatrix();
+    const hub = PROP_HUB;
+    motor.place(
+      segProp,
+      new THREE.Matrix4()
+        .makeTranslation(hub.x, hub.y, hub.z)
+        .multiply(new THREE.Matrix4().makeRotationX(st.propAngle))
+        .multiply(new THREE.Matrix4().makeTranslation(-hub.x, -hub.y, -hub.z)),
+    );
+  };
+  applyMotor();
 
   const same = (a: number, b: number) => Math.abs(a - b) < 1e-6;
   const rig: SloopRig = {
@@ -2479,6 +2534,21 @@ function buildMovingRig(
       st.anchored = down;
       applyAnchor();
     },
+    setMotor(throttle, time) {
+      const dt = Number.isFinite(st.motorTime) ? clamp(time - st.motorTime, 0, 0.1) : 0;
+      st.motorTime = time;
+      st.throttle = clamp(throttle, -1, 1);
+      const target = Math.abs(st.throttle) > 0.01 ? 1 : 0;
+      const tiltBefore = st.tilt;
+      st.tilt += clamp(target - st.tilt, -dt / TILT_TIME, dt / TILT_TIME);
+      st.propAngle = (st.propAngle + dt * st.throttle * 26) % (Math.PI * 2);
+      if (st.tilt !== tiltBefore || Math.abs(st.throttle) > 0.01) applyMotor();
+    },
+    setLights(mode, night) {
+      const n = clamp(night, 0, 1);
+      if (mode === lights.mode && same(n, lights.night)) return;
+      lights.set(mode, n);
+    },
     status() {
       const rm = rudderMatrix(st.rudder, rudderSign);
       return {
@@ -2498,11 +2568,243 @@ function buildMovingRig(
         jibClew: sails.jibClew.clone(),
         rudderTrailingEdge: rudderInfo.trailingEdge.clone().applyMatrix4(rm),
         tillerEnd: rudderInfo.tillerEnd.clone().applyMatrix4(rm),
+        throttle: st.throttle,
+        motorDown: st.tilt,
+        propTip: PROP_HUB.clone().applyMatrix4(motorGroup.matrix),
+        lights: { mode: lights.mode, night: lights.night, anchorOn: lights.isOn('anchor'), sidelightsOn: lights.isOn('side'), sternOn: lights.isOn('stern') },
       };
     },
   };
-  const triangles = (boomPart.idx.length + dyn.part.idx.length + rudderPart.idx.length) / 3 + sails.triangles;
-  return { objects: [boomGroup, dynMesh, sailMesh, rudderMesh], rig, triangles };
+  const triangles = (boomPart.idx.length + dyn.part.idx.length + rudderPart.idx.length + motor.part.idx.length) / 3 + sails.triangles + lights.triangles;
+  return { objects: [boomGroup, dynMesh, sailMesh, rudderMesh, motorGroup, lights.mesh], rig, triangles };
+}
+
+// ============================================================ the outboard and navigation lights
+
+const MOTOR_Z = -0.55; // port side of the transom, clear of the rudder (middle) and the ladder (starboard)
+const MOTOR_PIVOT = V(-4.52, 0.36, MOTOR_Z); // tilt pivot at the top of the motor board
+const MOTOR_UP = -1.31; // tilt when stowed: the leg swings up behind the boat, prop out of the water
+const MOTOR_BOARD_X = -4.5;
+const PROP_HUB = V(-0.27, -0.86, 0); // motor-local: the propeller hub, about 0.5 m under water when down
+const TILT_TIME = 0.8; // seconds to tilt up or down
+
+/** Where the transom surface is (x) at height y. */
+function transomXAt(y: number): number {
+  return X_AFT + TRANSOM_RAKE * (sheerY(X_AFT) - y);
+}
+function sidelightPos(side: number): THREE.Vector3 {
+  const x = 3.95;
+  return V(x, sheerY(x) + RAIL_H - 0.06, side * ((deckHalfBeam(x) - 0.06) * 0.85 + 0.02));
+}
+function sternlightPos(): THREE.Vector3 {
+  const x = X_AFT + 0.07;
+  return V(x - 0.035, sheerY(x) + RAIL_H - 0.07, -0.12);
+}
+
+/** The stainless outboard bracket on the port side of the transom, its teak motor board and the motor's clamp. */
+function buildMotorBracket(metal: Part, varnish: Part): void {
+  const rake = Math.atan(TRANSOM_RAKE);
+  for (const e of [-1, 1]) {
+    const z = MOTOR_Z + e * 0.155;
+    metal.add(roundedBox(0.016, 0.34, 0.05, 0.006), COL.steel, M(transomXAt(0.44) - 0.008, 0.44, z, 0, 0, rake)); // strap bolted to the transom
+    rod(metal, V(transomXAt(0.55) - 0.02, 0.55, z), V(MOTOR_BOARD_X + 0.02, 0.33, z), 0.014, 8, COL.steel, true);
+    rod(metal, V(transomXAt(0.32) - 0.02, 0.32, z), V(MOTOR_BOARD_X + 0.02, 0.22, z), 0.014, 8, COL.steel, true);
+    rod(metal, V(MOTOR_BOARD_X + 0.02, 0.2, z), V(MOTOR_BOARD_X + 0.02, 0.35, z), 0.014, 8, COL.steel, true);
+  }
+  varnish.add(roundedBox(0.035, 0.17, 0.34, 0.008), WHITE, M(MOTOR_BOARD_X, MOTOR_PIVOT.y - 0.085, MOTOR_Z));
+  // The motor's clamp bracket straddles the board (it stays put when the motor tilts).
+  for (const e of [-1, 1]) metal.add(roundedBox(0.09, 0.16, 0.012, 0.004), COL.motorGrey, M(MOTOR_BOARD_X - 0.005, MOTOR_PIVOT.y - 0.07, MOTOR_Z + e * 0.075));
+  metal.add(roundedBox(0.09, 0.02, 0.16, 0.006), COL.motorGrey, M(MOTOR_BOARD_X - 0.005, MOTOR_PIVOT.y + 0.005, MOTOR_Z));
+  for (const e of [-1, 1]) {
+    const z = MOTOR_Z + e * 0.045;
+    rod(metal, V(MOTOR_BOARD_X + 0.018, 0.27, z), V(MOTOR_BOARD_X + 0.07, 0.27, z), 0.006, 6, COL.dark);
+    rod(metal, V(MOTOR_BOARD_X + 0.07, 0.27, z - 0.035), V(MOTOR_BOARD_X + 0.07, 0.27, z + 0.035), 0.007, 6, COL.dark, true);
+  }
+}
+
+/** A small (about 3.5 hp) outboard in its own frame: origin at the tilt pivot, +x toward the boat, leg straight down. Returns the propeller's piece. */
+function buildOutboard(dyn: DynPart): number {
+  const p = dyn.part;
+  // Powerhead: cream top cowl with a coral band, grey lower cowl.
+  p.add(roundedBox(0.36, 0.2, 0.24, 0.07, 3), COL.motorCowl, M(-0.12, 0.31, 0));
+  p.add(roundedBox(0.37, 0.03, 0.25, 0.06, 2), COL.cowlBand, M(-0.12, 0.215, 0));
+  p.add(roundedBox(0.34, 0.12, 0.22, 0.045, 2), COL.motorGrey, M(-0.115, 0.15, 0));
+  p.add(new THREE.CylinderGeometry(0.028, 0.03, 0.012, 12), COL.dark, M(-0.05, 0.412, 0)); // fuel cap
+  p.add(roundedBox(0.03, 0.05, 0.015, 0.006), COL.dark, M(0.06, 0.25, 0.06)); // choke knob
+  // Midsection, leg, anti-ventilation plate, gearcase and skeg.
+  p.add(roundedBox(0.22, 0.1, 0.15, 0.04, 2), COL.motorGrey, M(-0.13, 0.06, 0));
+  p.add(new THREE.CylinderGeometry(0.052, 0.06, 0.74, 14), COL.motorGrey, M(-0.13, -0.37, 0, 0, 0, 0, 1, 1, 0.55));
+  p.add(roundedBox(0.25, 0.012, 0.15, 0.005), COL.motorGrey, M(-0.16, -0.72, 0));
+  p.add(new THREE.CapsuleGeometry(0.042, 0.17, 4, 12), COL.motorGrey, M(-0.14, -0.86, 0, 0, 0, Math.PI / 2));
+  p.add(roundedBox(0.09, 0.1, 0.012, 0.004), COL.motorGrey, M(-0.17, -0.94, 0, 0, 0, 0.25));
+  // Short black tiller arm with a twist grip, pointing back toward the boat.
+  tube(p, curve([V(0.03, 0.17, 0), V(0.12, 0.22, 0), V(0.2, 0.265, 0)], 6), 0.017, 8, COL.black);
+  tube(p, [V(0.2, 0.265, 0), V(0.29, 0.31, 0)], 0.022, 8, COL.black, true);
+  // Three-bladed propeller about its own axis (x), so it can spin.
+  return dyn.rigid((q) => {
+    const at = new THREE.Matrix4().makeTranslation(PROP_HUB.x, PROP_HUB.y, PROP_HUB.z);
+    q.add(new THREE.CylinderGeometry(0.024, 0.03, 0.08, 12), COL.prop, at.clone().multiply(M(0, 0, 0, 0, 0, Math.PI / 2)));
+    q.add(new THREE.SphereGeometry(0.025, 10, 6), COL.prop, at.clone().multiply(M(-0.04, 0, 0)));
+    for (let k = 0; k < 3; k++) {
+      const m = at
+        .clone()
+        .multiply(new THREE.Matrix4().makeRotationX((k * 2 * Math.PI) / 3))
+        .multiply(new THREE.Matrix4().makeRotationY(0.55))
+        .multiply(new THREE.Matrix4().makeTranslation(0, 0.068, 0))
+        .multiply(new THREE.Matrix4().makeScale(0.011, 0.07, 0.045));
+      q.add(new THREE.SphereGeometry(1, 10, 6), COL.prop, m);
+    }
+  });
+}
+
+type LampKind = 'anchor' | 'side' | 'stern';
+interface Lamp {
+  kind: LampKind;
+  day: RGB; // unlit lens colour
+  lit: RGB; // glowing colour
+  radius: number; // glow radius (m) at full night, close up
+  lens: [number, number]; // vertex range
+  halo: number; // first of the 4 glow vertices
+}
+
+/**
+ * Navigation lights: small lenses plus a soft glow disc each, all in one unlit mesh. The glow discs face the
+ * camera, grow with distance so a light still reads from far off, and only show inside the light's sector
+ * (red to port, green to starboard, white astern, white all round at the masthead). No real three.js lights.
+ */
+class NavLights {
+  readonly mesh: THREE.Mesh;
+  readonly triangles: number;
+  private lamps: Lamp[] = [];
+  private col: THREE.BufferAttribute;
+  private halo: THREE.BufferAttribute;
+  mode: 'anchor' | 'underway' = 'anchor';
+  night = 0;
+  constructor() {
+    const pos: number[] = [];
+    const nrm: number[] = [];
+    const col: number[] = [];
+    const halo: number[] = [];
+    const idx: number[] = [];
+    const lensOf = (g: THREE.BufferGeometry, m: THREE.Matrix4, c: RGB): [number, number] => {
+      const p = new Part();
+      p.add(g, c, m);
+      const start = pos.length / 3;
+      for (let i = 0; i < p.nv; i++) {
+        pos.push(p.pos[i * 3], p.pos[i * 3 + 1], p.pos[i * 3 + 2]);
+        nrm.push(p.nrm[i * 3], p.nrm[i * 3 + 1], p.nrm[i * 3 + 2]);
+        col.push(c[0], c[1], c[2], 1);
+        halo.push(0, 0, 0, -2);
+      }
+      for (const i of p.idx) idx.push(start + i);
+      return [start, p.nv];
+    };
+    const addLamp = (kind: LampKind, centre: THREE.Vector3, facing: THREE.Vector3, cosHalf: number, lens: THREE.BufferGeometry, lensM: THREE.Matrix4, day: RGB, lit: RGB, radius: number) => {
+      const range = lensOf(lens, lensM, day);
+      const h = pos.length / 3;
+      for (const [cx, cy] of [
+        [-1, -1],
+        [1, -1],
+        [1, 1],
+        [-1, 1],
+      ]) {
+        pos.push(centre.x, centre.y, centre.z);
+        nrm.push(facing.x, facing.y, facing.z);
+        col.push(lit[0] * 1.8, lit[1] * 1.8, lit[2] * 1.8, 0.85);
+        halo.push(cx, cy, 0, cosHalf);
+      }
+      this.lamps.push({ kind, day, lit, radius, lens: range, halo: h });
+      return h;
+    };
+    const white: RGB = [1, 0.96, 0.86];
+    const frosted: RGB = [0.78, 0.78, 0.74];
+    // Anchor light: white, all round, at the masthead.
+    const top = V(MAST_X, MAST_TOP + 0.14, 0);
+    addLamp('anchor', top, V(0, 1, 0), -2, new THREE.CapsuleGeometry(0.024, 0.035, 3, 10), M(top.x, top.y, top.z), frosted, white, 0.3);
+    // Sidelights: red to port, green to starboard, each shining from dead ahead to just abaft the beam.
+    for (const s of [-1, 1]) {
+      const c = sidelightPos(s);
+      const facing = V(Math.cos(0.95), 0, s * Math.sin(0.95)); // from just across the bow to just abaft the beam
+      const day: RGB = s < 0 ? [0.42, 0.05, 0.04] : [0.03, 0.3, 0.1];
+      const lit: RGB = s < 0 ? [1, 0.1, 0.06] : [0.08, 1, 0.32];
+      addLamp('side', c, facing, Math.cos(1.03), roundedBox(0.06, 0.042, 0.03, 0.01), M(c.x, c.y, c.z), day, lit, 0.28);
+    }
+    // Sternlight: white, shining aft.
+    const st = sternlightPos();
+    addLamp('stern', st, V(-1, 0, 0), Math.cos(1.18), roundedBox(0.03, 0.04, 0.06, 0.01), M(st.x, st.y, st.z), frosted, white, 0.24);
+    for (const l of this.lamps) idx.push(l.halo, l.halo + 1, l.halo + 2, l.halo, l.halo + 2, l.halo + 3);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+    this.col = new THREE.Float32BufferAttribute(col, 4).setUsage(THREE.DynamicDrawUsage);
+    this.halo = new THREE.Float32BufferAttribute(halo, 4).setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('color', this.col);
+    g.setAttribute('halo', this.halo);
+    g.setIndex(idx);
+    g.computeBoundingSphere();
+    if (g.boundingSphere) g.boundingSphere.radius += 2; // room for the glow discs
+    this.triangles = idx.length / 3;
+    const mat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false });
+    mat.onBeforeCompile = (sh) => {
+      sh.vertexShader =
+        'attribute vec4 halo;\nvarying vec3 vHalo;\n' +
+        sh.vertexShader.replace(
+          '#include <project_vertex>',
+          `#include <project_vertex>
+  vHalo = vec3(halo.xy, halo.z > 0.0 ? 1.0 : 0.0);
+  if (halo.z > 0.0) {
+    float vis = 1.0;
+    if (halo.w > -1.5) vis = smoothstep(halo.w - 0.05, halo.w + 0.05, dot(normalize(normalMatrix * normal), normalize(-mvPosition.xyz)));
+    mvPosition.xy += halo.xy * halo.z * vis * max(1.0, -mvPosition.z / 12.0);
+    gl_Position = projectionMatrix * mvPosition;
+  }`,
+        );
+      sh.fragmentShader =
+        'varying vec3 vHalo;\n' +
+        sh.fragmentShader.replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+  if (vHalo.z > 0.5) diffuseColor.a *= pow(max(0.0, 1.0 - length(vHalo.xy)), 2.2);`,
+        );
+    };
+    mat.customProgramCacheKey = () => 'sloop-navlights-v1';
+    this.mesh = new THREE.Mesh(g, mat);
+    this.mesh.name = 'sloop-nav-lights';
+    this.mesh.renderOrder = 2;
+    this.mesh.castShadow = false; // glows don't cast shadows
+    this.set('anchor', 0);
+  }
+  isOn(kind: LampKind): boolean {
+    return this.night > 0.001 && (this.mode === 'anchor' ? kind === 'anchor' : kind !== 'anchor');
+  }
+  set(mode: 'anchor' | 'underway', night: number): void {
+    this.mode = mode;
+    this.night = clamp(night, 0, 1);
+    const n = this.night;
+    const C = this.col.array as Float32Array;
+    const H = this.halo.array as Float32Array;
+    for (const l of this.lamps) {
+      const on = this.isOn(l.kind);
+      const dim = 1 - 0.8 * n; // an unlit lens darkens with the night (the material is unlit)
+      const k = on ? n : 0;
+      const glow = 1 + 3 * n;
+      for (let i = l.lens[0]; i < l.lens[0] + l.lens[1]; i++) {
+        for (let c = 0; c < 3; c++) C[i * 4 + c] = l.day[c] * dim * (1 - k) + l.lit[c] * glow * k;
+      }
+      for (let i = l.halo; i < l.halo + 4; i++) H[i * 4 + 2] = on ? l.radius * n : 0;
+    }
+    this.col.needsUpdate = true;
+    this.halo.needsUpdate = true;
+  }
+  /** Brightest lens colour channel of each kind of lamp (for tests and debugging). */
+  brightness(): Record<LampKind, number> {
+    const out: Record<LampKind, number> = { anchor: 0, side: 0, stern: 0 };
+    const C = this.col.array as Float32Array;
+    for (const l of this.lamps) {
+      for (let i = l.lens[0]; i < l.lens[0] + l.lens[1]; i++) out[l.kind] = Math.max(out[l.kind], C[i * 4], C[i * 4 + 1], C[i * 4 + 2]);
+    }
+    return out;
+  }
 }
 
 /** The painted sailcloth is made once and shared. */
@@ -2586,6 +2888,7 @@ export function createSloop(): Sloop {
   buildRig(metal, cloth);
   buildLifelines(metal, cloth);
   buildFittings(metal, cloth, varnish);
+  buildMotorBracket(metal, varnish);
 
   textures ??= { teak: paintTeak(), varnish: paintVarnish(), nonskid: paintNonSkid() };
   const teakTex = textures.teak;
@@ -2612,7 +2915,8 @@ export function createSloop(): Sloop {
   }
   const metalMat = mats.find((m) => m[2] === 'sloop-metal')?.[1] as THREE.Material;
   const clothMat = mats.find((m) => m[2] === 'sloop-cloth')?.[1] as THREE.Material;
-  const moving = buildMovingRig(metalMat, clothMat, varnishTex, rudder, rudderInfo);
+  const gelMat = mats.find((m) => m[2] === 'sloop-gelcoat')?.[1] as THREE.Material;
+  const moving = buildMovingRig(metalMat, clothMat, gelMat, varnishTex, rudder, rudderInfo);
   for (const o of moving.objects) group.add(o);
   triangles += moving.triangles;
 

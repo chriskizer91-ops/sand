@@ -2,7 +2,7 @@
 
 A calm game about living aboard a small sailboat in the Caribbean: comb the beaches for what the sea washes up, build sandcastles, sail between islands, and (coming) keep your boat in repair and grow food. Everything (sand, water, sky, boat, finds, sounds) is made in code. See [`docs/PLAN.md`](docs/PLAN.md) for the agreed plan.
 
-**Current version: 0.3, "First passage"**: sailing with real wind, the chart and "sail there for me", anchoring, the reef and its gap, and a second island, Pink Sand Cay. Before that, 0.2 brought:
+**Current version: 0.3.1, "A little outboard"**: a small outboard motor for when the wind is wrong, navigation lights, and a polish pass. 0.3 ("First passage") brought sailing with real wind, the chart and "sail there for me", anchoring, the reef and its gap, and a second island, Pink Sand Cay. Before that, 0.2 brought:
 - your boat at anchor off Home Cay, seen through your own eyes;
 - the new sea and sky from the raft game, with day and night;
 - swimming ashore and walking the island;
@@ -12,7 +12,7 @@ A calm game about living aboard a small sailboat in the Caribbean: comb the beac
 ## Playing it
 **Easiest:** open the game's private link, https://claude.ai/artifact/3F64yxNHrsCbRvwY9mdk3f, which always has the latest version. (For Claude sessions: it's the claude.ai artifact with slug `1229d053-31f1-46e8-be80-cc430658ecc6`; republish `builds/` files to it with each new version.)
 
-Or download the file: `builds/sandcastle-cays-v0.3.html`.
+Or download the file: `builds/sandcastle-cays-v0.3.1.html`.
 - **Laptop:** download the file and double-click it (opens in Chrome or Edge).
 - **Pixel phone:** download the file, then open it from Files > Downloads with Chrome.
 
@@ -26,6 +26,7 @@ Or download the file: `builds/sandcastle-cays-v0.3.html`.
 | Logbook | book button | L or the book button |
 | Take the helm (in the cockpit) | the round button | E |
 | Steer / sails up and down | left thumb / "More sail", "Less sail" | A D / W S |
+| Outboard motor (ahead / astern) | "Motor" buttons | R / F |
 | Anchor | "Drop anchor" button | X |
 | Chart (tap a place to sail there) | map button | M |
 | While building | one finger tool, two fingers swing, pinch zoom | click to use the tool, two-finger swipe to swing, pinch or wheel to zoom |

@@ -309,6 +309,55 @@ export class SandAudio {
     for (let i = 0; i < 8; i++) this.grain(500 + this.rand() * 900, 0.8, 0.06 * Math.min(1, size), 0.2, 0.05 + i * 0.04);
   }
 
+
+  // ---------- the outboard ----------
+
+  private motorNodes: { osc: OscillatorNode; gain: GainNode; filter: BiquadFilterNode; pulse: OscillatorNode } | null = null;
+
+  /** The little outboard's putter: louder and higher with more throttle (0..1), quiet when you're away from the boat. */
+  setMotor(level: number, near: boolean): void {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx;
+    if (!this.motorNodes) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = 38;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 300;
+      filter.Q.value = 2;
+      const chop = ctx.createGain();
+      chop.gain.value = 0.5;
+      // A fast pulse gives the "putt-putt" of a single cylinder.
+      const pulse = ctx.createOscillator();
+      pulse.type = 'square';
+      pulse.frequency.value = 9;
+      const pulseAmt = ctx.createGain();
+      pulseAmt.gain.value = 0.45;
+      pulse.connect(pulseAmt).connect(chop.gain);
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      osc.connect(filter).connect(chop).connect(gain).connect(this.master);
+      osc.start();
+      pulse.start();
+      this.motorNodes = { osc, gain, filter, pulse };
+    }
+    const n = this.motorNodes;
+    const now = ctx.currentTime;
+    const on = level > 0.02;
+    n.gain.gain.setTargetAtTime(on ? (near ? 0.05 + 0.06 * level : 0.012) : 0, now, 0.25);
+    n.osc.frequency.setTargetAtTime(34 + 26 * level, now, 0.3);
+    n.pulse.frequency.setTargetAtTime(8 + 9 * level, now, 0.3);
+    n.filter.frequency.setTargetAtTime(240 + 380 * level, now, 0.3);
+  }
+
+  /** A tug on the starter cord and the motor catching. */
+  motorStart(): void {
+    if (!this.ctx || !this.enabled) return;
+    for (let i = 0; i < 6; i++) this.grain(900 + i * 260, 2, 0.05, 0.06, i * 0.03);
+    for (let i = 0; i < 4; i++) this.grain(160 + this.rand() * 80, 1, 0.09, 0.12, 0.3 + i * 0.09);
+  }
+
   click(): void {
     if (!this.ctx || !this.enabled) return;
     this.grain(2400, 3, 0.12, 0.025);

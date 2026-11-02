@@ -12,6 +12,11 @@ interface RigPose {
   time: number;
   rudder: number;
   anchored: boolean;
+  /** Outboard throttle (the preview lets it finish tilting before the picture). */
+  motor: number;
+  lights: 'anchor' | 'underway';
+  /** 0 = day, 1 = night (also darkens the preview's sky and light). */
+  night: number;
 }
 
 interface View {
@@ -50,17 +55,18 @@ function makeSky(): THREE.Mesh {
       top: { value: new THREE.Color(0x3d9be9) },
       horizon: { value: new THREE.Color(0xd9f1ff) },
       sunDir: { value: sunDir },
+      sunGain: { value: 1 },
     },
     vertexShader: `varying vec3 vDir;
       void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-    fragmentShader: `uniform vec3 top; uniform vec3 horizon; uniform vec3 sunDir; varying vec3 vDir;
+    fragmentShader: `uniform vec3 top; uniform vec3 horizon; uniform vec3 sunDir; uniform float sunGain; varying vec3 vDir;
       void main() {
         vec3 d = normalize(vDir);
         float h = max(d.y, 0.0);
         vec3 c = mix(horizon, top, pow(h, 0.5));
         if (d.y < 0.0) c = mix(horizon, vec3(0.12, 0.45, 0.55), min(1.0, -d.y * 4.0));
         float s = max(dot(d, sunDir), 0.0);
-        c += vec3(1.0, 0.95, 0.85) * (pow(s, 1200.0) * 40.0 + pow(s, 16.0) * 0.3);
+        c += vec3(1.0, 0.95, 0.85) * (pow(s, 1200.0) * 40.0 + pow(s, 16.0) * 0.3) * sunGain;
         gl_FragColor = vec4(c, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
@@ -92,7 +98,8 @@ sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.025;
 scene.add(sun);
 scene.add(sun.target);
-scene.add(new THREE.HemisphereLight(0xcfe9ff, 0xe8d4a8, 0.7));
+const hemi = new THREE.HemisphereLight(0xcfe9ff, 0xe8d4a8, 0.7);
+scene.add(hemi);
 
 const water = new THREE.Mesh(
   new THREE.PlaneGeometry(600, 600),
@@ -155,8 +162,24 @@ function countMeshes(): number {
 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 1500);
 
+/** Day or night lighting for the preview scene (the game has its own day and night). */
+function setNight(on: boolean): void {
+  const u = (sky.material as THREE.ShaderMaterial).uniforms;
+  (u.top.value as THREE.Color).set(on ? 0x07102a : 0x3d9be9);
+  (u.horizon.value as THREE.Color).set(on ? 0x1a2a48 : 0xd9f1ff);
+  u.sunGain.value = on ? 0.04 : 1;
+  scene.environmentIntensity = on ? 0.05 : 0.8;
+  sun.color.set(on ? 0x9fb4d8 : 0xfff2d6);
+  sun.intensity = on ? 0.22 : 2.7;
+  hemi.color.set(on ? 0x3a4f78 : 0xcfe9ff);
+  hemi.groundColor.set(on ? 0x141a26 : 0xe8d4a8);
+  hemi.intensity = on ? 0.18 : 0.7;
+  (water.material as THREE.MeshStandardMaterial).color.set(on ? 0x0b3442 : 0x2fc2cf);
+}
+let clock = 0;
+
 const STARBOARD_TACK: Partial<RigPose> = { sail: 1, boom: -0.7, jib: -0.45, fill: 1, time: 0, rudder: 0.08, anchored: false };
-const REST: RigPose = { sail: 0, boom: 0, jib: 0, fill: 1, time: 0, rudder: 0, anchored: true };
+const REST: RigPose = { sail: 0, boom: 0, jib: 0, fill: 1, time: 0, rudder: 0, anchored: true, motor: 0, lights: 'anchor', night: 0 };
 
 const views: Record<string, View> = {
   far: { pos: [11.5, 1.6, 9.6], target: [0, 4.3, 0], fov: 50 },
@@ -189,6 +212,16 @@ const views: Record<string, View> = {
   'anchor-up': { pos: [6.0, 1.7, 1.6], target: [4.2, 0.95, 0], fov: 45, rig: { anchored: false } },
   'sail-bundle': { pos: [-0.6, 3.3, 2.6], target: [-1.0, 2.3, 0], fov: 55, rig: { ...STARBOARD_TACK, sail: 0.3, boom: -0.2, jib: -0.2 } },
   'sail-foredeck': { pos: [2.6, 2.45, 0.6], target: [-1.5, 2.6, -1.5], fov: 70, rig: STARBOARD_TACK },
+  'motor-down': { pos: [-7.0, 0.4, -2.6], target: [-4.6, 0.15, -0.45], fov: 55, rig: { motor: 1 } },
+  'motor-up': { pos: [-7.0, 0.4, -2.6], target: [-4.6, 0.15, -0.45], fov: 55, rig: { motor: 0 } },
+  'motor-deck': { pos: [-3.85, 2.45, -0.25], target: [-4.75, 0.25, -0.6], fov: 65, rig: { motor: 0 } },
+  'motor-stern': { pos: [-10.5, 1.3, -1.5], target: [-3, 0.8, 0], fov: 45, rig: { motor: 1, anchored: false } },
+  'night-anchor': { pos: [24, 2.2, 18], target: [0, 4.5, 0], fov: 50, rig: { lights: 'anchor', night: 1 } },
+  'night-underway': { pos: [26, 2.2, 15], target: [0, 4.0, 0], fov: 50, rig: { ...STARBOARD_TACK, lights: 'underway', night: 1 } },
+  'night-ahead': { pos: [30, 2.2, 0], target: [0, 3.0, 0], fov: 50, rig: { ...STARBOARD_TACK, lights: 'underway', night: 1 } },
+  'night-astern': { pos: [-30, 2.2, 4], target: [0, 3.0, 0], fov: 50, rig: { ...STARBOARD_TACK, lights: 'underway', night: 1, motor: 0.6 } },
+  'night-far': { pos: [52, 2.5, 30], target: [0, 4.0, 0], fov: 50, rig: { lights: 'anchor', night: 1 } },
+  'day-lights': { pos: [6.0, 1.9, 1.9], target: [4.0, 1.3, 0], fov: 45, rig: { lights: 'underway', night: 0 } },
   'sail-helm': { pos: [-2.2, 2.4, 1.9], target: [-3.6, 0.8, 0], fov: 60, rig: { ...STARBOARD_TACK, rudder: 0.45 } },
 };
 
@@ -208,6 +241,9 @@ function view(name: string): string {
   boat.rig.setFill(pose.fill, pose.time);
   boat.rig.setRudder(pose.rudder);
   boat.rig.setAnchored(pose.anchored);
+  for (let k = 0; k < 26; k++) boat.rig.setMotor(pose.motor, (clock += 0.05));
+  boat.rig.setLights(pose.lights, pose.night);
+  setNight(pose.night > 0.5);
   renderer.render(scene, camera);
   return 'ok';
 }

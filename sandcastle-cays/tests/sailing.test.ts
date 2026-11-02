@@ -166,6 +166,7 @@ describe('sail there for me (the autopilot)', () => {
     for (let t = 0; t < seconds && !arrived; t += 1 / 30) {
       const ap = autopilot(b, steady, course);
       b.sailSet = ap.sailSet;
+      b.throttle = ap.throttle;
       stepBoat(b, steady, { steer: ap.steer, attended: true }, deep, 1 / 30);
       steps++;
       if (Math.abs(windAngle(b, steady)) < SAILING.noGo) inNoGo++;
@@ -182,13 +183,30 @@ describe('sail there for me (the autopilot)', () => {
     expect(Math.hypot(b.x + 300, b.z - 40)).toBeLessThan(45);
   });
 
-  it('beats to a mark straight upwind by tacking, only crossing the no-go zone to tack', () => {
+  it('beats a long way upwind by tacking (sailing, not motoring), then motors the last short stretch', () => {
     const b = newBoat(0, 0, 90 * DEG);
     weighAnchor(b);
-    const r = run({ waypoints: [{ x: 250, z: 0 }], tack: 1, name: 'upwind' }, b, 900);
-    expect(r.arrived).toBe(true);
-    // Only the moments of turning through the wind (tacks, and heading up to stop at the end) are spent in the no-go zone.
-    expect(r.noGoShare).toBeLessThan(0.15);
+    const course: Course = { waypoints: [{ x: 420, z: 0 }], tack: 1, name: 'upwind' };
+    let tacks = 0;
+    let lastTack = course.tack;
+    let motorFar = 0;
+    let arrived = false;
+    for (let t = 0; t < 1200 && !arrived; t += 1 / 30) {
+      const ap = autopilot(b, steady, course);
+      b.sailSet = ap.sailSet;
+      b.throttle = ap.throttle;
+      // Far from the mark she sails: the motor only helps out of a stall.
+      if (Math.hypot(420 - b.x, b.z) > 200 && ap.throttle > 0) motorFar++;
+      stepBoat(b, steady, { steer: ap.steer, attended: true }, deep, 1 / 30);
+      if (course.tack !== lastTack) {
+        tacks++;
+        lastTack = course.tack;
+      }
+      arrived = ap.arrived;
+    }
+    expect(arrived).toBe(true);
+    expect(tacks).toBeGreaterThan(1);
+    expect(motorFar / 30).toBeLessThan(20); // seconds of motor while far off: just the odd stall
   });
 
   it('passes its waypoints in order', () => {
@@ -199,11 +217,90 @@ describe('sail there for me (the autopilot)', () => {
     for (let t = 0; t < 500; t += 1 / 30) {
       const ap = autopilot(b, steady, course);
       b.sailSet = ap.sailSet;
+      b.throttle = ap.throttle;
       stepBoat(b, steady, { steer: ap.steer, attended: true }, deep, 1 / 30);
       if (Math.hypot(b.x + 80, b.z + 80) < 25) passedFirst = true;
       if (ap.arrived) break;
     }
     expect(passedFirst).toBe(true);
     expect(Math.hypot(b.x + 200, b.z + 60)).toBeLessThan(45);
+  });
+});
+
+describe('the outboard', () => {
+  it('with the sails down, full ahead motors her at about 4.5 knots, even straight into the wind', () => {
+    const b = newBoat(0, 0, 0); // bow straight into the east wind: in irons for sails
+    weighAnchor(b);
+    b.throttle = 1;
+    sail(b, 20);
+    expect(b.speed).toBeGreaterThan(SAILING.motorAhead * 0.9);
+    expect(b.x).toBeGreaterThan(25);
+  });
+
+  it('under motor you can steer even when slow', () => {
+    const b = newBoat(0, 0, 0);
+    weighAnchor(b);
+    b.throttle = 0.3;
+    sail(b, 1.5);
+    const h0 = b.heading;
+    sail(b, 3, 1);
+    expect(Math.abs(wrap(b.heading - h0))).toBeGreaterThan(25 * DEG);
+  });
+
+  it('astern she goes backwards, and the bow swings the opposite way to ahead', () => {
+    const b = newBoat(0, 0, 90 * DEG);
+    weighAnchor(b);
+    b.throttle = -1;
+    sail(b, 10);
+    expect(b.speed).toBeLessThan(-0.8);
+    expect(b.z).toBeLessThan(-3); // moved backwards (heading +z)
+    const h0 = b.heading;
+    sail(b, 2, 1);
+    expect(wrap(b.heading - h0)).toBeLessThan(0);
+  });
+
+  it('astern gets her off when she has run aground', () => {
+    const bar: SeaBed = { floorAt: (_x, z) => (z > 60 && z < 80 ? -0.6 : -6) };
+    const b = newBoat(0, 0, 90 * DEG);
+    weighAnchor(b);
+    b.sailSet = 1;
+    sail(b, 40, 0, bar);
+    expect(b.aground).toBe(true);
+    b.sailSet = 0;
+    b.throttle = -1;
+    const evs = sail(b, 12, 0, bar);
+    expect(evs.some((e) => e.floated)).toBe(true);
+    expect(b.aground).toBe(false);
+    expect(b.z).toBeLessThan(52);
+  });
+
+  it('dropping the anchor stops the motor', () => {
+    const b = newBoat(0, 0, 0);
+    weighAnchor(b);
+    b.throttle = 0.4;
+    sail(b, 2);
+    b.throttle = 0;
+    sail(b, 6);
+    expect(dropAnchor(b, deep)).toBeNull();
+    expect(b.throttle).toBe(0);
+  });
+
+  it('the autopilot motors a short way upwind instead of tacking, and anchors close to the spot', () => {
+    const b = newBoat(0, 0, 90 * DEG);
+    weighAnchor(b);
+    const course: Course = { waypoints: [{ x: 130, z: 0 }], tack: 1, name: 'short upwind' };
+    let usedMotor = false;
+    let arrived = false;
+    for (let t = 0; t < 300 && !arrived; t += 1 / 30) {
+      const ap = autopilot(b, steady, course);
+      b.sailSet = ap.sailSet;
+      b.throttle = ap.throttle;
+      if (ap.throttle > 0) usedMotor = true;
+      stepBoat(b, steady, { steer: ap.steer, attended: true }, deep, 1 / 30);
+      arrived = ap.arrived;
+    }
+    expect(usedMotor).toBe(true);
+    expect(arrived).toBe(true);
+    expect(Math.hypot(b.x - 130, b.z)).toBeLessThan(20);
   });
 });

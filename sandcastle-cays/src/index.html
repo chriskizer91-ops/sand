@@ -136,10 +136,12 @@ body[data-mode="build"] [data-fp] { display: none !important; }
 #helmbar .tool { width: 66px; height: 62px; position: relative; }
 #helmbar kbd { position: absolute; top: 3px; right: 6px; font: 700 10px/1 ui-monospace, monospace; color: var(--ink-soft); opacity: .7; }
 body.athelm #jumpbtn { display: none; }
+/* Cards drop below the sailing dial so they never cover it. */
+body.sailing #findcard { top: calc(130px + var(--safe-t)); }
 body.athelm #actionbtn { bottom: calc(96px + var(--safe-b)); }
 #chart { width: min(380px, calc(100vw - 20px)); }
 #chart .chartmap { display: block; margin: 4px auto 6px; border-radius: 14px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); }
-@media (max-width: 640px) { #sailhud { top: calc(104px + var(--safe-t)); } #helmbar .tool { width: 58px; font-size: 11px; } }
+@media (max-width: 640px) { #sailhud { top: calc(104px + var(--safe-t)); } body.sailing #findcard { top: calc(178px + var(--safe-t)); } #helmbar .tool { width: 58px; font-size: 11px; } }
 @media (max-width: 640px) { #clock { left: 10px; top: calc(66px + var(--safe-t)); transform: none; font-size: 12.5px; padding: 6px 12px; } #findcard { top: calc(108px + var(--safe-t)); } #prompt { font-size: 14px; } }
 @media (max-width: 380px) { .tool { width: 60px; } .tool.size { width: 50px; } }
 @media (orientation: landscape) and (max-height: 500px) { #toolbar { left: auto; right: 10px; transform: none; } #hint { bottom: calc(14px + var(--safe-b)); left: 12px; transform: none; max-width: 46vw; } }

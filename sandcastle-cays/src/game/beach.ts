@@ -146,8 +146,57 @@ export class Beach {
 const tmpV = new THREE.Vector3();
 const tmpW = new THREE.Vector3();
 
+const MAX_GLINTS = 64;
+
+/**
+ * Glints: now and then the sun catches a find on the sand and it sparkles,
+ * which is how you spot a shell or a piece of sea glass from a few steps away.
+ */
+function makeGlints(): THREE.Points {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_GLINTS * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('phase', new THREE.BufferAttribute(new Float32Array(MAX_GLINTS), 1));
+  const mat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 }, uBright: { value: 1 }, uScale: { value: 300 } },
+    vertexShader: /* glsl */ `
+attribute float phase;
+uniform float uTime, uScale;
+varying float vA;
+void main() {
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  // A brief flash every few seconds, at a different moment for each find.
+  float s = sin(uTime * 1.3 + phase * 6.2831);
+  float flash = pow(max(0.0, s), 40.0);
+  float dist = -mv.z;
+  vA = flash * (1.0 - smoothstep(12.0, 20.0, dist));
+  gl_PointSize = uScale * (0.05 + 0.07 * flash) / max(0.5, dist);
+  gl_Position = projectionMatrix * mv;
+}`,
+    fragmentShader: /* glsl */ `
+uniform float uBright;
+varying float vA;
+void main() {
+  vec2 p = gl_PointCoord * 2.0 - 1.0;
+  // A little four-pointed star.
+  float star = max(0.0, 1.0 - abs(p.x) * 6.0) * max(0.0, 1.0 - abs(p.y) * 1.2) + max(0.0, 1.0 - abs(p.y) * 6.0) * max(0.0, 1.0 - abs(p.x) * 1.2);
+  float core = smoothstep(0.45, 0.0, length(p));
+  float a = clamp(star * 0.9 + core, 0.0, 1.0) * vA * uBright;
+  if (a < 0.01) discard;
+  gl_FragColor = vec4(vec3(1.0, 0.98, 0.9) * a, a);
+}`,
+  });
+  const pts = new THREE.Points(g, mat);
+  pts.frustumCulled = false;
+  pts.renderOrder = 4;
+  return pts;
+}
+
 export class BeachView {
   readonly group = new THREE.Group();
+  readonly glints = makeGlints();
   private shown = new Map<number, { obj: THREE.Object3D; find: GroundFind; radius: number }>();
 
   constructor(
@@ -182,13 +231,28 @@ export class BeachView {
     }
   }
 
-  /** Keep finds sitting on the sand (it can change under them). */
-  update(near: THREE.Vector3): void {
+  /** Keep finds sitting on the sand (it can change under them), and make the near ones glint. */
+  update(near: THREE.Vector3, time = 0, daylight = 1, viewHeight = 800): void {
+    const pos = this.glints.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const phase = this.glints.geometry.getAttribute('phase') as THREE.BufferAttribute;
+    let n = 0;
     for (const s of this.shown.values()) {
       const p = s.obj.position;
       if (Math.abs(p.x - near.x) > 25 || Math.abs(p.z - near.z) > 25) continue;
       p.y = this.groundAt(p.x, p.z) - 0.004;
+      if (n < MAX_GLINTS) {
+        pos.setXYZ(n, p.x, p.y + Math.max(0.03, s.radius * 0.5), p.z);
+        phase.setX(n, (s.find.id * 0.618) % 1);
+        n++;
+      }
     }
+    this.glints.geometry.setDrawRange(0, n);
+    pos.needsUpdate = true;
+    phase.needsUpdate = true;
+    const u = (this.glints.material as THREE.ShaderMaterial).uniforms;
+    u.uTime.value = time;
+    u.uBright.value = 0.25 + 0.75 * daylight;
+    u.uScale.value = viewHeight;
   }
 
   /** The find a ray points at within reach of the eye (or null). */

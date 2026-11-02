@@ -52,6 +52,9 @@ export const SAILING = {
   anchorDepth: 16,
   /** Usual trade-wind strength (m/s, about 13 knots). */
   windSpeed: 6.5,
+  /** The little outboard: full ahead about 4.5 knots, full astern about 2 knots (m/s). */
+  motorAhead: 2.3,
+  motorAstern: 1.05,
 };
 
 /** How hard the sails drive the boat at a given angle off the wind (0 .. 1). */
@@ -123,13 +126,16 @@ export interface BoatState {
   aground: boolean;
   /** Hull condition, 100 = sound. Scrapes on the reef or a beach wear it down (repairs come in v0.4). */
   hull: number;
+  /** The outboard: throttle asked for (-1 astern .. 0 off .. 1 ahead) and what it's actually giving (it takes a moment to start and tilt down). */
+  throttle?: number;
+  motor?: number;
   /** Seconds before another knock can scrape the hull, and how long she's been stuck. */
   scrapeCool?: number;
   agroundTime?: number;
 }
 
 export function newBoat(x: number, z: number, heading: number): BoatState {
-  return { x, z, heading, speed: 0, sailSet: 0, sail: 0, rudder: 0, heel: 0, heelV: 0, anchored: true, ax: x + Math.cos(heading) * 6, az: z + Math.sin(heading) * 6, aground: false, hull: 100 };
+  return { x, z, heading, speed: 0, sailSet: 0, sail: 0, rudder: 0, heel: 0, heelV: 0, anchored: true, ax: x + Math.cos(heading) * 6, az: z + Math.sin(heading) * 6, aground: false, hull: 100, throttle: 0, motor: 0 };
 }
 
 export interface HelmInput {
@@ -177,13 +183,20 @@ export function stepBoat(b: BoatState, w: WindState, helm: HelmInput, sea: SeaBe
   const twa = windAngle(b, w);
   const windK = Math.min(1.3, Math.max(0.4, w.speed / SAILING.windSpeed));
 
+  // The outboard eases toward its throttle (a second or so to start and bite).
+  b.throttle = Math.max(-1, Math.min(1, b.throttle ?? 0));
+  b.motor = (b.motor ?? 0) + (b.throttle - (b.motor ?? 0)) * (1 - Math.exp(-dt * 2.2));
+  if (Math.abs(b.motor) < 0.002 && b.throttle === 0) b.motor = 0;
+  const motor = b.anchored ? 0 : b.motor;
+
   // Steering: the rudder eases toward where you push it; unattended, the helm
   // drifts so she rounds up into the wind (as a real sloop does).
   let steer = helm.steer;
   if (!helm.attended) steer = b.sail > 0.05 && Math.abs(twa) > SAILING.noGo * 0.8 ? Math.sign(twa) * 0.35 : 0;
   b.rudder += (steer * SAILING.rudderMax - b.rudder) * (1 - Math.exp(-dt * 3));
   // Aground you can still pole her round toward deeper water.
-  const grip = b.aground ? 0.6 : 0.3 + 0.7 * Math.min(1, Math.abs(b.speed) / 1.6);
+  // Under motor the propeller's push lets you steer even when slow.
+  const grip = b.aground ? 0.6 : Math.max(0.3 + 0.7 * Math.min(1, Math.abs(b.speed) / 1.6), 0.8 * Math.abs(motor));
 
   if (b.anchored) {
     // At anchor: the boat lies back on her line, bow into the wind, swinging a little.
@@ -196,13 +209,19 @@ export function stepBoat(b: BoatState, w: WindState, helm: HelmInput, sea: SeaBe
     b.z += (tz - b.z) * (1 - Math.exp(-dt * 0.08));
     b.heading = wrap(b.heading + wrap(w.from - b.heading) * (1 - Math.exp(-dt * 0.12)));
   } else {
-    // Speed eases toward what the wind and sails give.
-    const target = SAILING.topSpeed * drive(twa) * b.sail * windK;
+    // Speed eases toward what the wind, the sails and the motor give.
+    const sailTarget = SAILING.topSpeed * drive(twa) * b.sail * windK;
+    const motorTarget = motor >= 0 ? motor * SAILING.motorAhead : motor * SAILING.motorAstern;
+    let target = sailTarget + motorTarget * (motor > 0 ? 1 - 0.35 * Math.min(1, sailTarget / SAILING.topSpeed) : 1);
+    target = Math.min(target, SAILING.topSpeed * 1.05);
     // Way carries her through a tack: she coasts slowly when the sails are only flapping.
-    const k = target > b.speed ? SAILING.accel : drive(twa) === 0 ? SAILING.decel * 0.4 : SAILING.decel;
+    let k = target > b.speed ? SAILING.accel : drive(twa) === 0 ? SAILING.decel * 0.4 : SAILING.decel;
+    k = Math.max(k, 0.7 * Math.abs(motor));
     b.speed += (target - b.speed) * (1 - Math.exp(-dt * k));
     // Turning needs way on (a little turn is always possible, to get out of irons).
-    b.heading = wrap(b.heading + (b.rudder / SAILING.rudderMax) * SAILING.turnRate * grip * dt);
+    // Going astern, the stern goes the way the rudder points, so the bow swings the other way.
+    const dir = b.speed < -0.05 ? -1 : 1;
+    b.heading = wrap(b.heading + dir * (b.rudder / SAILING.rudderMax) * SAILING.turnRate * grip * dt);
     // Leeway: she slips a little sideways, away from the wind, when sailing across or into it.
     const side = Math.abs(twa) < 120 * DEG ? 4 * DEG * drive(twa) * b.sail : 0;
     const leeSign = twa >= 0 ? -1 : 1; // wind from starboard pushes her to port
@@ -251,6 +270,7 @@ export function dropAnchor(b: BoatState, sea: SeaBed): string | null {
   b.ax = b.x + Math.cos(b.heading) * 6;
   b.az = b.z + Math.sin(b.heading) * 6;
   b.sailSet = 0;
+  b.throttle = 0;
   return null;
 }
 
@@ -285,7 +305,7 @@ export interface Course {
  * side, tacking when the other tack points clearly closer to the mark.
  * Returns the steer input (-1..1) and whether the course is finished.
  */
-export function autopilot(b: BoatState, w: WindState, c: Course): { steer: number; sailSet: number; arrived: boolean } {
+export function autopilot(b: BoatState, w: WindState, c: Course): { steer: number; sailSet: number; throttle: number; arrived: boolean } {
   let wp = c.waypoints[0];
   while (c.waypoints.length > 1 && Math.hypot(wp.x - b.x, wp.z - b.z) < 22) {
     c.waypoints.shift();
@@ -293,17 +313,20 @@ export function autopilot(b: BoatState, w: WindState, c: Course): { steer: numbe
   }
   const dist = Math.hypot(wp.x - b.x, wp.z - b.z);
   const last = c.waypoints.length === 1;
-  if (last && dist < 30) {
-    // Arriving: bring her head to wind and let the sails down.
-    const steer = Math.max(-1, Math.min(1, wrap(w.from - b.heading) * 2));
-    return { steer, sailSet: 0, arrived: Math.abs(b.speed) < SAILING.anchorSpeed * 0.9 };
-  }
   const bearing = Math.atan2(wp.z - b.z, wp.x - b.x);
+  const steerTo = (h: number) => Math.max(-1, Math.min(1, wrap(h - b.heading) * 2.5));
+  if (last && dist < 45) {
+    // Arriving: sails down and motor gently to the spot, then stop and anchor.
+    if (dist > 9) return { steer: steerTo(bearing), sailSet: 0, throttle: 0.45, arrived: false };
+    return { steer: 0, sailSet: 0, throttle: 0, arrived: Math.abs(b.speed) < SAILING.anchorSpeed * 0.9 };
+  }
   let want = bearing;
   const off = wrap(bearing - w.from);
   const tackAngle = 52 * DEG;
   if (Math.abs(off) < tackAngle) {
-    // The mark is upwind: beat toward it on one tack or the other.
+    // The mark is upwind. A short way: just motor there with the sails down.
+    if (dist < 160) return { steer: steerTo(bearing), sailSet: 0, throttle: 0.85, arrived: false };
+    // Further: beat toward it on one tack or the other.
     const hA = wrap(w.from + tackAngle);
     const hB = wrap(w.from - tackAngle);
     const cur = c.tack > 0 ? hA : hB;
@@ -311,8 +334,9 @@ export function autopilot(b: BoatState, w: WindState, c: Course): { steer: numbe
     if (Math.abs(wrap(bearing - other)) + 25 * DEG < Math.abs(wrap(bearing - cur))) c.tack = -c.tack;
     want = c.tack > 0 ? hA : hB;
   }
-  const steer = Math.max(-1, Math.min(1, wrap(want - b.heading) * 2.5));
+  // Stalled head to wind (in irons)? A burst of motor gets her moving again.
+  const stalled = Math.abs(b.speed) < 0.4 && Math.abs(wrap(w.from - b.heading)) < SAILING.noGo;
   // Ease off near the final mark.
-  const sailSet = last && dist < 70 ? 0.5 : 1;
-  return { steer, sailSet, arrived: false };
+  const sailSet = last && dist < 90 ? 0.5 : 1;
+  return { steer: steerTo(want), sailSet, throttle: stalled ? 0.6 : 0, arrived: false };
 }

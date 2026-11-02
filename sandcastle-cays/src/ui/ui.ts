@@ -258,6 +258,7 @@ export class Ui {
       <h3>Sailing</h3>
       <ul>
         <li><b>Take the helm</b> in the cockpit (E, or the round button). Steer with A and D (phone: your left thumb). W and S raise and lower the sails (phone: “More sail” and “Less sail”). X drops or raises the anchor. E lets go.</li>
+        <li><b>The little outboard</b>: R for more motor, F for less (and on into reverse). Use it to get out of irons, through the gap in the reef, up to an anchorage, or backwards off a sandbank. It goes off when you let go of the tiller.</li>
         <li>You can’t sail straight into the wind. If the sails flap and you slow down (“in irons”), turn away from the wind. To go upwind, zig-zag. The little dial shows where the wind comes from; the red wedge is where you can’t sail.</li>
         <li>You’re fastest with the wind from the side. The reef around Home Cay has one gap, to the south-west: hitting the reef scrapes the hull.</li>
         <li><b>The chart</b> (M, or the map button) shows where you are. Tap a place and she sails there by herself and anchors.</li>

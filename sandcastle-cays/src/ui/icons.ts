@@ -32,6 +32,9 @@ export const ICONS = {
   /** Sails up / down. */
   sailUp: svg('<path d="M12 3v15M12 4l7 12h-7" fill="currentColor" fill-opacity=".2"/><path d="M5 20h14"/><path d="M5 9l2-3 2 3" opacity=".8"/>'),
   sailDown: svg('<path d="M12 3v15M12 11l5 5h-5" fill="currentColor" fill-opacity=".2"/><path d="M5 20h14"/><path d="M5 6l2 3 2-3" opacity=".8"/>'),
+  /** The outboard: a propeller with an arrow ahead / astern. */
+  motorUp: svg('<circle cx="8" cy="14" r="1.6" fill="currentColor"/><path d="M8 12.4c-1-3 1-5 2-3.2M8 15.6c1 3-1 5-2 3.2M9.6 14c3 1 5-1 3.2-2" /><path d="M15 9h6M18 6l3 3-3 3"/>'),
+  motorDown: svg('<circle cx="16" cy="14" r="1.6" fill="currentColor"/><path d="M16 12.4c-1-3 1-5 2-3.2M16 15.6c1 3-1 5-2 3.2M17.6 14c3 1 5-1 3.2-2" /><path d="M9 9H3M6 6L3 9l3 3"/>'),
   /** A woven basket. */
   basket: svg('<path d="M4 10h16l-2 9H6z" fill="currentColor" fill-opacity=".18"/><path d="M8 10c0-3 1.8-5 4-5s4 2 4 5"/><path d="M5 13.5h14M6 16.5h12" opacity=".6"/>'),
   /** Standing up from the sand. */

@@ -368,6 +368,30 @@ async function standBy(page, f) {
   await G(page, () => window.__game.player.yaw = window.__game.player.yaw + Math.PI);
   await waitFrames(page, 3);
   await shot(page, '12b-looking-aft-wake.png');
+  // The little outboard: sails down, motor ahead, then astern.
+  await page.keyboard.press('KeyS');
+  await waitFrames(page, 2);
+  await page.keyboard.press('KeyS');
+  await waitFrames(page, 2);
+  await page.keyboard.press('KeyR');
+  await waitFrames(page, 2);
+  await page.keyboard.press('KeyR');
+  await waitFrames(page, 2);
+  const thr = await G(page, () => window.__game.boat.throttle);
+  const motorRun = await G(page, () => window.__game.sail(14, 0));
+  await page.keyboard.press('KeyF');
+  await page.keyboard.press('KeyF');
+  await page.keyboard.press('KeyF');
+  await page.keyboard.press('KeyF');
+  await waitFrames(page, 2);
+  const back = await G(page, () => window.__game.sail(10, 0));
+  step('Laptop: R starts the outboard and motors her along; F slows and reverses', thr > 0.5 && motorRun.speed > 1.5 && back.speed < -0.4, `throttle ${thr}, ${(motorRun.speed * 1.944).toFixed(1)} knots ahead, then ${(back.speed * 1.944).toFixed(1)} knots`);
+  await G(page, () => {
+    const g = window.__game;
+    g.boat.throttle = 0;
+    g.sail(4, 0);
+  });
+
   // The chart, and sailing there by herself.
   await page.keyboard.press('KeyM');
   await waitFrames(page, 3);
@@ -600,6 +624,13 @@ async function standBy(page, f) {
   await waitFrames(page, 6);
   const rudder = await G(page, () => window.__game.boat.rudder);
   await touch('touchEnd', []);
+  const motorBtn = await page.$('#helmbar button:has-text("Motor ahead")');
+  if (motorBtn) {
+    await motorBtn.tap();
+    await waitFrames(page, 2);
+  }
+  const phoneThr = await G(page, () => window.__game.boat.throttle);
+  step('Phone: the "Motor ahead" button starts the outboard', phoneThr > 0, `throttle ${phoneThr}`);
   step('Phone: the round button takes the helm, "More sail" raises sail, the thumb steers', helmOk && sailSet > 0 && rudder > 0.05, `helm: ${helmOk}, sails ${sailSet}, rudder ${rudder.toFixed(2)}`);
   await shot(page, '17b-phone-at-the-helm.png');
 
