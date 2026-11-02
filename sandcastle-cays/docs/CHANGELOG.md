@@ -18,6 +18,7 @@
   - warmer light at sunrise and sunset;
   - tip cards no longer cover the wind dial;
   - the helm buttons are tidier (the chart is on the top bar).
+  - a fix: the chart's "Sail to …" buttons were being rebuilt several times a second, which could swallow a tap. Now they only change when they need to.
 
 **Checks before sending**
 CHECKS_PLACEHOLDER

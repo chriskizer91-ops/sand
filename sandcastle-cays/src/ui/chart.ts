@@ -58,6 +58,7 @@ export class Chart {
   private base: HTMLCanvasElement | null = null;
   private buttons: HTMLDivElement;
   private note: HTMLParagraphElement;
+  private buttonsKey = '';
 
   constructor(
     private world: ChartWorld,
@@ -220,7 +221,12 @@ export class Chart {
       ctx.stroke();
       ctx.restore();
     }
-    // Buttons: sail to each place (from aboard), or stop.
+    // Buttons: sail to each place (from aboard), or stop. They are only rebuilt
+    // when they change, so a tap never lands on a button that is being replaced.
+    const nearby = this.places.filter((p) => Math.hypot(p.x - boat.x, p.z - boat.z) < 60).map((p) => p.id);
+    const key = `${courseTo ?? ''}|${aboard}|${nearby.join(',')}`;
+    if (key === this.buttonsKey) return;
+    this.buttonsKey = key;
     this.buttons.innerHTML = '';
     if (courseTo) {
       this.note.textContent = `Sailing for ${courseTo} by herself. Take the helm, or stop, whenever you like.`;
@@ -235,7 +241,7 @@ export class Chart {
         ? 'Tap a place to sail there by yourself. She finds the gap in the reef and tacks if she has to.'
         : 'Go aboard your boat to set sail.';
       for (const p of this.places) {
-        if (Math.hypot(p.x - boat.x, p.z - boat.z) < 60) continue;
+        if (nearby.includes(p.id)) continue;
         const b = el('button', { class: 'wide' }, `Sail to ${p.name}`);
         b.disabled = !aboard;
         b.addEventListener('click', () => {

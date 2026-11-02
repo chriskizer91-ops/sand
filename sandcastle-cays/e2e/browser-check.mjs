@@ -379,11 +379,10 @@ async function standBy(page, f) {
   await waitFrames(page, 2);
   const thr = await G(page, () => window.__game.boat.throttle);
   const motorRun = await G(page, () => window.__game.sail(14, 0));
-  await page.keyboard.press('KeyF');
-  await page.keyboard.press('KeyF');
-  await page.keyboard.press('KeyF');
-  await page.keyboard.press('KeyF');
-  await waitFrames(page, 2);
+  for (let i = 0; i < 4; i++) {
+    await page.keyboard.press('KeyF');
+    await waitFrames(page, 2);
+  }
   const back = await G(page, () => window.__game.sail(10, 0));
   step('Laptop: R starts the outboard and motors her along; F slows and reverses', thr > 0.5 && motorRun.speed > 1.5 && back.speed < -0.4, `throttle ${thr}, ${(motorRun.speed * 1.944).toFixed(1)} knots ahead, then ${(back.speed * 1.944).toFixed(1)} knots`);
   await G(page, () => {
