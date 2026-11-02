@@ -1,8 +1,8 @@
 # Sandcastle Cays
 
-A calm game about living aboard a small sailboat in the Caribbean: comb the beaches for what the sea washes up, build sandcastles, and (coming) keep your boat in repair, grow food and sail between islands. Everything (sand, water, sky, boat, finds, sounds) is made in code. See [`docs/PLAN.md`](docs/PLAN.md) for the agreed plan.
+A calm game about living aboard a small sailboat in the Caribbean: comb the beaches for what the sea washes up, build sandcastles, sail between islands, and (coming) keep your boat in repair and grow food. Everything (sand, water, sky, boat, finds, sounds) is made in code. See [`docs/PLAN.md`](docs/PLAN.md) for the agreed plan.
 
-**Current version: 0.2.2, "Aboard and ashore"** (0.2.1 added playing from a link; 0.2.2 fixes getting stuck after jumping overboard) (the first part of the Home Cay slice):
+**Current version: 0.3, "First passage"**: sailing with real wind, the chart and "sail there for me", anchoring, the reef and its gap, and a second island, Pink Sand Cay. Before that, 0.2 brought:
 - your boat at anchor off Home Cay, seen through your own eyes;
 - the new sea and sky from the raft game, with day and night;
 - swimming ashore and walking the island;
@@ -12,7 +12,7 @@ A calm game about living aboard a small sailboat in the Caribbean: comb the beac
 ## Playing it
 **Easiest:** open the game's private link, https://claude.ai/artifact/3F64yxNHrsCbRvwY9mdk3f, which always has the latest version. (For Claude sessions: it's the claude.ai artifact with slug `1229d053-31f1-46e8-be80-cc430658ecc6`; republish `builds/` files to it with each new version.)
 
-Or download the file: `builds/sandcastle-cays-v0.2.2.html`.
+Or download the file: `builds/sandcastle-cays-v0.3.html`.
 - **Laptop:** download the file and double-click it (opens in Chrome or Edge).
 - **Pixel phone:** download the file, then open it from Files > Downloads with Chrome.
 
@@ -24,6 +24,10 @@ Or download the file: `builds/sandcastle-cays-v0.2.2.html`.
 | Jump / climb | the arrow button | Space |
 | Kneel to build (on the cove's sand) | the round button | B |
 | Logbook | book button | L or the book button |
+| Take the helm (in the cockpit) | the round button | E |
+| Steer / sails up and down | left thumb / "More sail", "Less sail" | A D / W S |
+| Anchor | "Drop anchor" button | X |
+| Chart (tap a place to sail there) | map button | M |
 | While building | one finger tool, two fingers swing, pinch zoom | click to use the tool, two-finger swipe to swing, pinch or wheel to zoom |
 | Stand up again | "Stand up" button | Esc or B |
 
@@ -44,20 +48,21 @@ npm run release         # build + copy to builds/sandcastle-cays-v<version>.html
 
 ### Layout
 - `src/engine/`: the sand engine (no browser-page code; runs in a Web Worker). Unchanged in v0.2 apart from the save header carrying the game state.
-- `src/world/`: `homeCay.ts` (the island's shape, the reef, the tideline, where the boat anchors) and `ground.ts` (what's underfoot, including your castles).
+- `src/world/`: `homeCay.ts` and `pinkCay.ts` (each island's shape, reef, tideline and anchorage), `islands.ts` (what islands share), `world.ts` (both on one sea floor) and `ground.ts` (what's underfoot, including your castles).
+- `src/game/sailing.ts`: the wind and how the boat sails (points of sail, tacking, heel, leeway, running aground, anchoring, the autopilot).
 - `src/player/player.ts`: you, in first person (deck, land, swimming, the ladder).
 - `src/game/beach.ts`: beachcombing rules (wash-ups, basket, locker, logbook) and the finds on the sand.
 - `src/content/finds.ts`: the catalogue of finds with true facts.
 - `src/render/`:
   - `ocean.ts`, `sky.ts`, `daylight.ts`, `pipeline.ts`, `paint.ts`: the water, the sky, the light and how each frame is drawn (from the raft game);
   - `island.ts` and `islandLife.ts`: the island's ground, plants and rocks;
-  - `sloop.ts` and `boatMotion.ts`: the boat and how it rides the waves;
+  - `sloop.ts`, `boatMotion.ts` and `wake.ts`: the boat (with sails, boom and rudder that move), how it rides the waves, and its wake;
   - `finds.ts`: the find and basket models;
   - `held.ts`: the basket in your hand;
   - `scenery.ts`: the cove's own rocks and plants, and the distant islands;
   - the sand material and tiles.
 - `src/input/`: `fpInput.ts` (first-person controls), `camera.ts` and `controls.ts` (the building camera).
-- `src/ui/`: `hud.ts` (first-person screen and logbook), `ui.ts` (menus, building tray), `icons.ts`.
+- `src/ui/`: `hud.ts` (first-person screen and logbook), `sailHud.ts` (the wind dial and helm buttons), `chart.ts` (the chart), `ui.ts` (menus, building tray), `icons.ts`.
 - `src/audio/`, `src/storage/`: synthesised sounds, saves.
 - `src/checks/sandChecks.ts`: the sand checks, shared by `tests/` and the in-game Checks page.
 - `docs/`: plan, decisions log, changelog.

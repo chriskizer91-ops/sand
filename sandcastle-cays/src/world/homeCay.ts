@@ -14,7 +14,8 @@
  * cove is -z); y up, sea level 0.
  */
 import { LAGOON_DIMS, CELL, CHUNK } from '../config';
-import { LagoonTerrain, type Terrain } from '../engine/terrain';
+import { LagoonTerrain } from '../engine/terrain';
+import type { Ground, IslandTerrain, Rect, TidePoint } from './islands';
 import { Noise2D, clamp, lerp, smoothstep } from '../engine/noise';
 
 const REGION = {
@@ -32,11 +33,16 @@ const AZ = 31;
 /** Distance of the reef crest from the coast (metres). */
 const REEF_OFF = 95;
 
-export type Ground = 'sand' | 'grass' | 'rock' | 'seagrass' | 'reef';
+export type { Ground } from './islands';
 
-export class HomeCayTerrain implements Terrain {
+export class HomeCayTerrain implements IslandTerrain {
+  readonly id = 'home' as const;
+  readonly name = 'Home Cay';
   readonly waterLevel = 0;
   readonly region = REGION;
+  readonly bounds: Rect = { x0: -176, x1: 192, z0: -160, z1: 160 };
+  readonly land: Rect = { x0: -70, x1: 75, z0: -10, z1: 70 };
+  readonly anchorage = { x: 2, z: -31, heading: 0 };
   private lagoon = new LagoonTerrain();
   private noise = new Noise2D(9091);
   private noise2 = new Noise2D(4410);
@@ -102,7 +108,7 @@ export class HomeCayTerrain implements Terrain {
       const th = Math.atan2(z - CZ, x - CX);
       // A channel through the reef to the south-west.
       const channel = smoothstep(0.08, 0.2, Math.abs(Math.sin((th + 2.15) / 2)));
-      const reef = 2.4 * Math.exp(-reefT * reefT) * channel * (0.75 + 0.25 * this.noise2.noise(x * 0.05, z * 0.05));
+      const reef = 3.0 * Math.exp(-reefT * reefT) * channel * (0.8 + 0.2 * this.noise2.noise(x * 0.05, z * 0.05));
       h += reef;
       h = lerp(h, -16 + 3 * this.noise.noise(x * 0.01, z * 0.01), smoothstep(-REEF_OFF - 6, -REEF_OFF - 40, s));
       // Sand ripples on the lagoon floor.
@@ -155,8 +161,8 @@ export class HomeCayTerrain implements Terrain {
    * Points along the high-tide line on the beaches (not the rocks), every
    * `spacing` metres, where the sea leaves what it carries.
    */
-  tideline(spacing = 0.7): { x: number; z: number; nx: number; nz: number }[] {
-    const out: { x: number; z: number; nx: number; nz: number }[] = [];
+  tideline(spacing = 0.7): TidePoint[] {
+    const out: TidePoint[] = [];
     // Walk the coastline; the wrack line sits about 2.5 m inland of the waterline.
     const steps = 2400;
     let carry = 0;
@@ -187,11 +193,26 @@ export class HomeCayTerrain implements Terrain {
       if (this.rockiness(wx, wz) > 0.4) continue;
       const h = this.heightAt(wx, wz);
       if (h < 0.08 || h > 0.9) continue;
-      out.push({ x: wx, z: wz, nx, nz });
+      out.push({ x: wx, z: wz, nx, nz, island: 'home' });
     }
     return out;
   }
 }
 
-/** Where your sloop lies at anchor (bow into the trade wind, to the east). */
+/** Where your sloop lies at anchor off Home Cay (bow into the trade wind, to the east). */
 export const ANCHORAGE = { x: 2, z: -31, heading: 0 };
+
+/**
+ * The gap in Home Cay's reef, to the south-west: a point just inside the
+ * lagoon and one just outside, for the chart and the autopilot.
+ */
+export function reefChannel(t: HomeCayTerrain): { inside: { x: number; z: number }; outside: { x: number; z: number } } {
+  const th = -2.15;
+  const r = t.coastRadius(th);
+  const dx = Math.cos(th);
+  const dz = Math.sin(th);
+  return {
+    inside: { x: CX + dx * (r + REEF_OFF - 32), z: CZ + dz * (r + REEF_OFF - 32) },
+    outside: { x: CX + dx * (r + REEF_OFF + 34), z: CZ + dz * (r + REEF_OFF + 34) },
+  };
+}

@@ -81,6 +81,46 @@ function fbm(x: number, y: number, seed: number, oct = 3, px = 0, py = 0): numbe
   return s / tot;
 }
 
+const hash3 = (i: number, j: number, k: number, seed: number): number =>
+  hash(i ^ Math.imul(k | 0, 73856093), j ^ Math.imul(k | 0, 19349663), seed);
+/** Smooth 3D value noise in [0, 1]. */
+function noise3(x: number, y: number, z: number, seed: number): number {
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const zi = Math.floor(z);
+  const f = (t: number): number => t * t * (3 - 2 * t);
+  const sx = f(x - xi);
+  const sy = f(y - yi);
+  const sz = f(z - zi);
+  const w = (i: number, j: number, k: number): number => hash3(xi + i, yi + j, zi + k, seed);
+  const a = mix(mix(w(0, 0, 0), w(1, 0, 0), sx), mix(w(0, 1, 0), w(1, 1, 0), sx), sy);
+  const b = mix(mix(w(0, 0, 1), w(1, 0, 1), sx), mix(w(0, 1, 1), w(1, 1, 1), sx), sy);
+  return mix(a, b, sz);
+}
+/** Cellular noise: distance to the nearest of one random point per unit cell, and that point's random id. */
+function cells3(x: number, y: number, z: number, seed: number): [number, number] {
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const zi = Math.floor(z);
+  let best = 9;
+  let id = 0;
+  for (let k = -1; k <= 1; k++) {
+    for (let j = -1; j <= 1; j++) {
+      for (let i = -1; i <= 1; i++) {
+        const cx = xi + i + hash3(xi + i, yi + j, zi + k, seed);
+        const cy = yi + j + hash3(xi + i, yi + j, zi + k, seed + 1);
+        const cz = zi + k + hash3(xi + i, yi + j, zi + k, seed + 2);
+        const d = Math.hypot(x - cx, y - cy, z - cz);
+        if (d < best) {
+          best = d;
+          id = hash3(xi + i, yi + j, zi + k, seed + 3);
+        }
+      }
+    }
+  }
+  return [best, id];
+}
+
 const _c = new THREE.Color();
 /** sRGB hex to linear RGB (vertex colours are linear). */
 function lin(hex: number): C3 {
@@ -1306,6 +1346,173 @@ function feather(): Part[] {
 }
 
 // ---------------------------------------------------------------------------
+// Pink Sand Cay
+// ---------------------------------------------------------------------------
+
+/** Netted olive: a glossy, cylinder-shaped shell with a short pointed spire and a fine net of brown lines, lying on its side. */
+function olive(): Part[] {
+  const L = 0.0225;
+  const R = 0.0102;
+  const prof = (v: number): number => {
+    let r = v < 0.2 ? 0.5 * Math.pow(v / 0.2, 0.9) : mix(0.5, 0.98, smooth(0.2, 0.28, v));
+    r *= 1 - 0.16 * smooth(0.45, 1, v); // narrower towards the front
+    if (v > 0.88) r *= Math.sqrt(Math.max(0, 1 - ((v - 0.88) / 0.12) ** 2));
+    return R * r;
+  };
+  const geo = grid({
+    us: steps(20),
+    vs: [0, 0.04, 0.09, 0.14, 0.2, 0.235, 0.27, 0.34, 0.43, 0.52, 0.61, 0.7, 0.79, 0.87, 0.93, 0.97, 1],
+    wrapU: true,
+    pos: (u, v) => {
+      const a = TAU * u + Math.PI; // u = 0 underneath, u = 0.5 on top
+      const r = prof(v);
+      const ca = Math.cos(a);
+      return [-L + 2 * L * v, ca * r * (ca < 0 ? 0.9 : 1), Math.sin(a) * r];
+    },
+  });
+  const cream = srgb(0xecd9b6);
+  const line = srgb(0x6e3f2c);
+  const tent = srgb(0xa9744f);
+  const tex = paint(
+    'netted-olive',
+    128,
+    128,
+    (u, v) => {
+      // the long, narrow opening along one side, wider at the front
+      const slitU = 0.1;
+      const du = Math.abs(fract(u - slitU + 0.5) - 0.5);
+      const half = (0.012 + 0.028 * smooth(0.3, 0.95, v)) * smooth(0.25, 0.32, v);
+      if (half > 0 && du < half) return mixC(srgb(0x3a2430), srgb(0x6b4a4c), smooth(0.4, 1, du / half));
+      if (v < 0.2) {
+        // the spire: pale, with the spiral seam between its turns
+        const seam = Math.abs(fract((v / 0.2) * 3.2 - u) - 0.5);
+        const c = mixC(srgb(0xe9dccb), srgb(0xd9b9b2), smooth(0.06, 0.0, v));
+        return mixC(c, line, smooth(0.42, 0.48, seam) * 0.8);
+      }
+      // the channelled seam at the shoulder
+      let c = mixC(cream, mulC(line, 0.8), smooth(0.016, 0.004, Math.abs(v - 0.215)));
+      if (v < 0.23) return c;
+      // the net: two sets of fine wavy lines, with some of the little tents filled in
+      const zone = Math.exp(-(((v - 0.42) / 0.07) ** 2)) + Math.exp(-(((v - 0.74) / 0.07) ** 2));
+      const p1 = u * 24 + v * 13 + 0.06 * Math.sin(v * 70 + u * TAU * 3);
+      const p2 = u * 24 - v * 13 + 0.06 * Math.sin(v * 61 - u * TAU * 2);
+      const f1 = fract(p1);
+      const f2 = fract(p2);
+      const cell = hash(((Math.floor(p1) % 24) + 24) % 24, Math.floor(p2), 211);
+      if (cell < 0.35 + 0.45 * zone && f1 < f2) c = mixC(c, tent, 0.8);
+      const w = 0.09 + 0.05 * zone;
+      const net = Math.max(smooth(w, w * 0.4, Math.min(f1, 1 - f1)), smooth(w, w * 0.4, Math.min(f2, 1 - f2)));
+      c = mixC(c, line, net * 0.85);
+      c = mixC(c, mulC(c, 0.82), zone * 0.5);
+      // paler where it rests, and around the opening
+      return mixC(c, srgb(0xf5ece0), smooth(0.08, 0.04, du) * 0.8);
+    },
+    { wrapU: true },
+  );
+  const mat = material(
+    'netted-olive',
+    () => new THREE.MeshPhysicalMaterial({ map: tex, roughness: 0.25, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.06 }),
+  );
+  return place([{ geo, mat }], { x: 0.5, y: 0.2 });
+}
+
+/**
+ * Flamingo tongue (the empty shell): a small glossy oval, plain creamy peach,
+ * with a raised ridge across its back. The famous orange spots belong to the
+ * living animal's mantle, not to the shell.
+ */
+function flamingoTongue(): Part[] {
+  const L = 0.0148;
+  const W = 0.0076;
+  const HT = 0.0098;
+  const HB = 0.0022;
+  // a broad hump across the back, steeper on the front side
+  const ridgeAt = (t: number, ca: number): number =>
+    0.36 * Math.exp(-(((t + 0.06) / (t > -0.06 ? 0.3 : 0.45)) ** 2)) * Math.pow(Math.max(ca, 0), 0.5);
+  const peach = lin(0xeca56e);
+  const pale = lin(0xf3d2ad);
+  const deep = lin(0xe48b4d);
+  const geo = grid({
+    us: steps(20),
+    vs: [0, 0.06, 0.14, 0.24, 0.33, 0.4, 0.45, 0.5, 0.55, 0.6, 0.67, 0.76, 0.86, 0.94, 1],
+    wrapU: true,
+    pos: (u, v) => {
+      const a = TAU * u + Math.PI;
+      const t = -Math.cos(Math.PI * v);
+      const prof = Math.pow(Math.max(Math.sin(Math.PI * v), 0), 0.5);
+      const ca = Math.cos(a);
+      const sa = Math.sin(a);
+      if (ca >= 0) return [L * t, ca * prof * HT * (0.68 + ridgeAt(t, ca)), sa * prof * W];
+      return [L * t, ca * prof * HB, sa * prof * W * (1 + 0.04 * -ca)];
+    },
+    col: (u, v, p) => {
+      const a = TAU * u + Math.PI;
+      const t = -Math.cos(Math.PI * v);
+      const ca = Math.cos(a);
+      if (ca < -0.2) return pale;
+      let c = mixC(peach, pale, smooth(0.5, 0.98, Math.abs(t)) * 0.7 + smooth(0.25, -0.2, ca) * 0.4);
+      c = mixC(c, deep, ridgeAt(t, ca) * 1.5);
+      return mulC(c, 0.97 + 0.05 * noise(p[0] * 400, p[2] * 400, 221));
+    },
+  });
+  return place([{ geo, mat: glossyVC() }]);
+}
+
+/** A rounded lump of pumice: very light grey, full of little pits, worn smooth-edged by the sea. */
+function pumice(): Part[] {
+  const RX = 0.038;
+  const RY = 0.023;
+  const RZ = 0.029;
+  const dir = (u: number, v: number): V3 => {
+    const th = TAU * u;
+    const ph = Math.PI * v;
+    return [Math.sin(ph) * Math.cos(th), Math.cos(ph), Math.sin(ph) * Math.sin(th)];
+  };
+  const lump = (d: V3): number =>
+    1 + 0.34 * (noise3(d[0] * 1.6 + 5, d[1] * 1.6, d[2] * 1.6, 231) - 0.5) + 0.1 * (noise3(d[0] * 4 + 1, d[1] * 4, d[2] * 4, 233) - 0.5);
+  const geo = grid({
+    us: steps(22),
+    vs: [0, 0.03, 0.08, 0.15, 0.24, 0.34, 0.45, 0.56, 0.67, 0.77, 0.86, 0.93, 0.97, 1],
+    wrapU: true,
+    pos: (u, v) => {
+      const d = dir(u, v);
+      const k = lump(d);
+      return [RX * d[0] * k, RY * d[1] * k * (d[1] < 0 ? 0.78 : 1), RZ * d[2] * k];
+    },
+  });
+  const tex = paint(
+    'pumice',
+    128,
+    128,
+    (u, v) => {
+      const d = dir(u, v);
+      // pores of two sizes, darker inside with a pale rim, found by cellular noise on the stone's surface
+      let pit = 0;
+      let rim = 0;
+      for (const [scale, seed, rMin, rMax] of [
+        [10, 241, 0.12, 0.42],
+        [22, 251, 0.15, 0.45],
+      ] as const) {
+        const [dist, id] = cells3(d[0] * scale, d[1] * scale, d[2] * scale, seed);
+        const r = mix(rMin, rMax, id);
+        pit = Math.max(pit, smooth(r, r * 0.55, dist));
+        rim = Math.max(rim, smooth(r * 1.5, r * 1.15, dist) * smooth(r * 0.9, r * 1.1, dist));
+      }
+      let c = mixC(srgb(0xcfc7b7), srgb(0xd8cbb0), noise3(d[0] * 3, d[1] * 3, d[2] * 3, 261));
+      c = mulC(c, 0.93 + 0.1 * noise3(d[0] * 40, d[1] * 40, d[2] * 40, 263));
+      c = mixC(c, srgb(0xe9e5dc), rim * 0.5);
+      return mixC(c, srgb(0x77726a), pit * 0.85);
+    },
+    { wrapU: true },
+  );
+  const mat = material(
+    'pumice',
+    () => new THREE.MeshStandardMaterial({ map: tex, bumpMap: tex, bumpScale: 3, roughness: 1, metalness: 0 }),
+  );
+  return place([{ geo, mat }], { y: 0.5 });
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -1327,6 +1534,9 @@ const BUILDERS: Record<FindKind, () => Part[]> = {
   'sea-bean': seaBean,
   float,
   feather,
+  'netted-olive': olive,
+  'flamingo-tongue': flamingoTongue,
+  pumice,
 };
 
 const partCache = new Map<FindKind, Part[]>();

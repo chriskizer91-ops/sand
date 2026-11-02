@@ -23,6 +23,15 @@ export const ICONS = {
   camera: svg('<path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>'),
   /** A notebook with a shell on the cover. */
   book: svg('<path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z" fill="currentColor" fill-opacity=".15"/><path d="M5 17a3 3 0 0 1 3-3h11"/><path d="M10 8.5c1-1.5 3-1.5 4 0" /><path d="M9.5 10h5"/>'),
+  /** A folded chart. */
+  chart: svg('<path d="M4 6l5-2 6 2 5-2v14l-5 2-6-2-5 2z" fill="currentColor" fill-opacity=".15"/><path d="M9 4v14M15 6v14"/><circle cx="12" cy="11" r="1.2" fill="currentColor"/>'),
+  /** A tiller / steering. */
+  helm: svg('<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/>'),
+  /** An anchor. */
+  anchor: svg('<circle cx="12" cy="5" r="2"/><path d="M12 7v13M8 10h8M5 14c1 4 4 6 7 6s6-2 7-6"/>'),
+  /** Sails up / down. */
+  sailUp: svg('<path d="M12 3v15M12 4l7 12h-7" fill="currentColor" fill-opacity=".2"/><path d="M5 20h14"/><path d="M5 9l2-3 2 3" opacity=".8"/>'),
+  sailDown: svg('<path d="M12 3v15M12 11l5 5h-5" fill="currentColor" fill-opacity=".2"/><path d="M5 20h14"/><path d="M5 6l2 3 2-3" opacity=".8"/>'),
   /** A woven basket. */
   basket: svg('<path d="M4 10h16l-2 9H6z" fill="currentColor" fill-opacity=".18"/><path d="M8 10c0-3 1.8-5 4-5s4 2 4 5"/><path d="M5 13.5h14M6 16.5h12" opacity=".6"/>'),
   /** Standing up from the sand. */

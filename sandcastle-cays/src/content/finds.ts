@@ -25,7 +25,13 @@ export type FindKind =
   | 'coconut'
   | 'sea-bean'
   | 'float'
-  | 'feather';
+  | 'feather'
+  | 'netted-olive'
+  | 'flamingo-tongue'
+  | 'pumice';
+
+/** Islands where finds wash up: Home Cay and Pink Sand Cay. */
+export type IslandId = 'home' | 'pink';
 
 export interface FindInfo {
   kind: FindKind;
@@ -41,6 +47,8 @@ export interface FindInfo {
   fact: string;
   /** Shown the first time you pick one up. */
   firstLine: string;
+  /** Where it can wash up. Absent means everywhere. */
+  islands?: IslandId[];
 }
 
 export const FINDS: Record<FindKind, FindInfo> = {
@@ -228,6 +236,41 @@ export const FINDS: Record<FindKind, FindInfo> = {
     fact:
       'Most birds replace their feathers a few at a time as they wear out, so a feather on the beach does not mean a bird is hurt. Brown pelicans catch fish by diving headfirst into the sea.',
     firstLine: "A brown pelican's feather, as light as anything.",
+  },
+  'netted-olive': {
+    kind: 'netted-olive',
+    name: 'netted olive',
+    plural: 'netted olives',
+    group: 'shell',
+    rarity: 3,
+    size: 0.045,
+    islands: ['pink'],
+    fact:
+      'Netted olives burrow through the sand just under the surface, mostly at night. The shell is named for the fine net of lines across it.',
+    firstLine: 'A netted olive, glossy as a polished pebble.',
+  },
+  'flamingo-tongue': {
+    kind: 'flamingo-tongue',
+    name: 'flamingo tongue',
+    plural: 'flamingo tongues',
+    group: 'shell',
+    rarity: 1.5,
+    size: 0.03,
+    islands: ['pink'],
+    fact:
+      'Alive, this little snail lives on sea fans and covers its shell with a bright orange, spotted mantle, a soft fold of its body. The empty shell underneath is plain and creamy.',
+    firstLine: 'A flamingo tongue shell! Alive, it wears a spotted orange coat; the shell itself is plain.',
+  },
+  pumice: {
+    kind: 'pumice',
+    name: 'piece of pumice',
+    plural: 'pieces of pumice',
+    group: 'drift',
+    rarity: 2.5,
+    size: 0.07,
+    fact:
+      'Pumice is volcanic rock so full of tiny bubbles that it floats. Pieces can drift on the sea for a very long time before they wash ashore.',
+    firstLine: 'A lump of pumice: a stone so light it floats!',
   },
 };
 

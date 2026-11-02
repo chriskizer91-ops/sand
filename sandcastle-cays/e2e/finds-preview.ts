@@ -118,10 +118,24 @@ const layout: [FindKind, number, number, number][] = [
   ['rope', 0.62, -0.1, 0.0],
   ['coconut', -0.45, -0.55, 0.5],
   ['float', 0.3, -0.5, -0.8],
+  // Pink Sand Cay finds, on a patch of pink sand
+  ['netted-olive', -0.22, 1.08, 0.3],
+  ['flamingo-tongue', 0.0, 1.08, -0.4],
+  ['pumice', 0.24, 1.08, 0.2],
 ];
+const PINK_Y = 0.001;
+const pinkSand = new THREE.Mesh(
+  new THREE.CircleGeometry(0.42, 48),
+  new THREE.MeshStandardMaterial({ color: 0xf7c4b8, map: sand.material.map, roughness: 1, metalness: 0 }),
+);
+pinkSand.rotation.x = -Math.PI / 2;
+pinkSand.scale.set(1, 0.45, 1);
+pinkSand.position.set(0, PINK_Y, 1.08);
+pinkSand.receiveShadow = true;
+scene.add(pinkSand);
 for (const [kind, x, z, yaw] of layout) {
   const m = findModel(kind);
-  m.position.set(x, 0, z);
+  m.position.set(x, z > 0.95 ? PINK_Y : 0, z);
   m.rotation.y = yaw;
   scene.add(m);
 }
@@ -156,6 +170,7 @@ held.rotation.set(0.55, 0.35, 0.1);
 // ---------- views ----------
 const views: Record<string, { pos: [number, number, number]; look: [number, number, number]; fov?: number; held?: boolean }> = {
   overview: { pos: [0.1, 1.6, 2.15], look: [0.1, 0, 0.15] },
+  pink: { pos: [0.02, 0.34, 1.44], look: [0.02, 0, 1.08], fov: 45 },
   shellsL: { pos: [-0.36, 0.32, 1.05], look: [-0.36, 0, 0.72], fov: 45 },
   shellsR: { pos: [0.34, 0.32, 1.05], look: [0.34, 0, 0.72], fov: 45 },
   glass: { pos: [-0.12, 0.3, 0.7], look: [-0.12, 0, 0.36], fov: 50 },

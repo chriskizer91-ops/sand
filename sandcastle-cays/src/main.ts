@@ -13,6 +13,7 @@ import { OrbitCamera } from './input/camera';
 import { Controls } from './input/controls';
 import { FpInput } from './input/fpInput';
 import { BoatMotion } from './render/boatMotion';
+import { Wake } from './render/wake';
 import { BrushCursor } from './render/cursor';
 import { Daylight, advanceClock, formatClock, type Clock } from './render/daylight';
 import { findModel } from './render/finds';
@@ -31,16 +32,22 @@ import { FINDS } from './content/finds';
 import { Beach, BeachView } from './game/beach';
 import { Player, type PlayerMode } from './player/player';
 import { GroundMap } from './world/ground';
-import { ANCHORAGE, HomeCayTerrain } from './world/homeCay';
+import { reefChannel } from './world/homeCay';
+import { WorldTerrain } from './world/world';
+import { SAILING, autopilot, boomAngle, dropAnchor, newBoat, pointOfSail, sailFill, stepBoat, weighAnchor, windAngle, windAt, type BoatState, type Course, type WindState } from './game/sailing';
 import { downloadFile, loadAutosave, loadSettings, pickFile, saveAutosave, saveSettings, testStorage, clearAutosave, unwrapSave } from './storage/storage';
 import { Hud, cap } from './ui/hud';
+import { SailHud } from './ui/sailHud';
+import { Chart } from './ui/chart';
 import { Ui } from './ui/ui';
 import type { CheckResult } from './checks/sandChecks';
 
 declare const __BUILD_TIME__: string;
 
 const settings = loadSettings();
-const terrain = new HomeCayTerrain();
+const world = new WorldTerrain();
+/** Home Cay: the cove with the sandcastle sand, the reef and the lagoon. */
+const terrain = world.home;
 const region: RegionBounds = terrain.region;
 const debug = location.hash.includes('debug');
 
@@ -71,9 +78,12 @@ scene.add(distant);
 const { material: sandMat, uniforms: sandUniforms } = createSandMaterial();
 const sand = new SandTiles(sandMat);
 scene.add(sand.group);
-const islandGround = createIslandGround(terrain, { x0: -176, x1: 192, z0: -160, z1: 160 }, sandUniforms);
+const islandGround = createIslandGround(terrain, sandUniforms);
 islandGround.name = 'island';
 scene.add(islandGround);
+const pinkGround = createIslandGround(world.pink, sandUniforms);
+pinkGround.name = 'pinkIsland';
+scene.add(pinkGround);
 const coveRocks = createRocks(terrain, region);
 coveRocks.mesh.name = 'coveRocks';
 scene.add(coveRocks.mesh);
@@ -84,10 +94,14 @@ scene.add(covePlants);
 const life = createIslandLife(terrain, swayTime);
 life.group.name = 'life';
 scene.add(life.group);
-const ground = new GroundMap(terrain);
-ground.rocks = [...coveRocks.blobs, ...life.rocks];
+const pinkLife = createIslandLife(world.pink, swayTime);
+pinkLife.group.name = 'pinkLife';
+scene.add(pinkLife.group);
+const ground = new GroundMap(world);
+ground.rocks = [...coveRocks.blobs, ...life.rocks, ...pinkLife.rocks];
+const trunks = [...life.trunks, ...pinkLife.trunks];
 
-const seaFloor = new SeaFloorMap((x, z) => Math.max(terrain.heightAt(x, z), rockTop(ground.rocks, x, z)), 8, -10, 720, 300);
+const seaFloor = new SeaFloorMap((x, z) => Math.max(world.heightAt(x, z), rockTop(ground.rocks, x, z)), -20, -40, 880, 340);
 const ocean = new Ocean(seaFloor, SKY.sunDir, SKY.sunColor, (scene.fog as THREE.FogExp2).color, isTouch ? 170 : 220);
 ocean.mesh.name = 'ocean';
 scene.add(ocean.mesh);
@@ -102,8 +116,15 @@ sloop.group.traverse((o) => {
     o.receiveShadow = true;
   }
 });
-const boatMotion = new BoatMotion(sloop.group, ANCHORAGE.x, ANCHORAGE.z, ANCHORAGE.heading, sloop.length, sloop.beam, seaHeight);
+const boatMotion = new BoatMotion(sloop.group, sloop.length, sloop.beam, seaHeight);
+/** Your boat under way (or at anchor), and the wind. */
+let boat: BoatState = newBoat(terrain.anchorage.x, terrain.anchorage.z, terrain.anchorage.heading);
+const wind: WindState = windAt(0);
+/** The sea floor for the keel: the ground and any rocks or coral heads. */
+const seaBed = { floorAt: (x: number, z: number) => Math.max(world.heightAt(x, z), rockTop(ground.rocks, x, z)) };
 
+const wake = new Wake();
+scene.add(wake.mesh);
 const particles = new SandParticles();
 scene.add(particles.points);
 const cursor = new BrushCursor();
@@ -112,9 +133,11 @@ cursor.hide();
 
 // What the under-the-water picture can skip: anything that never sits below the surface.
 const refractSkip: THREE.Object3D[] = [];
-const staticSkip: THREE.Object3D[] = [sky.mesh, particles.points, cursor.mesh, distant, covePlants];
+const staticSkip: THREE.Object3D[] = [sky.mesh, particles.points, cursor.mesh, distant, covePlants, wake.mesh];
+pinkGround.traverse((o) => o.userData.dry && staticSkip.push(o));
 islandGround.traverse((o) => o.userData.dry && staticSkip.push(o));
 life.group.traverse((o) => o.userData.dry && staticSkip.push(o));
+pinkLife.group.traverse((o) => o.userData.dry && staticSkip.push(o));
 const sandDry = new Set<THREE.Object3D>();
 function rebuildRefractSkip(): void {
   refractSkip.length = 0;
@@ -204,15 +227,16 @@ window.addEventListener('resize', resize);
 // ---------- game state ----------
 
 const clock: Clock = { day: 1, hour: DAY.start };
-const beach = new Beach(terrain.tideline(0.6));
+const beach = new Beach([...terrain.tideline(0.6), ...world.pink.tideline(0.6)]);
 const beachView = new BeachView(beach, findModel, (x, z) => ground.heightAt(x, z));
 scene.add(beachView.group);
 
-const ISLAND_CENTRE = { cx: 4, cz: 10, r: 200 };
+/** You can swim and walk anywhere around both cays. */
+const ISLAND_CENTRE = { cx: -100, cz: -140, r: 430 };
 const player = new Player({
   groundAt: (x, z) => ground.heightAt(x, z),
   waterAt: (x, z) => seaHeight(x, z, time),
-  trunks: life.trunks,
+  trunks,
   boat: { obj: sloop.group, deck: sloop.deck, ladderTop: sloop.points.ladderTop, ladderBottom: sloop.points.ladderBottom, length: sloop.length },
   bounds: ISLAND_CENTRE,
 });
@@ -271,6 +295,7 @@ const ui = new Ui(
     runChecks: () => void runChecks(),
     click: () => audio.click(),
     logbook: () => toggleLogbook(),
+    chart: () => toggleChart(),
   },
   settings,
 );
@@ -289,11 +314,165 @@ const hud = new Hud(
 );
 hud.setMode('none');
 
+// ---------- sailing ----------
+
+let atHelm = false;
+let course: Course | null = null;
+let helmTipShown = false;
+let lastSea = 0;
+const RIG_SPEED = { boom: 0 };
+interface Rig {
+  setSail(a: number): void;
+  setBoom(a: number): void;
+  setJib(a: number): void;
+  setFill(f: number, t: number): void;
+  setRudder(a: number): void;
+  setAnchored(down: boolean): void;
+}
+const rig: Rig | null = sloop.rig ?? null;
+
+const sailHud = new SailHud(
+  {
+    sailUp: () => sailUp(),
+    sailDown: () => sailDown(),
+    anchor: () => toggleAnchor(),
+    chart: () => toggleChart(),
+    leaveHelm: () => leaveHelm(),
+    click: () => audio.click(),
+  },
+  isTouch,
+);
+
+const PLACES = [
+  { id: 'home', name: 'Home Cay', x: terrain.anchorage.x, z: terrain.anchorage.z, labelDx: 0, labelDz: 70 },
+  { id: 'pink', name: 'Pink Sand Cay', x: world.pink.anchorage.x, z: world.pink.anchorage.z, labelDx: 70, labelDz: -60 },
+];
+const channel = reefChannel(terrain);
+const chart = new Chart(
+  { heightAt: (x, z) => world.heightAt(x, z), groundAt: (x, z, h) => world.islandAt(x, z).groundAt(x, z, h) },
+  PLACES,
+  channel.outside,
+  {
+    sailTo: (id) => startCourse(id),
+    stop: () => stopCourse('You have her now: take the helm to steer.'),
+    close: () => toggleChart(false),
+    click: () => audio.click(),
+  },
+);
+
+function toggleChart(show?: boolean): void {
+  const open = show ?? !chart.open;
+  if (open) {
+    ui.closePanels();
+    hud.showLogbook(false);
+    input.unlock();
+    input.clear();
+    renderChart();
+  }
+  chart.show(open);
+}
+
+function renderChart(): void {
+  chart.render(boat, wind.from, course ? course.name : null, player.aboard, player.aboard ? null : { x: player.feet.x, z: player.feet.z });
+}
+
+function nearHelm(): boolean {
+  const h = sloop.points.helm;
+  return player.mode === 'deck' && Math.hypot(player.pos.x - h.x, player.pos.z - h.z) < 1.2;
+}
+
+function takeHelm(): void {
+  if (player.mode !== 'deck') return;
+  atHelm = true;
+  player.placeAboard(sloop.points.helm.clone(), player.yaw);
+  audio.click();
+  if (!helmTipShown) {
+    helmTipShown = true;
+    hud.showCard(
+      'You have the helm',
+      isTouch
+        ? 'Steer with your left thumb. Raise the sails with “More sail”. You can’t sail straight into the wind: if the sails flap, turn away from it.'
+        : 'A and D steer, W and S raise and lower the sails, X drops or raises the anchor, M opens the chart, E lets go. You can’t sail straight into the wind: if the sails flap, turn away from it.',
+      9000,
+    );
+  }
+}
+
+function leaveHelm(): void {
+  if (!atHelm) return;
+  atHelm = false;
+  if (!boat.anchored && boat.sail > 0.05 && !course) ui.toast('With nobody steering she’ll turn into the wind and slow down.', 3500);
+}
+
+function sailUp(): void {
+  if (boat.anchored) {
+    weighAnchor(boat);
+    audio.anchorChain(false);
+    ui.toast('Anchor up', 1800);
+  }
+  boat.sailSet = boat.sailSet < 0.25 ? 0.5 : 1;
+  if (course) stopCourse(null);
+  changedSinceSave = true;
+}
+
+function sailDown(): void {
+  boat.sailSet = boat.sailSet > 0.75 ? 0.5 : 0;
+  if (course) stopCourse(null);
+}
+
+function toggleAnchor(): void {
+  if (boat.anchored) {
+    weighAnchor(boat);
+    audio.anchorChain(false);
+    ui.toast('Anchor up. Raise the sails to get under way.', 2600);
+  } else {
+    const why = dropAnchor(boat, seaBed);
+    if (why) ui.toast(why, 3500);
+    else {
+      audio.anchorChain(true);
+      ui.toast(`Anchored off ${world.nearest(boat.x, boat.z).island.name}`, 2600);
+      if (course) stopCourse(null);
+    }
+  }
+  changedSinceSave = true;
+}
+
+function startCourse(id: string): void {
+  const dest = PLACES.find((p) => p.id === id);
+  if (!dest) return;
+  if (!player.aboard) {
+    ui.toast('Go aboard first, then set sail.', 2600);
+    return;
+  }
+  // Through the gap in the reef if you're crossing it.
+  const inLagoon = (x: number, z: number) => terrain.inland(x, z) > -84;
+  const wps: { x: number; z: number }[] = [];
+  const fromIn = inLagoon(boat.x, boat.z);
+  const toIn = inLagoon(dest.x, dest.z);
+  if (fromIn && !toIn) wps.push({ ...channel.inside }, { ...channel.outside });
+  if (!fromIn && toIn) wps.push({ ...channel.outside }, { ...channel.inside });
+  wps.push({ x: dest.x, z: dest.z });
+  course = { waypoints: wps, tack: 1, name: dest.name };
+  if (boat.anchored) {
+    weighAnchor(boat);
+    audio.anchorChain(false);
+  }
+  toggleChart(false);
+  hud.showCard(`Setting sail for ${dest.name}`, 'She’ll steer herself and anchor when she gets there. Walk about, or take the helm to steer yourself.', 6000);
+}
+
+function stopCourse(msg: string | null): void {
+  course = null;
+  if (msg) ui.toast(msg, 2600);
+  if (chart.open) renderChart();
+}
+
 function toggleLogbook(show?: boolean): void {
   const open = show ?? !hud.logbookOpen;
   if (open) {
     ui.closePanels();
-    hud.renderLogbook(beach.state.found, beach.state.locker, beach.state.basket, formatClock(clock));
+    const near = world.nearest(boat.x, boat.z).island.name;
+    hud.renderLogbook(beach.state.found, beach.state.locker, beach.state.basket, formatClock(clock), { hull: boat.hull, where: boat.anchored ? `At anchor off ${near}` : `Under way near ${near}` });
     input.unlock();
     input.clear();
   }
@@ -329,7 +508,7 @@ function updateLookHint(): void {
   hud.setLookHint(!isTouch && started && view === 'fp' && !input.locked && !input.dragLook && !anyPanelOpen());
 }
 function anyPanelOpen(): boolean {
-  return ui.panelOpen || hud.logbookOpen;
+  return ui.panelOpen || hud.logbookOpen || chart.open;
 }
 
 // ---------- building (kneeling at the sand) ----------
@@ -444,6 +623,8 @@ window.addEventListener('keydown', (e) => {
   if (!started) return;
   if (view === 'build' && (e.code === 'Escape' || e.code === 'KeyB')) exitBuild();
   else if (e.code === 'KeyL' && view === 'fp') toggleLogbook();
+  else if (e.code === 'KeyM' && view === 'fp') toggleChart();
+  else if (e.code === 'Escape' && chart.open) toggleChart(false);
   else if (e.code === 'Escape' && hud.logbookOpen) toggleLogbook(false);
 });
 
@@ -569,12 +750,14 @@ function mergeEvents(a: TickEvents | null, b: TickEvents): TickEvents {
 interface GameSave {
   version: string;
   clock: Clock;
+  boat?: Partial<BoatState>;
   player: { mode: PlayerMode; pos: number[]; yaw: number; pitch: number };
   beach: unknown;
 }
 
 function gameState(): GameSave {
-  return { version: GAME_VERSION, clock: { ...clock }, player: player.state, beach: beach.state };
+  const { x, z, heading, anchored, ax, az, sailSet, hull } = boat;
+  return { version: GAME_VERSION, clock: { ...clock }, boat: { x, z, heading, anchored, ax, az, sailSet, hull }, player: player.state, beach: beach.state };
 }
 
 function restoreGame(raw: unknown): void {
@@ -586,7 +769,22 @@ function restoreGame(raw: unknown): void {
   }
   beach.state = Beach.restore(g.beach);
   beachView.sync();
-  boatMotion.update(time, 1);
+  // Your boat, where you left her (anchored at Home Cay in older saves).
+  const sb = g.boat;
+  boat = newBoat(terrain.anchorage.x, terrain.anchorage.z, terrain.anchorage.heading);
+  if (sb && Number.isFinite(sb.x) && Number.isFinite(sb.z) && Number.isFinite(sb.heading)) {
+    boat.x = sb.x as number;
+    boat.z = sb.z as number;
+    boat.heading = sb.heading as number;
+    boat.anchored = sb.anchored !== false;
+    boat.ax = Number.isFinite(sb.ax) ? (sb.ax as number) : boat.x;
+    boat.az = Number.isFinite(sb.az) ? (sb.az as number) : boat.z;
+    boat.sailSet = boat.sail = Math.min(1, Math.max(0, Number(sb.sailSet) || 0));
+    boat.hull = Math.min(100, Math.max(0, Number.isFinite(sb.hull) ? (sb.hull as number) : 100));
+  }
+  course = null;
+  atHelm = false;
+  boatMotion.update(time, 1, boat);
   const p = g.player;
   if (p && Array.isArray(p.pos) && p.pos.length === 3 && p.pos.every(Number.isFinite)) {
     const v = new THREE.Vector3(p.pos[0], p.pos[1], p.pos[2]);
@@ -663,6 +861,10 @@ function newGame(): void {
   beach.state = Beach.fresh();
   beach.washUp(1);
   beachView.sync();
+  boat = newBoat(terrain.anchorage.x, terrain.anchorage.z, terrain.anchorage.heading);
+  course = null;
+  atHelm = false;
+  boatMotion.update(time, 1, boat);
   player.placeAboard(sloop.points.spawn, START_YAW);
   daylight.refresh();
   ui.toast('A fresh start at Home Cay');
@@ -737,6 +939,7 @@ async function boot(): Promise<void> {
   }
   resumed = !!save;
   const game = save ? await readSaveHeader(save) : null;
+  boatMotion.update(time, 1, boat);
   player.placeAboard(sloop.points.spawn, START_YAW);
   if (game) restoreGame(game);
   else {
@@ -784,6 +987,7 @@ type Action =
   | { kind: 'climbdown'; label: string }
   | { kind: 'locker'; label: string }
   | { kind: 'build'; label: string }
+  | { kind: 'helm'; label: string }
   | null;
 
 const center = new THREE.Vector2(0, 0);
@@ -795,11 +999,14 @@ function currentAction(): Action {
   raycaster.setFromCamera(center, camera);
   const f = beachView.pick(raycaster.ray, camera.position, PLAYER.reach);
   if (f) return { kind: 'pick', id: f.id, label: `Pick up the ${FINDS[f.kind].name.toLowerCase()}` };
-  if (player.mode === 'deck') {
+  if (player.mode === 'deck' && !atHelm) {
+    // The locker and the tiller are side by side in the cockpit: offer whichever you're nearer.
     const lk = sloop.points.locker;
-    if (Math.hypot(player.pos.x - lk.x, player.pos.z - lk.z) < 1.4) {
-      if (beach.state.basket.length) return { kind: 'locker', label: 'Empty your basket into the locker' };
-    }
+    const hm = sloop.points.helm;
+    const dLocker = beach.state.basket.length ? Math.hypot(player.pos.x - lk.x, player.pos.z - lk.z) : Infinity;
+    const dHelm = Math.hypot(player.pos.x - hm.x, player.pos.z - hm.z);
+    if (dLocker < 1.4 && dLocker <= dHelm) return { kind: 'locker', label: 'Empty your basket into the locker' };
+    if (dHelm < 1.2) return { kind: 'helm', label: 'Take the helm' };
   }
   if (canBuildHere()) return { kind: 'build', label: 'Kneel and build' };
   return null;
@@ -818,6 +1025,7 @@ function doAction(a: Action): void {
     hud.showCard('Stowed', `${n} ${n === 1 ? 'find' : 'finds'} put away in the locker. The logbook lists everything aboard.`, 3500);
     changedSinceSave = true;
   } else if (a.kind === 'build') enterBuild();
+  else if (a.kind === 'helm') takeHelm();
 }
 
 function pickUp(id: number): void {
@@ -858,7 +1066,66 @@ function frame(now: number): void {
   renderer.info.reset();
   host?.tick(dt);
 
-  boatMotion.update(time, dt);
+  // The wind and your boat.
+  windAt(time, wind);
+  let steer = 0;
+  if (course) {
+    const ap = autopilot(boat, wind, course);
+    boat.sailSet = ap.sailSet;
+    steer = ap.steer;
+    if (ap.arrived) {
+      const name = course.name;
+      const why = dropAnchor(boat, seaBed);
+      if (!why) {
+        audio.anchorChain(true);
+        hud.showCard(`Anchored off ${name}`, 'Swim or climb down the ladder to go ashore.', 5000);
+        course = null;
+        changedSinceSave = true;
+      }
+    }
+  } else if (atHelm && started && view === 'fp' && !anyPanelOpen()) steer = input.move.x;
+  const sailEv = stepBoat(boat, wind, { steer, attended: atHelm || !!course }, seaBed, dt);
+  if (sailEv.grounded > 0) {
+    audio.thud(sailEv.grounded / 2);
+    if (navigator.vibrate) navigator.vibrate([60, 40, 90]);
+    ui.toast(boat.hull < 40 ? 'Aground again! The hull is badly scraped.' : 'Aground! You’ve scraped the hull. Steer for deeper water.', 3500);
+    if (course) stopCourse(null);
+    changedSinceSave = true;
+  }
+  if (sailEv.floated) ui.toast('Afloat again', 1800);
+  // She stays among the cays for now.
+  {
+    const dx = boat.x + 100;
+    const dz = boat.z + 140;
+    const d = Math.hypot(dx, dz);
+    if (d > 640) {
+      boat.x = -100 + (dx / d) * 640;
+      boat.z = -140 + (dz / d) * 640;
+      boat.speed *= 0.5;
+      if (time - lastSea > 10) {
+        lastSea = time;
+        ui.toast('That’s the open ocean out there. Turn back toward the cays.', 3000);
+      }
+    }
+  }
+  boatMotion.update(time, dt, boat);
+  {
+    // The wake starts at the stern, where the water leaves the hull.
+    const sx = boat.x - Math.cos(boat.heading) * 4.1;
+    const sz = boat.z - Math.sin(boat.heading) * 4.1;
+    wake.update(dt, sx, sz, boat.heading, boat.anchored ? 0 : Math.abs(boat.speed), (x, z) => seaHeight(x, z, time), daylight.info.night, daylight.info.daylight);
+  }
+  if (rig) {
+    const twa = windAngle(boat, wind);
+    const boomTarget = boat.sail > 0.05 ? boomAngle(twa) : 0;
+    RIG_SPEED.boom += (boomTarget - RIG_SPEED.boom) * (1 - Math.exp(-dt * 1.6));
+    rig.setSail(boat.sail);
+    rig.setBoom(RIG_SPEED.boom);
+    rig.setJib(RIG_SPEED.boom);
+    rig.setFill(sailFill(twa), time);
+    rig.setRudder(boat.rudder);
+    rig.setAnchored(boat.anchored);
+  }
 
   // The clock (paused while a menu or the logbook is open).
   if (started && !anyPanelOpen() && !holdTime) {
@@ -871,7 +1138,7 @@ function frame(now: number): void {
     const paused = anyPanelOpen();
     if (!paused) {
       player.look(input.lookYaw, input.lookPitch);
-      const action = currentAction();
+      const action = atHelm ? null : currentAction();
       hud.setPrompt(action ? action.label : null, action?.kind === 'build' ? 'B' : 'E');
       // Taps on a phone (or clicks in drag-look mode) pick up what they touch.
       for (const tap of input.takeTaps()) {
@@ -879,13 +1146,20 @@ function frame(now: number): void {
         const f = beachView.pick(r, camera.position, PLAYER.reach + 0.4);
         if (f) pickUp(f.id);
       }
-      if (input.wasPressed('KeyE') || input.wasPressed('Use') || input.wasPressed('Action')) doAction(action);
+      if (atHelm) {
+        if (input.wasPressed('KeyW') || input.wasPressed('ArrowUp')) sailUp();
+        if (input.wasPressed('KeyS') || input.wasPressed('ArrowDown')) sailDown();
+        if (input.wasPressed('KeyX')) toggleAnchor();
+        if (input.wasPressed('KeyE') || input.wasPressed('Use') || input.wasPressed('Action')) leaveHelm();
+        // Taking the wheel back from the autopilot.
+        if (course && Math.abs(input.move.x) > 0.3) stopCourse('You have the helm.');
+      } else if (input.wasPressed('KeyE') || input.wasPressed('Use') || input.wasPressed('Action')) doAction(action);
       if (input.wasPressed('KeyB') && canBuildHere()) enterBuild();
-      const jump = input.wasPressed('Space');
+      const jump = !atHelm && input.wasPressed('Space');
       if (jump && player.nearLadder()) {
         if (player.climbAboard()) audio.ladder();
       }
-      const ev = player.update(dt, input.move, input.running, jump && player.mode !== 'swim');
+      const ev = player.update(dt, atHelm ? { x: 0, y: 0 } : input.move, input.running, jump && player.mode !== 'swim');
       for (const s of ev.steps) audio.footstep(s);
       if (ev.splash > 0) audio.splash(ev.splash);
       if (ev.climbed) audio.ladder();
@@ -935,6 +1209,8 @@ function frame(now: number): void {
 
   // Light, sky and water.
   const light = daylight.update(dt, time, clock);
+  // The far islands take on the colour of the haze at the horizon.
+  (distant.material as THREE.MeshBasicMaterial).color.copy(SKY.horizon).multiplyScalar(0.62 + 0.25 * light.daylight);
   sky.update(time, camera.position);
   ocean.update(time, camera.position);
   sandUniforms.uTime.value = time;
@@ -957,11 +1233,32 @@ function frame(now: number): void {
     env: envTex,
   });
   hud.setBasket(beach.state.basket.length);
+  {
+    const aboard = player.aboard;
+    sailHud.show(started && view === 'fp' && (atHelm || (aboard && (!boat.anchored || boat.sail > 0.05)) || !!course), started && view === 'fp' && atHelm);
+    if (frames % 6 === 0) {
+      const twa = windAngle(boat, wind);
+      sailHud.update({
+        windRel: twa,
+        compass: (((90 - (boat.heading * 180) / Math.PI) % 360) + 360) % 360,
+        knots: Math.abs(boat.speed) * 1.944,
+        windKnots: wind.speed * 1.944,
+        point: pointOfSail(twa),
+        sail: boat.sail,
+        sailSet: boat.sailSet,
+        anchored: boat.anchored,
+        aground: boat.aground,
+        course: course ? course.name : null,
+      });
+      if (chart.open) renderChart();
+    }
+    audio.setSailing(Math.abs(boat.speed), wind.speed, boat.sail * (1 - sailFill(windAngle(boat, wind))) * (boat.anchored ? 0 : 1), boat.heel, aboard);
+  }
   hud.setClock(formatClock(clock));
   updateLookHint();
 
   // Sound: louder surf near the beach.
-  const shoreDist = Math.abs(terrain.inland(player.feet.x, player.feet.z));
+  const shoreDist = Math.abs(world.nearest(player.feet.x, player.feet.z).coast);
   audio.setShore(Math.max(0, 1 - shoreDist / 40));
   const lapH = seaHeight(player.feet.x, player.feet.z, time);
   audio.update(dt, Math.min(1, Math.max(0, 0.5 + lapH / 0.08)), pendingEvents, handWet / 255);
@@ -1093,7 +1390,9 @@ void boot();
   /** Test helper: walk (or swim) with a fixed stick input for some seconds, in small even steps (independent of the frame rate). */
   walk: (seconds: number, x: number, y: number, run = false, steerToLadder = false) => {
     for (let t = 0; t < seconds; t += 1 / 30) {
-      boatMotion.update(time, 1 / 30);
+      windAt(time, wind);
+      stepBoat(boat, wind, { steer: 0, attended: atHelm || !!course }, seaBed, 1 / 30);
+      boatMotion.update(time, 1 / 30, boat);
       if (steerToLadder && player.mode === 'deck') {
         // Head for a spot just past the top of the swim ladder.
         const lt = sloop.points.ladderTop;
@@ -1127,6 +1426,41 @@ void boot();
   seaFloor,
   sky,
   scene,
+  get boat() {
+    return boat;
+  },
+  wind,
+  takeHelm,
+  leaveHelm,
+  get atHelm() {
+    return atHelm;
+  },
+  sailUp,
+  sailDown,
+  toggleAnchor,
+  startCourse,
+  get course() {
+    return course ? course.name : null;
+  },
+  toggleChart,
+  /** Test helper: sail for some seconds in even steps (autopilot or a fixed helm). */
+  sail: (seconds: number, steerInput = 0) => {
+    for (let t = 0; t < seconds; t += 1 / 30) {
+      time += 1 / 30;
+      windAt(time, wind);
+      let st = steerInput;
+      if (course) {
+        const ap = autopilot(boat, wind, course);
+        boat.sailSet = ap.sailSet;
+        st = ap.steer;
+        if (ap.arrived && !dropAnchor(boat, seaBed)) course = null;
+      }
+      stepBoat(boat, wind, { steer: st, attended: true }, seaBed, 1 / 30);
+      boatMotion.update(time, 1 / 30, boat);
+      player.update(1 / 30, { x: 0, y: 0 }, false, false);
+    }
+    return { x: boat.x, z: boat.z, speed: boat.speed, anchored: boat.anchored, aground: boat.aground, hull: boat.hull, course: course ? course.name : null };
+  },
   sandInfo: () => ({ edited: editedTiles.size, shown: sand.group.children.filter((m) => m.visible).length, tiles: sand.group.children.length, standIn: standIn.visible }),
   time: () => time,
 };

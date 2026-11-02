@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import { BASKET_CAPACITY } from '../config';
 import { FINDS, FIND_KINDS, type FindKind } from '../content/finds';
 import { mulberry32 } from '../engine/noise';
+import type { IslandId, TidePoint } from '../world/islands';
 
 export interface GroundFind {
   id: number;
@@ -34,7 +35,7 @@ export interface BeachState {
 }
 
 /** Most finds lying about at once; the tide takes the oldest back. */
-export const MAX_ON_SAND = 48;
+export const MAX_ON_SAND = 64;
 
 export type PickResult = { ok: true; first: boolean; kind: FindKind } | { ok: false; reason: 'full' | 'gone' };
 
@@ -42,7 +43,7 @@ export class Beach {
   state: BeachState;
 
   constructor(
-    private tideline: { x: number; z: number; nx: number; nz: number }[],
+    private tideline: TidePoint[],
     state?: BeachState,
   ) {
     this.state = state ?? Beach.fresh();
@@ -71,33 +72,41 @@ export class Beach {
     return s;
   }
 
-  /** The sea leaves new things along the tideline. Returns how many arrived. */
+  /** The sea leaves new things along each island's tideline. Returns how many arrived. */
   washUp(day: number, count?: number): number {
     const st = this.state;
     if (!this.tideline.length) return 0;
     const rand = mulberry32(day * 7919 + 17);
-    const n = count ?? 11 + Math.floor(rand() * 5);
-    const total = FIND_KINDS.reduce((a, k) => a + FINDS[k].rarity, 0);
-    const pick = (): FindKind => {
-      let r = rand() * total;
-      for (const k of FIND_KINDS) {
-        r -= FINDS[k].rarity;
-        if (r <= 0) return k;
-      }
-      return FIND_KINDS[0];
-    };
+    const islands: IslandId[] = [...new Set(this.tideline.map((p) => p.island))];
     let added = 0;
-    for (let i = 0; i < n * 4 && added < n; i++) {
-      const p = this.tideline[Math.floor(rand() * this.tideline.length)];
-      // Scatter a little up and down the beach from the wrack line.
-      const along = (rand() - 0.5) * 1.4;
-      const across = (rand() - 0.5) * 1.6;
-      const x = p.x - p.nz * along - p.nx * across;
-      const z = p.z + p.nx * along - p.nz * across;
-      // Not on top of another find.
-      if (st.ground.some((g) => Math.abs(g.x - x) < 0.5 && Math.abs(g.z - z) < 0.5)) continue;
-      st.ground.push({ id: st.nextId++, kind: pick(), x, z, rot: rand() * Math.PI * 2, day });
-      added++;
+    for (const island of islands) {
+      const line = this.tideline.filter((p) => p.island === island);
+      // Home Cay's long beaches get the most; a small cay gets fewer.
+      const n = count ?? (island === 'home' ? 11 + Math.floor(rand() * 5) : 6 + Math.floor(rand() * 3));
+      const kinds = FIND_KINDS.filter((k) => !FINDS[k].islands || FINDS[k].islands!.includes(island));
+      const total = kinds.reduce((a, k) => a + FINDS[k].rarity, 0);
+      const pick = (): FindKind => {
+        let r = rand() * total;
+        for (const k of kinds) {
+          r -= FINDS[k].rarity;
+          if (r <= 0) return k;
+        }
+        return kinds[0];
+      };
+      let here = 0;
+      for (let i = 0; i < n * 4 && here < n; i++) {
+        const p = line[Math.floor(rand() * line.length)];
+        // Scatter a little up and down the beach from the wrack line.
+        const along = (rand() - 0.5) * 1.4;
+        const across = (rand() - 0.5) * 1.6;
+        const x = p.x - p.nz * along - p.nx * across;
+        const z = p.z + p.nx * along - p.nz * across;
+        // Not on top of another find.
+        if (st.ground.some((g) => Math.abs(g.x - x) < 0.5 && Math.abs(g.z - z) < 0.5)) continue;
+        st.ground.push({ id: st.nextId++, kind: pick(), x, z, rot: rand() * Math.PI * 2, day });
+        here++;
+      }
+      added += here;
     }
     // The tide takes the oldest back.
     if (st.ground.length > MAX_ON_SAND) st.ground.splice(0, st.ground.length - MAX_ON_SAND);

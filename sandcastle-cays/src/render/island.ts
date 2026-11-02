@@ -15,7 +15,7 @@ import * as THREE from 'three';
 import { PALETTE } from './colors';
 import { createSandMaterial, type SandUniforms } from './sandMaterial';
 import { Noise2D } from '../engine/noise';
-import type { HomeCayTerrain } from '../world/homeCay';
+import type { IslandTerrain } from '../world/islands';
 
 const SQUARE = 16;
 const TILE_SQUARES = 4;
@@ -33,7 +33,7 @@ export interface IslandBounds {
   z1: number;
 }
 
-export function createIslandGround(terrain: HomeCayTerrain, bounds: IslandBounds, sandUniforms: SandUniforms): THREE.Group {
+export function createIslandGround(terrain: IslandTerrain, sandUniforms: SandUniforms, bounds: IslandBounds = terrain.bounds): THREE.Group {
   const group = new THREE.Group();
   const { material } = createSandMaterial(true, sandUniforms);
   const region = terrain.region;
@@ -45,6 +45,7 @@ export function createIslandGround(terrain: HomeCayTerrain, bounds: IslandBounds
   const seagrass = rgb(0x4f6b3a);
   const reefA = rgb(0xb08a5e);
   const reefB = rgb(0x8b6a7a);
+  const pink = rgb(0xf6a493);
   const overlap = 0.09;
 
   const nearRegion = (x0: number, z0: number, x1: number, z1: number, m: number) =>
@@ -118,6 +119,10 @@ export function createIslandGround(terrain: HomeCayTerrain, bounds: IslandBounds
         } else if (kind === 'seagrass') {
           c = seagrass;
           a = 0.75;
+        } else if (kind === 'pinksand') {
+          // Pink sand: the red-pink of crushed shells mixed through white sand, a touch richer where it's wet.
+          c = pink;
+          a = 0.55 + 0.1 * nz;
         } else if (kind === 'reef') {
           c = nz > 0.5 ? reefA : reefB;
           a = 0.85;
@@ -190,10 +195,12 @@ export function createIslandGround(terrain: HomeCayTerrain, bounds: IslandBounds
     if (key.endsWith(',1')) mesh.userData.dry = true;
     group.add(mesh);
   }
-  const stand = build(standIn);
-  stand.name = 'standIn';
-  stand.visible = false;
-  group.userData.standIn = stand;
-  group.add(stand);
+  if (standIn.idx.length) {
+    const stand = build(standIn);
+    stand.name = 'standIn';
+    stand.visible = false;
+    group.userData.standIn = stand;
+    group.add(stand);
+  }
   return group;
 }

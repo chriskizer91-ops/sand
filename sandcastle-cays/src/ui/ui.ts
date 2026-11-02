@@ -21,6 +21,7 @@ export interface UiActions {
   runChecks(): void;
   click(): void;
   logbook(): void;
+  chart(): void;
   newGame(): void;
 }
 
@@ -80,6 +81,7 @@ export class Ui {
     this.undoBtn.disabled = true;
     this.undoBtn.dataset.build = '1';
     this.roundButton(top, ICONS.home, 'Show the whole beach', () => actions.home()).dataset.build = '1';
+    this.roundButton(top, ICONS.chart, 'Chart', () => actions.chart()).dataset.fp = '1';
     this.roundButton(top, ICONS.book, 'Logbook', () => actions.logbook()).dataset.fp = '1';
     this.roundButton(top, ICONS.camera, 'Take a photo', () => actions.photo());
     this.roundButton(top, ICONS.menu, 'Menu', () => this.togglePanel(this.menu));
@@ -136,8 +138,8 @@ export class Ui {
     const card = el('div', { class: 'card' });
     card.innerHTML = `
       <h1>Sandcastle Cays</h1>
-      <p class="sub">Home Cay · v${GAME_VERSION}</p>
-      <p>You live aboard a little sailboat at anchor off Home Cay. Swim ashore, comb the beach for what the sea washed up, and kneel on the cove to build in the sand.</p>
+      <p class="sub">First passage · v${GAME_VERSION}</p>
+      <p>You live aboard a little sailboat at anchor off Home Cay. Swim ashore, comb the beaches for what the sea washed up, build in the sand, and sail out through the reef to Pink Sand Cay.</p>
       <p class="small">Phone: left thumb to walk · right thumb to look · tap things to pick them up<br>Laptop: W A S D to walk · mouse or trackpad to look · E to pick up · Space to jump</p>`;
     const prog = el('div', { class: 'progress' }, '<div></div>');
     this.progressBar = prog.firstElementChild as HTMLDivElement;
@@ -252,6 +254,13 @@ export class Ui {
         <li><b>Phone</b>: put your left thumb down anywhere on the left and slide it to walk (push it all the way to run). Drag with your right thumb to look. Tap a find to pick it up. The round button does what the label says; the arrow jumps.</li>
         <li><b>Laptop</b>: click once so the mouse turns your head (Esc lets go). W A S D or arrows to walk, Shift to run, Space to jump, E (or click) to pick up and use, L for the logbook.</li>
         <li><b>Leaving the boat</b>: walk to the swim ladder at the stern (the back of the boat). Climb back up the same ladder. You can also jump over the side.</li>
+      </ul>
+      <h3>Sailing</h3>
+      <ul>
+        <li><b>Take the helm</b> in the cockpit (E, or the round button). Steer with A and D (phone: your left thumb). W and S raise and lower the sails (phone: “More sail” and “Less sail”). X drops or raises the anchor. E lets go.</li>
+        <li>You can’t sail straight into the wind. If the sails flap and you slow down (“in irons”), turn away from the wind. To go upwind, zig-zag. The little dial shows where the wind comes from; the red wedge is where you can’t sail.</li>
+        <li>You’re fastest with the wind from the side. The reef around Home Cay has one gap, to the south-west: hitting the reef scrapes the hull.</li>
+        <li><b>The chart</b> (M, or the map button) shows where you are. Tap a place and she sails there by herself and anchors.</li>
       </ul>
       <h3>Beachcombing</h3>
       <ul>

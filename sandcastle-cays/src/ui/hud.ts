@@ -169,12 +169,18 @@ export class Hud {
   }
 
   /** Fill the logbook: what you've found, what's aboard, and hints for the rest. */
-  renderLogbook(found: Partial<Record<FindKind, number>>, locker: Partial<Record<FindKind, number>>, basket: FindKind[], clock: string): void {
+  renderLogbook(found: Partial<Record<FindKind, number>>, locker: Partial<Record<FindKind, number>>, basket: FindKind[], clock: string, boat?: { hull: number; where: string }): void {
     const kinds = FIND_KINDS;
     const nFound = kinds.filter((k) => found[k]).length;
     const aboard = Object.values(locker).reduce((a, b) => a + (b ?? 0), 0);
     this.logSummary.innerHTML = `${clock} · <b>${nFound}</b> of ${kinds.length} kinds found · <b>${aboard}</b> finds in the locker aboard · <b>${basket.length}</b> in your basket`;
     this.logList.innerHTML = '';
+    if (boat) {
+      this.logList.appendChild(el('h3', {}, 'Your boat'));
+      const hull = Math.round(boat.hull);
+      const word = hull >= 95 ? 'sound' : hull >= 70 ? 'a few scrapes' : hull >= 40 ? 'badly scraped' : 'in a bad way';
+      this.logList.appendChild(el('div', { class: 'logrow' }, `<div class="name">Hull: ${word}<span>${hull}%</span></div><div class="fact">${boat.where}. Running aground on the reef or a beach scrapes the hull.</div>`));
+    }
     const groups: [string, string][] = [
       ['shell', 'Shells'],
       ['sea glass', 'Sea glass'],

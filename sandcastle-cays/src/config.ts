@@ -1,6 +1,6 @@
 /** Shared constants. Plain numbers only, so both the page and the sand worker can use them. */
 
-export const GAME_VERSION = '0.2.2';
+export const GAME_VERSION = '0.3';
 
 /** Size of one sand cell in metres (3 cm). */
 export const CELL = 0.03;

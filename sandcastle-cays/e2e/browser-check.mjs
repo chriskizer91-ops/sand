@@ -343,6 +343,82 @@ async function standBy(page, f) {
   }
   await shot(page, '10-inland.png');
 
+  // ---- Sailing ----
+  await G(page, () => window.__game.aboard(-Math.PI / 2, -0.05));
+  await waitFrames(page, 3);
+  const helmPrompt = await G(page, () => window.__game.action());
+  await page.keyboard.press('KeyE');
+  await waitFrames(page, 3);
+  step('Laptop: in the cockpit, E takes the helm', await G(page, () => window.__game.atHelm), `prompt: "${helmPrompt?.label}"`);
+  await page.keyboard.press('KeyW');
+  await waitFrames(page, 2);
+  await page.keyboard.press('KeyW');
+  await waitFrames(page, 2);
+  const up = await G(page, () => ({ set: window.__game.boat.sailSet, anchored: window.__game.boat.anchored }));
+  step('Laptop: W raises the sails (and the anchor comes up)', up.set === 1 && !up.anchored, `sails ${up.set === 1 ? 'full' : up.set}, anchor ${up.anchored ? 'down' : 'up'}`);
+  // Steer onto a reach and sail a little (even steps: software drawing is slow).
+  const h0 = await G(page, () => window.__game.boat.heading);
+  // Bear away to port (toward open water inside the reef), then sail on.
+  await G(page, () => window.__game.sail(12, -1));
+  const h1 = await G(page, () => window.__game.boat.heading);
+  const run = await G(page, () => window.__game.sail(16, 0));
+  step('Laptop: she turns when you steer and picks up speed under sail', Math.abs(h1 - h0) > 0.3 && run.speed > 1.2, `turned ${(h1 - h0).toFixed(2)} rad, ${(run.speed * 1.944).toFixed(1)} knots`);
+  await waitFrames(page, 3);
+  await shot(page, '12a-at-the-helm-under-sail.png');
+  await G(page, () => window.__game.player.yaw = window.__game.player.yaw + Math.PI);
+  await waitFrames(page, 3);
+  await shot(page, '12b-looking-aft-wake.png');
+  // The chart, and sailing there by herself.
+  await page.keyboard.press('KeyM');
+  await waitFrames(page, 3);
+  const chartOpen = await page.isVisible('#chart');
+  await shot(page, '12c-chart.png');
+  const sailBtn = await page.$('#chart button:has-text("Pink Sand Cay")');
+  if (sailBtn) await sailBtn.click();
+  await waitFrames(page, 2);
+  const courseName = await G(page, () => window.__game.course);
+  step('Laptop: M opens the chart; "Sail to Pink Sand Cay" sets her going by herself', chartOpen && courseName === 'Pink Sand Cay', `course: ${courseName}`);
+  await G(page, () => window.__game.leaveHelm());
+  let arrived = null;
+  for (let i = 0; i < 16 && !arrived; i++) {
+    const r = await G(page, () => window.__game.sail(30));
+    if (r.anchored) arrived = r;
+  }
+  const pinkA = { x: -258, z: -258 };
+  step('Laptop: she sails through the gap in the reef to Pink Sand Cay and anchors', !!arrived && Math.hypot(arrived.x - pinkA.x, arrived.z - pinkA.z) < 60 && arrived.hull === 100, arrived ? `anchored ${Math.round(Math.hypot(arrived.x - pinkA.x, arrived.z - pinkA.z))} m from the anchorage, hull ${arrived.hull}%` : 'did not arrive');
+  // Look from the boat toward the island.
+  await G(page, () => {
+    const g = window.__game;
+    g.aboard(0, -0.05);
+    const f = g.feet;
+    g.player.yaw = Math.atan2(-(-210 - f[0]), -(-300 - f[2]));
+  });
+  await waitFrames(page, 4);
+  await shot(page, '12d-arrived-at-pink-sand-cay.png');
+  // Ashore on the pink beach: finds there too.
+  const pinkFind = await nearestFind(page, -210, -300);
+  if (pinkFind) {
+    await standBy(page, pinkFind);
+    await shot(page, '12e-pink-sand-beach.png');
+  }
+  step('Laptop: there are finds on Pink Sand Cay\'s beaches', !!pinkFind && Math.hypot(pinkFind.x + 210, pinkFind.z + 300) < 120, pinkFind ? `nearest: ${pinkFind.kind}` : 'none');
+  // Running onto the reef scrapes the hull.
+  const ground = await G(page, () => {
+    const g = window.__game;
+    const b = g.boat;
+    b.x = 2; b.z = -60; b.heading = -Math.PI / 2; b.anchored = false; b.sailSet = 1; b.sail = 1; b.speed = 3; b.hull = 100;
+    return g.sail(40, 0);
+  });
+  step('Laptop: sailing onto the reef runs her aground and scrapes the hull', ground.aground && ground.hull < 100, `aground: ${ground.aground}, hull ${Math.round(ground.hull)}%`);
+  // Back home for the rest of the checks.
+  await G(page, () => {
+    const g = window.__game;
+    const b = g.boat;
+    b.x = 2; b.z = -31; b.heading = 0; b.speed = 0; b.sailSet = 0; b.sail = 0; b.anchored = true; b.ax = 8; b.az = -31; b.aground = false; b.hull = 100;
+    g.sail(1);
+    g.aboard(Math.PI, -0.05);
+  });
+
   // Evening and night.
   await G(page, () => window.__game.teleport(-3, 1.5, Math.PI * 0.05, 0.02));
   await G(page, () => window.__game.setHour(19.35));
@@ -502,6 +578,31 @@ async function standBy(page, f) {
   await page.waitForFunction(() => window.__game.playerMode === 'deck', null, { timeout: 30000 }).catch(() => {});
   step('Phone: by the ladder, the round button climbs you aboard', climbBtn && (await G(page, () => window.__game.playerMode)) === 'deck');
   await shot(page, '17-phone-back-aboard.png');
+  // At the helm on the phone: the round button takes it, the thumb steers, buttons work the sails.
+  await G(page, () => window.__game.aboard(-Math.PI / 2, -0.05));
+  await waitFrames(page, 3);
+  const helmBtn = await page.isVisible('#actionbtn');
+  if (helmBtn) await page.tap('#actionbtn');
+  await waitFrames(page, 3);
+  const helmOk = await G(page, () => window.__game.atHelm);
+  const moreSail = await page.$('#helmbar button:has-text("More sail")');
+  if (moreSail) {
+    await moreSail.tap();
+    await waitFrames(page, 2);
+  }
+  const sailSet = await G(page, () => window.__game.boat.sailSet);
+  const s1 = { x: vw * 0.2, y: vh * 0.75, id: 5 };
+  await touch('touchStart', [s1]);
+  for (let i = 1; i <= 8; i++) {
+    await touch('touchMove', [{ ...s1, x: s1.x + i * 7 }]);
+    await sleep(30);
+  }
+  await waitFrames(page, 6);
+  const rudder = await G(page, () => window.__game.boat.rudder);
+  await touch('touchEnd', []);
+  step('Phone: the round button takes the helm, "More sail" raises sail, the thumb steers', helmOk && sailSet > 0 && rudder > 0.05, `helm: ${helmOk}, sails ${sailSet}, rudder ${rudder.toFixed(2)}`);
+  await shot(page, '17b-phone-at-the-helm.png');
+
   const errs = report.errors.filter((e) => e.startsWith('phone'));
   step('Phone: no errors', errs.length === 0, errs.join(' | '));
   await ctx.close();

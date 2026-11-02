@@ -21,10 +21,51 @@ function materials(o: THREE.Object3D): Set<THREE.Material> {
   return out;
 }
 
+const HOME_KINDS = [
+  'cowrie',
+  'calico-scallop',
+  'sand-dollar',
+  'nerite',
+  'sunrise-tellin',
+  'top-shell',
+  'glass-white',
+  'glass-green',
+  'glass-brown',
+  'glass-blue',
+  'driftwood',
+  'plank',
+  'rope',
+  'coconut',
+  'sea-bean',
+  'float',
+  'feather',
+];
+const PINK_KINDS = ['netted-olive', 'flamingo-tongue', 'pumice'];
+
 describe('beachcombing catalogue', () => {
-  it('lists all 17 kinds, once each', () => {
-    expect(FIND_KINDS.length).toBe(17);
+  it('lists all 20 kinds once each, with the Pink Sand Cay ones added at the end', () => {
+    expect(FIND_KINDS.length).toBe(20);
     expect(new Set(FIND_KINDS).size).toBe(FIND_KINDS.length);
+    expect(FIND_KINDS).toEqual([...HOME_KINDS, ...PINK_KINDS]);
+  });
+  it('says where island-only finds wash up', () => {
+    expect(FINDS['netted-olive'].islands).toEqual(['pink']);
+    expect(FINDS['flamingo-tongue'].islands).toEqual(['pink']);
+    expect(FINDS.pumice.islands).toBeUndefined();
+    for (const kind of HOME_KINDS) expect(FINDS[kind as keyof typeof FINDS].islands).toBeUndefined();
+    for (const kind of FIND_KINDS) {
+      const islands = FINDS[kind].islands;
+      if (islands === undefined) continue;
+      expect(islands.length).toBeGreaterThan(0);
+      for (const i of islands) expect(['home', 'pink']).toContain(i);
+    }
+  });
+  it('each island has plenty of kinds that can wash up there', () => {
+    for (const island of ['home', 'pink'] as const) {
+      const here = FIND_KINDS.filter((k) => !FINDS[k].islands || FINDS[k].islands!.includes(island));
+      expect(here.length).toBeGreaterThan(10);
+      expect(here.reduce((a, k) => a + FINDS[k].rarity, 0)).toBeGreaterThan(0);
+    }
   });
   for (const kind of FIND_KINDS) {
     it(`${kind}: has logbook info`, () => {

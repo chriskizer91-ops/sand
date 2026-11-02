@@ -226,6 +226,89 @@ export class SandAudio {
   }
   private shore = 1;
 
+
+  // ---------- under sail ----------
+
+  private sailNodes: { rush: GainNode; rushF: BiquadFilterNode; rig: GainNode; luff: GainNode; luffLfo: OscillatorNode } | null = null;
+
+  private ensureSailNodes(): void {
+    if (this.sailNodes || !this.ctx) return;
+    const ctx = this.ctx;
+    // Water rushing along the hull.
+    const rushF = ctx.createBiquadFilter();
+    rushF.type = 'lowpass';
+    rushF.frequency.value = 600;
+    const rush = ctx.createGain();
+    rush.gain.value = 0;
+    this.loop(this.brown).connect(rushF).connect(rush).connect(this.master);
+    // Wind singing in the rigging.
+    const rigF = ctx.createBiquadFilter();
+    rigF.type = 'bandpass';
+    rigF.frequency.value = 1500;
+    rigF.Q.value = 6;
+    const rig = ctx.createGain();
+    rig.gain.value = 0;
+    this.loop(this.noise).connect(rigF).connect(rig).connect(this.master);
+    // Sails flapping (luffing): noise beaten by a fast flutter.
+    const luffF = ctx.createBiquadFilter();
+    luffF.type = 'bandpass';
+    luffF.frequency.value = 420;
+    luffF.Q.value = 0.7;
+    const flutter = ctx.createGain();
+    flutter.gain.value = 0;
+    const luff = ctx.createGain();
+    luff.gain.value = 0;
+    const luffLfo = ctx.createOscillator();
+    luffLfo.frequency.value = 7;
+    const lfoAmt = ctx.createGain();
+    lfoAmt.gain.value = 0.5;
+    luffLfo.connect(lfoAmt).connect(flutter.gain);
+    luffLfo.start();
+    this.loop(this.noise).connect(luffF).connect(flutter).connect(luff).connect(this.master);
+    this.sailNodes = { rush, rushF, rig, luff, luffLfo };
+  }
+
+  /** Every frame while aboard: speed (m/s), wind (m/s), how much the sails flap (0..1), how much she's heeling (radians). */
+  setSailing(speed: number, wind: number, luff: number, heel: number, aboard: boolean): void {
+    if (!this.ctx || !this.enabled) return;
+    this.ensureSailNodes();
+    const n = this.sailNodes!;
+    const now = this.ctx.currentTime;
+    const v = Math.min(1, speed / 3.4);
+    n.rush.gain.setTargetAtTime(aboard ? 0.13 * v * v + 0.01 * v : 0, now, 0.3);
+    n.rushF.frequency.setTargetAtTime(380 + 900 * v, now, 0.3);
+    n.rig.gain.setTargetAtTime(aboard ? 0.006 + 0.02 * Math.min(1, wind / 9) * (0.4 + Math.abs(heel) * 3) : 0, now, 0.5);
+    n.luff.gain.setTargetAtTime(aboard ? 0.09 * luff : 0, now, 0.15);
+    n.luffLfo.frequency.setTargetAtTime(5 + 4 * Math.min(1, wind / 9), now, 0.5);
+  }
+
+  /** The anchor chain running out (or being hauled in). */
+  anchorChain(down: boolean): void {
+    if (!this.ctx || !this.enabled) return;
+    const n = down ? 22 : 16;
+    for (let i = 0; i < n; i++) this.grain(1800 + this.rand() * 1600, 6, 0.04, 0.03, i * (down ? 0.07 : 0.11));
+    if (down) this.splash(0.5);
+  }
+
+  /** The keel hitting sand or reef. */
+  thud(size: number): void {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(90, t);
+    o.frequency.exponentialRampToValueAtTime(40, t + 0.4);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.25 * Math.min(1, size), t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+    o.connect(g).connect(this.master);
+    o.start(t);
+    o.stop(t + 0.55);
+    for (let i = 0; i < 8; i++) this.grain(500 + this.rand() * 900, 0.8, 0.06 * Math.min(1, size), 0.2, 0.05 + i * 0.04);
+  }
+
   click(): void {
     if (!this.ctx || !this.enabled) return;
     this.grain(2400, 3, 0.12, 0.025);

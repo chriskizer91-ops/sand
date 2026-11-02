@@ -124,6 +124,22 @@ body[data-mode="build"] [data-fp] { display: none !important; }
 .logrow .name span { font-weight: 600; font-size: 12.5px; color: var(--ink-soft); text-align: right; }
 .logrow .fact { font-size: 13.5px; line-height: 1.45; color: var(--ink); margin-top: 2px; }
 .logrow.unknown .name { color: var(--ink-soft); font-weight: 700; }
+
+/* ---------- sailing ---------- */
+#sailhud { position: fixed; z-index: 5; top: calc(56px + var(--safe-t)); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; background: var(--paper); box-shadow: var(--shadow); border-radius: 40px; padding: 5px 16px 5px 6px; pointer-events: none; max-width: 94vw; }
+#sailhud.hide, body[data-mode="build"] #sailhud, body[data-mode="none"] #sailhud { display: none; }
+#sailhud .txt { font-size: 13px; line-height: 1.3; color: var(--ink-soft); white-space: nowrap; }
+#sailhud .l1 { font-size: 14.5px; color: var(--ink); }
+#sailhud .bad { color: #c2412a; }
+#helmbar { position: fixed; z-index: 6; left: 50%; transform: translateX(-50%); bottom: calc(12px + var(--safe-b)); display: flex; gap: 4px; padding: 6px; border-radius: 26px; background: var(--paper); box-shadow: var(--shadow); }
+#helmbar.hide, body[data-mode="build"] #helmbar { display: none; }
+#helmbar .tool { width: 66px; height: 62px; position: relative; }
+#helmbar kbd { position: absolute; top: 3px; right: 6px; font: 700 10px/1 ui-monospace, monospace; color: var(--ink-soft); opacity: .7; }
+body.athelm #jumpbtn { display: none; }
+body.athelm #actionbtn { bottom: calc(96px + var(--safe-b)); }
+#chart { width: min(380px, calc(100vw - 20px)); }
+#chart .chartmap { display: block; margin: 4px auto 6px; border-radius: 14px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); }
+@media (max-width: 640px) { #sailhud { top: calc(104px + var(--safe-t)); } #helmbar .tool { width: 58px; font-size: 11px; } }
 @media (max-width: 640px) { #clock { left: 10px; top: calc(66px + var(--safe-t)); transform: none; font-size: 12.5px; padding: 6px 12px; } #findcard { top: calc(108px + var(--safe-t)); } #prompt { font-size: 14px; } }
 @media (max-width: 380px) { .tool { width: 60px; } .tool.size { width: 50px; } }
 @media (orientation: landscape) and (max-height: 500px) { #toolbar { left: auto; right: 10px; transform: none; } #hint { bottom: calc(14px + var(--safe-b)); left: 12px; transform: none; max-width: 46vw; } }

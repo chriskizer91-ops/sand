@@ -1,39 +1,39 @@
 /**
- * Your boat at anchor: it rides the same waves you see (sampled at bow,
- * stern and both sides), and swings gently on its anchor line as the wind
- * shifts a little.
+ * Puts your boat where the sailing says it is, riding the same waves you see
+ * (sampled at bow, stern and both sides), and leaning with the wind (heel).
  */
 import type * as THREE from 'three';
+
+export interface BoatPose {
+  x: number;
+  z: number;
+  heading: number;
+  /** Lean from the wind (radians, + = starboard side down). */
+  heel: number;
+}
 
 export class BoatMotion {
   private y = 0;
   private pitch = 0;
   private roll = 0;
-  heading: number;
-  /** Current roll, so the view can lean a little with the boat. */
+  heading = 0;
+  /** Current roll (waves and heel), so the view can lean a little with the boat. */
   get rollAngle(): number {
     return this.roll;
   }
 
   constructor(
     private boat: THREE.Object3D,
-    private x: number,
-    private z: number,
-    private baseHeading: number,
     private length: number,
     private beam: number,
     private sea: (x: number, z: number, t: number) => number,
-  ) {
-    this.heading = baseHeading;
-    boat.position.set(x, 0, z);
-  }
+  ) {}
 
-  update(t: number, dt: number): void {
-    // Swinging at anchor: slow, small changes of heading.
-    this.heading = this.baseHeading + 0.12 * Math.sin(t * 0.031) + 0.05 * Math.sin(t * 0.083 + 1.3);
-    const ch = Math.cos(this.heading);
-    const sh = Math.sin(this.heading);
-    const at = (lx: number, lz: number) => this.sea(this.x + lx * ch - lz * sh, this.z + lx * sh + lz * ch, t);
+  update(t: number, dt: number, pose: BoatPose): void {
+    this.heading = pose.heading;
+    const ch = Math.cos(pose.heading);
+    const sh = Math.sin(pose.heading);
+    const at = (lx: number, lz: number) => this.sea(pose.x + lx * ch - lz * sh, pose.z + lx * sh + lz * ch, t);
     const half = this.length * 0.38;
     const side = this.beam * 0.42;
     const hb = at(half, 0);
@@ -43,10 +43,11 @@ export class BoatMotion {
     const k = 1 - Math.exp(-dt * 3.2);
     this.y += ((hb + hs + hp + hst) / 4 - this.y) * k;
     this.pitch += (Math.atan2(hb - hs, half * 2) * 1.2 - this.pitch) * k;
-    this.roll += (Math.atan2(hst - hp, side * 2) * 1.1 + 0.022 * Math.sin(t * 0.63) - this.roll) * k;
-    this.boat.position.set(this.x, this.y, this.z);
+    const waveRoll = Math.atan2(hst - hp, side * 2) * 1.1 + 0.022 * Math.sin(t * 0.63);
+    this.roll += (waveRoll + pose.heel - this.roll) * k;
+    this.boat.position.set(pose.x, this.y, pose.z);
     this.boat.rotation.set(0, 0, 0);
-    this.boat.rotateY(-this.heading);
+    this.boat.rotateY(-pose.heading);
     this.boat.rotateZ(this.pitch);
     this.boat.rotateX(this.roll);
     this.boat.updateMatrixWorld(true);

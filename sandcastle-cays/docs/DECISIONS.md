@@ -125,3 +125,21 @@ Each stroke opens an undo record. The first time a chunk is changed during that 
   - the gap at the starboard stern leads to the swim ladder.
 - **Rocking:** your view moves with the boat. It leans with 60% of the boat's roll, so it feels like a boat without being queasy.
 - **At anchor:** 31 m off the cove, bow to the east wind, in about 3 m of water. It swings gently on its anchor.
+
+## 22. Sailing comes next (v0.3), before upkeep and the dinghy
+- **What:** the owner moved sailing up: v0.3 is sailing and a second cay, v0.4 repairs and living aboard, v0.5 the dinghy and the shark.
+- **Why:** sailing is the heart of the game. Scrapes from sailing (on the reef or a beach) give the repairs in v0.4 a reason.
+- **Source:** the feel comes from the owner's airship game: speed and steering that ease in, turning that needs speed, heel, gusts, the compass and wind display, a chart you tap to set a course, and anchoring as the "land here" step. Real-sailboat rules are added on top (see `design-notes/sailing-from-the-airship-game.md`).
+
+## 23. How sailing works (v0.3; numbers in `src/game/sailing.ts`)
+- **Speed:**
+  - top speed 3.4 m/s (about 6.6 knots) on a beam reach with full sail in the usual 6.5 m/s trade wind;
+  - speed builds at rate 0.3 and fades at 0.45 per second; it fades slower while luffing, so she carries way through a tack.
+- **Points of sail:** no drive within 38° of the wind; close-hauled from 50°; best at about 95°; a little less running downwind.
+- **Turning:** up to 0.36 rad/s at speed, about a third of that when stopped, so you can always bear away out of irons.
+- **The wind:** it blows from the east, shifts up to about ±14°, and gusts up to 28%. It's a smooth function of time, so it's the same after loading and in the checks.
+- **Running aground:** the keel draws 1.45 m (less at the bow and stern). Touching bottom stops her. A real knock (over 0.5 m/s) scrapes the hull once; scrapes are at least 4 s apart.
+- **Unattended:** with sails up and nobody steering, she rounds up into the wind and stops, as a real sloop does.
+- **The autopilot ("Sail to …"):** follows waypoints through the reef gap, beats upwind at 52° off the wind, tacks when the other tack is 25° better, then heads into the wind, lowers sail and anchors. The checks confirm the passage legs are deep enough all the way.
+- **The world:** Home Cay owns the open sea floor. Pink Sand Cay sits on its own shelf at (−210, −300), fading into that floor at the edge of its area. Its anchorage is on the sheltered north-west side.
+- **Controls at the helm:** you stay at the tiller and look around freely; the walking keys and stick become steering and sails.

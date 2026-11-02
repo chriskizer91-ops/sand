@@ -505,12 +505,13 @@ export function createDistantIslands(): THREE.Mesh {
   const parts: THREE.BufferGeometry[] = [];
   const sand = rgb(PALETTE.sandDry);
   const green = rgb(PALETTE.grassDark);
+  // Far out on the horizon, well beyond anywhere you can sail (the cays you can visit are real terrain).
   const spots = [
-    [-180, -260, 60],
-    [120, -330, 80],
-    [330, -150, 50],
-    [-360, -90, 70],
-    [40, -520, 110],
+    [380, -1050, 150],
+    [1000, -350, 110],
+    [-1150, 120, 140],
+    [-450, -1250, 190],
+    [900, 600, 120],
   ];
   for (const [x, z, s] of spots) {
     const g = new THREE.SphereGeometry(1, 24, 10, 0, Math.PI * 2, 0, Math.PI / 2);
@@ -523,7 +524,10 @@ export function createDistantIslands(): THREE.Mesh {
       const bump = 1 + 0.25 * Math.sin(px * 3.1 + pz * 2.3);
       pos.setXYZ(v, px * s * 1.6, py * s * 0.12 * bump - 1.5, pz * s);
     }
-    paint(g, (_x, y) => (y < 0.5 ? sand : green));
+    // Pale and blue-grey with distance: a kilometre of sea air washes the colour out.
+    const haze = rgb(0xbfd2d8);
+    const hazed = (c: [number, number, number]): [number, number, number] => [c[0] * 0.4 + haze[0] * 0.6, c[1] * 0.4 + haze[1] * 0.6, c[2] * 0.4 + haze[2] * 0.6];
+    paint(g, (_x, y) => (y < 0.5 ? hazed(sand) : hazed(green)));
     g.computeVertexNormals();
     g.translate(x, 0, z);
     parts.push(g);
@@ -534,14 +538,15 @@ export function createDistantIslands(): THREE.Mesh {
       const tx = x + (rand() - 0.5) * s * 1.6;
       const tz = z + (rand() - 0.5) * s * 0.8;
       t.translate(tx, s * 0.1 + 6, tz);
-      paint(t, () => green);
+      paint(t, () => [green[0] * 0.4 + 0.75 * 0.6, green[1] * 0.4 + 0.82 * 0.6, green[2] * 0.4 + 0.85 * 0.6]);
       const trunk = new THREE.CylinderGeometry(0.25, 0.35, 6, 5);
       trunk.deleteAttribute('uv');
       trunk.translate(tx, s * 0.1 + 3, tz);
-      paint(trunk, () => rgb(PALETTE.trunk));
+      paint(trunk, () => [0.6, 0.62, 0.62]);
       parts.push(t, trunk);
     }
   }
   const merged = mergeGeometries(parts);
-  return new THREE.Mesh(merged, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  // Seen through a kilometre of sea air: no lighting or fog, just colours washed toward the sky (main.ts tints them each frame).
+  return new THREE.Mesh(merged, new THREE.MeshBasicMaterial({ vertexColors: true, fog: false }));
 }

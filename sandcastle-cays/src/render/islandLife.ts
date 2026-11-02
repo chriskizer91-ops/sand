@@ -11,7 +11,7 @@ import * as THREE from 'three';
 import { boulder, bush, grassTuft, mergeWithSway, palm, paint, rgb, swayMaterial, type RockBlob } from './scenery';
 import { mergeGeometries } from './sky';
 import { mulberry32 } from '../engine/noise';
-import type { HomeCayTerrain } from '../world/homeCay';
+import type { IslandTerrain } from '../world/islands';
 
 export interface Trunk {
   x: number;
@@ -26,10 +26,12 @@ function patchKey(x: number, z: number): string {
 }
 
 export function createIslandLife(
-  terrain: HomeCayTerrain,
+  terrain: IslandTerrain,
   time: { value: number },
 ): { group: THREE.Group; trunks: Trunk[]; rocks: RockBlob[] } {
-  const rand = mulberry32(1311);
+  const rand = mulberry32(terrain.id === 'home' ? 1311 : 2207);
+  const B = terrain.bounds;
+  const L = terrain.land;
   const region = terrain.region;
   const group = new THREE.Group();
   const plants = new Map<string, THREE.BufferGeometry[]>();
@@ -78,8 +80,8 @@ export function createIslandLife(
 
   // ---- scrub inland: sea grape near the beach, denser bushes further in ----
   for (let n = 0; n < 2600 && trunks.length < 400; n++) {
-    const x = -70 + rand() * 145;
-    const z = -8 + rand() * 76;
+    const x = L.x0 + rand() * (L.x1 - L.x0);
+    const z = L.z0 + rand() * (L.z1 - L.z0);
     const s = terrain.inland(x, z);
     if (s < 6 || nearCove(x, z, 2)) continue;
     const kind = terrain.groundAt(x, z);
@@ -117,8 +119,8 @@ export function createIslandLife(
 
   // ---- boulders on the ironshore ----
   for (let n = 0; n < 4000 && rocks.length < 70; n++) {
-    const x = -70 + rand() * 145;
-    const z = -10 + rand() * 80;
+    const x = L.x0 + rand() * (L.x1 - L.x0);
+    const z = L.z0 + rand() * (L.z1 - L.z0);
     if (nearCove(x, z, 0.5)) continue;
     const s = terrain.inland(x, z);
     if (s < -4 || s > 9) continue;
@@ -134,11 +136,11 @@ export function createIslandLife(
   // ---- coral heads in the lagoon (you see them through the water) ----
   const coralCols = [rgb(0xc49a6c), rgb(0x9b7a8f), rgb(0xb7a26a), rgb(0x8f9c6c)];
   for (let n = 0; n < 3000 && rocks.length < 130; n++) {
-    const x = -110 + rand() * 230;
-    const z = -110 + rand() * 230;
+    const x = B.x0 + 40 + rand() * (B.x1 - B.x0 - 80);
+    const z = B.z0 + 40 + rand() * (B.z1 - B.z0 - 80);
     const h = terrain.heightAt(x, z);
     if (h > -1.8 || h < -6) continue;
-    if (Math.hypot(x - 2, z + 31) < 12) continue; // keep the anchorage clear
+    if (Math.hypot(x - terrain.anchorage.x, z - terrain.anchorage.z) < 16) continue; // keep the anchorage clear
     if (rand() > 0.03) continue;
     const size = 0.4 + rand() * 1.1;
     const g = boulder(rand, size, 1);

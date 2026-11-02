@@ -4,11 +4,23 @@
 import * as THREE from 'three';
 import { createSloop } from '../src/render/sloop';
 
+interface RigPose {
+  sail: number;
+  boom: number;
+  jib: number;
+  fill: number;
+  time: number;
+  rudder: number;
+  anchored: boolean;
+}
+
 interface View {
   pos: [number, number, number];
   target: [number, number, number];
   fov: number;
   dots?: boolean;
+  /** Rig pose for this view; default is at anchor with the sails furled. */
+  rig?: Partial<RigPose>;
 }
 
 declare global {
@@ -133,7 +145,18 @@ const dots = (() => {
   return group;
 })();
 
+function countMeshes(): number {
+  let n = 0;
+  boat.group.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh) n++;
+  });
+  return n;
+}
+
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 1500);
+
+const STARBOARD_TACK: Partial<RigPose> = { sail: 1, boom: -0.7, jib: -0.45, fill: 1, time: 0, rudder: 0.08, anchored: false };
+const REST: RigPose = { sail: 0, boom: 0, jib: 0, fill: 1, time: 0, rudder: 0, anchored: true };
 
 const views: Record<string, View> = {
   far: { pos: [11.5, 1.6, 9.6], target: [0, 4.3, 0], fov: 50 },
@@ -154,6 +177,19 @@ const views: Record<string, View> = {
   debug: { pos: [5.5, 7.5, 7], target: [-0.4, 0.8, 0], fov: 50, dots: true },
   debugtop: { pos: [0, 14, 0.001], target: [0, 0, 0], fov: 42, dots: true },
   debugcockpit: { pos: [-1.0, 3.2, 2.2], target: [-3.0, 0.6, 0], fov: 60, dots: true },
+  // Sailing: starboard tack (wind from starboard, boom out to port), anchor up.
+  'sail-far': { pos: [11.5, 1.6, 9.6], target: [0, 4.3, 0], fov: 50, rig: STARBOARD_TACK },
+  'sail-far-port': { pos: [-4, 1.6, -14.4], target: [0, 4.3, 0], fov: 50, rig: STARBOARD_TACK },
+  'sail-half': { pos: [-4, 1.6, -14.4], target: [0, 4.3, 0], fov: 50, rig: { ...STARBOARD_TACK, sail: 0.5 } },
+  'sail-half-stbd': { pos: [11.5, 1.6, 9.6], target: [0, 4.3, 0], fov: 50, rig: { ...STARBOARD_TACK, sail: 0.5 } },
+  'sail-cockpit': { pos: [-3.2, 2.02, 0.3], target: [2.0, 2.6, -0.4], fov: 70, rig: STARBOARD_TACK },
+  'sail-luff': { pos: [-4, 1.6, -14.4], target: [0, 4.3, 0], fov: 50, rig: { ...STARBOARD_TACK, boom: -0.12, jib: -0.1, fill: 0, time: 1.3 } },
+  'sail-luff-cockpit': { pos: [-3.2, 2.02, 0.3], target: [2.0, 2.6, -0.4], fov: 70, rig: { ...STARBOARD_TACK, boom: -0.12, jib: -0.1, fill: 0, time: 1.3 } },
+  'sail-run': { pos: [-12, 2.5, 6], target: [0, 4.3, 0], fov: 50, rig: { sail: 1, boom: 1.4, jib: 1.0, fill: 1, rudder: -0.3, anchored: false } },
+  'anchor-up': { pos: [6.0, 1.7, 1.6], target: [4.2, 0.95, 0], fov: 45, rig: { anchored: false } },
+  'sail-bundle': { pos: [-0.6, 3.3, 2.6], target: [-1.0, 2.3, 0], fov: 55, rig: { ...STARBOARD_TACK, sail: 0.3, boom: -0.2, jib: -0.2 } },
+  'sail-foredeck': { pos: [2.6, 2.45, 0.6], target: [-1.5, 2.6, -1.5], fov: 70, rig: STARBOARD_TACK },
+  'sail-helm': { pos: [-2.2, 2.4, 1.9], target: [-3.6, 0.8, 0], fov: 60, rig: { ...STARBOARD_TACK, rudder: 0.45 } },
 };
 
 function view(name: string): string {
@@ -165,6 +201,13 @@ function view(name: string): string {
   camera.updateProjectionMatrix();
   camera.lookAt(new THREE.Vector3(...v.target));
   dots.visible = !!v.dots;
+  const pose: RigPose = { ...REST, ...v.rig };
+  boat.rig.setSail(pose.sail);
+  boat.rig.setBoom(pose.boom);
+  boat.rig.setJib(pose.jib);
+  boat.rig.setFill(pose.fill, pose.time);
+  boat.rig.setRudder(pose.rudder);
+  boat.rig.setAnchored(pose.anchored);
   renderer.render(scene, camera);
   return 'ok';
 }
@@ -173,5 +216,5 @@ window.__sloop = {
   ready: true,
   views: Object.keys(views),
   view,
-  info: { triangles: boat.triangles, meshes: boat.group.children.length, buildMs: Math.round(buildMs), length: boat.length, beam: boat.beam, draft: boat.draft },
+  info: { triangles: boat.triangles, meshes: countMeshes(), buildMs: Math.round(buildMs), length: boat.length, beam: boat.beam, draft: boat.draft },
 };

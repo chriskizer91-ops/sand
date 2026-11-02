@@ -19,8 +19,14 @@
  *
  * LOOK: "slightly storybook" (DECISIONS 13): rounded edges, warm teak and
  * varnish, cream gelcoat, teal boot stripe. Wood grain and deck planks are
- * painted by code into DataTextures (DECISIONS 14). Everything is merged into
- * seven meshes, one per material (seven draw calls).
+ * painted by code into DataTextures (DECISIONS 14). The fixed parts are merged into
+ * seven meshes, one per material; the moving rig (boom, sails, lines, rudder) adds four
+ * more, so eleven draw calls in all.
+ *
+ * THE RIG (createSloop().rig): setSail hoists the main and unrolls the jib, setBoom swings
+ * the boom about the gooseneck, setJib sheets the jib to a side, setFill fills or luffs the
+ * sails, setRudder turns rudder and tiller about the raked rudder stock, setAnchored shows
+ * the anchor line or stows the anchor on the bow roller.
  */
 import * as THREE from 'three';
 
@@ -954,6 +960,7 @@ const COL = {
   fenderEnd: rgb(0xe8e4d8),
   ring: rgb(0xef5a3a),
   ringWhite: rgb(0xf6f2ea),
+  galv: rgb(0x9ea6ab),
   flagA: rgb(0xef6a48),
   flagB: rgb(0xf7efd9),
   flagC: rgb(0x2fb5b0),
@@ -1034,7 +1041,7 @@ interface FoilSec {
 }
 
 /** A foil-section loft (keel, rudder) from top to bottom. Sections with half = 0 close the ends. */
-function foilLoft(p: Part, secs: FoilSec[], n: number): void {
+function foilLoft(p: Part, secs: FoilSec[], n: number, c: RGB = WHITE): void {
   const v0 = p.nv;
   const i0 = p.idx.length;
   const rings: number[][] = [];
@@ -1044,7 +1051,7 @@ function foilLoft(p: Part, secs: FoilSec[], n: number): void {
       const side = k <= n ? 1 : -1;
       const kk = k <= n ? k : 2 * n - k;
       const q = 0.5 * (1 - Math.cos((Math.PI * kk) / n));
-      ring.push(p.v(s.xLE - q * s.chord, s.y, side * nacaShape(q) * 2 * s.half));
+      ring.push(p.v(s.xLE - q * s.chord, s.y, side * nacaShape(q) * 2 * s.half, null, 0, 0, c));
     }
     rings.push(ring);
   }
@@ -1052,7 +1059,18 @@ function foilLoft(p: Part, secs: FoilSec[], n: number): void {
   p.smoothNormals(v0, i0);
 }
 
-function buildKeelAndRudder(hull: Part, varnish: Part, metal: Part): void {
+/** The rudder's stock axis (it turns about this line) and two marker points on it, at rest. */
+interface RudderInfo {
+  axisPoint: THREE.Vector3;
+  axisDir: THREE.Vector3;
+  trailingEdge: THREE.Vector3;
+  tillerEnd: THREE.Vector3;
+}
+
+/** Vertex colour that tells the rudder material "painted like the hull here" (anything else is varnished wood). */
+const PAINTED: RGB = [2, 2, 2];
+
+function buildKeelAndRudder(hull: Part, rudder: Part, metal: Part): RudderInfo {
   foilLoft(
     hull,
     [
@@ -1083,9 +1101,10 @@ function buildKeelAndRudder(hull: Part, varnish: Part, metal: Part): void {
     [-0.98, 0.38, 0],
   ];
   foilLoft(
-    hull,
+    rudder,
     rs.map(([y, chord, half]) => ({ y, xLE: le(y), chord, half })),
     8,
+    PAINTED,
   );
   // Pintles and gudgeons holding it to the transom.
   for (const y of [0.62, 0.22]) {
@@ -1094,9 +1113,19 @@ function buildKeelAndRudder(hull: Part, varnish: Part, metal: Part): void {
     metal.add(roundedBox(x0 - x1, 0.035, 0.075, 0.01), COL.steel, M((x0 + x1) / 2, y, 0));
   }
   // Rudder-head cheeks and the tiller, rising over the transom into the cockpit.
-  for (const s of [-1, 1]) varnish.add(roundedBox(0.22, 0.11, 0.018, 0.008), WHITE, M(le(1.0) - 0.07, 1.0, s * 0.037, 0, 0, 0.12));
-  const tiller = curve([V(le(1.0) - 0.14, 1.0, 0), V(-4.2, 1.055, 0), V(-3.75, 1.1, 0), V(-3.3, 1.115, 0), V(-2.98, 1.1, 0)], 16);
-  tube(varnish, tiller, (s) => 0.03 - 0.009 * s, 10, WHITE, true);
+  for (const s of [-1, 1]) rudder.add(roundedBox(0.22, 0.11, 0.018, 0.008), WHITE, M(le(1.0) - 0.07, 1.0, s * 0.037, 0, 0, 0.12));
+  const tillerEnd = V(-2.98, 1.1, 0);
+  const tiller = curve([V(le(1.0) - 0.14, 1.0, 0), V(-4.2, 1.055, 0), V(-3.75, 1.1, 0), V(-3.3, 1.115, 0), tillerEnd], 16);
+  tube(rudder, tiller, (s) => 0.03 - 0.009 * s, 10, WHITE, true);
+  // The stock runs down the leading edge, just inside it, along the transom's rake.
+  const top = V(le(1.0) - 0.015, 1.0, 0);
+  const bottom = V(le(-0.9) - 0.015, -0.9, 0);
+  return {
+    axisPoint: top,
+    axisDir: bottom.clone().sub(top).normalize(),
+    trailingEdge: V(le(-0.3) - 0.54, -0.3, 0),
+    tillerEnd,
+  };
 }
 
 /** Teak decks: side decks, foredeck and stern deck, planks laid parallel to the deck edge with a king plank. */
@@ -1464,7 +1493,6 @@ function buildRig(metal: Part, cloth: Part): void {
   const spY = 6.5;
   for (const s of [-1, 1]) metal.add(roundedBox(0.07, 0.028, 0.74, 0.012), COL.alu, M(MAST_X, spY, s * 0.42));
   // Standing rigging.
-  const head = V(MAST_X, MAST_TOP - 0.15, 0);
   const wire = 0.0055;
   for (const s of [-1, 1]) {
     const tip = V(MAST_X, spY, s * 0.79);
@@ -1478,132 +1506,35 @@ function buildRig(metal: Part, cloth: Part): void {
     }
     rod(metal, capPlate, capPlate.clone().add(V(0, -0.06, 0)), 0.012, 6, COL.steel, true);
   }
-  const stemHead = V(4.25, 1.05, 0);
-  const foreTop = V(MAST_X + 0.08, MAST_TOP - 0.1, 0);
-  rod(metal, foreTop, stemHead, wire, 4, COL.steel);
+  rod(metal, FORE_TOP, STEM_HEAD, wire, 4, COL.steel);
   // Split backstay: one wire from the masthead, two legs to the transom corners (the rudder head is in the middle).
   const split = V(-2.4, 4.4, 0);
   rod(metal, V(MAST_X - 0.08, MAST_TOP - 0.05, 0), split, wire, 4, COL.steel);
   for (const s of [-1, 1]) rod(metal, split, V(-4.05, deckY(-4.05, 1.0) + 0.02, s * 1.0), wire, 4, COL.steel);
   metal.add(roundedBox(0.05, 0.03, 0.04, 0.01), COL.steel, M(split.x, split.y, 0));
 
-  // Boom.
-  const gx = MAST_X - 0.09;
-  const boomA = V(gx, 2.25, 0);
-  const boomB = V(-2.85, 2.36, 0);
-  const boomLen = boomA.distanceTo(boomB);
-  const boomM = between(boomA, boomB).multiply(M(0, 0, 0, 0, 0, 0, 1, 1, 0.7));
-  metal.add(new THREE.CylinderGeometry(0.055, 0.055, boomLen, 14, 1, false), COL.alu, boomM);
-  metal.add(roundedBox(0.09, 0.08, 0.07, 0.015), COL.dark, M(gx + 0.02, 2.25, 0)); // gooseneck
-  metal.add(roundedBox(0.1, 0.12, 0.08, 0.02), COL.dark, M(boomB.x, boomB.y, 0)); // end fitting
-  // Boom vang.
-  rod(metal, V(MAST_X - 0.06, mastY0 + 0.25, 0), V(0.3, 2.21, 0), 0.016, 8, COL.alu);
-  // Sail cover over the flaked mainsail.
-  {
-    const v0 = cloth.nv;
-    const i0 = cloth.idx.length;
-    const NL = 40;
-    const K = 16;
-    const rings: number[][] = [];
-    const xa = MAST_X - 0.06;
-    const xb = -2.72;
-    for (let i = 0; i <= NL; i++) {
-      const s = i / NL;
-      const x = xa + (xb - xa) * s;
-      const by = 2.25 + (2.36 - 2.25) * ((gx - x) / (gx - boomB.x)) + 0.035;
-      let h = 0.33 - 0.13 * s + 0.1 * Math.max(0, 1 - s / 0.05) ** 2;
-      let w = 0.25 - 0.09 * s;
-      const fold = 1 + 0.045 * Math.sin(s * 47) + 0.02 * Math.sin(s * 113);
-      h *= 1 + 0.02 * Math.sin(s * 47 + 1);
-      w *= fold;
-      const endR = s > 0.965 ? Math.sqrt(Math.max(0, 1 - ((s - 0.965) / 0.035) ** 2)) : 1;
-      const ring: number[] = [];
-      for (let k = 0; k < K; k++) {
-        const a = (k / K) * Math.PI * 2;
-        const z = (w / 2) * Math.sin(a) * (0.82 + 0.18 * Math.sin(a / 2)) * endR;
-        const y = by - 0.03 + (h / 2) * (1 - Math.cos(a)) * (0.25 + 0.75 * endR);
-        const c = Math.cos(a) > 0.82 ? COL.coverEdge : COL.cover;
-        ring.push(cloth.v(x, y, z, null, 0, 0, c));
-      }
-      rings.push(ring);
-    }
-    const ctrOf = (q: THREE.Vector3) => {
-      const s = clamp((q.x - xa) / (xb - xa), 0, 1);
-      const by = 2.25 + (2.36 - 2.25) * s + 0.12;
-      return V(0, q.y - by, q.z);
-    };
-    for (let i = 0; i < NL; i++) cloth.stitch(rings[i], rings[i + 1], true, ctrOf);
-    const end = rings[NL];
-    let ex = 0;
-    let ey = 0;
-    for (const k of end) {
-      ex += cloth.pos[k * 3];
-      ey += cloth.pos[k * 3 + 1];
-    }
-    cloth.fan(cloth.v(ex / K - 0.005, ey / K, 0, null, 0, 0, COL.cover), end, true, V(-1, 0, 0));
-    const front = rings[0];
-    cloth.fan(cloth.v(xa + 0.02, 2.45, 0, null, 0, 0, COL.cover), front, true, V(1, 0, 0));
-    cloth.smoothNormals(v0, i0);
+  // Furling drum at the foot of the forestay and the swivel at the top of the jib.
+  const T = FORE_TOP.clone().sub(STEM_HEAD).normalize();
+  const fLen = FORE_TOP.distanceTo(STEM_HEAD);
+  const s1 = 1 - 0.75 / fLen;
+  metal.add(new THREE.CylinderGeometry(0.065, 0.065, 0.09, 16), COL.dark, between(STEM_HEAD.clone().addScaledVector(T, 0.06), STEM_HEAD.clone().addScaledVector(T, 0.15)));
+  metal.add(new THREE.CylinderGeometry(0.02, 0.02, 0.12, 8), COL.steel, between(STEM_HEAD.clone().addScaledVector(T, s1 * fLen + 0.01), STEM_HEAD.clone().addScaledVector(T, s1 * fLen + 0.13)));
+  // Jib-sheet fairleads on the side decks, and the sheets' fixed run from there back to the winches.
+  for (const s of [-1, 1]) {
+    const fair = fairlead(s);
+    metal.add(roundedBox(0.09, 0.05, 0.05, 0.015), COL.dark, M(fair.x, fair.y - 0.015, fair.z));
+    tube(cloth, curve([fair, V(-1.0, deckY(-1.0, 1.1) + 0.06, s * 1.1), V(WINCH_X + 0.03, COAM_TOP + 0.11, s * (WINCH_Z + 0.06))], 10), 0.006, 4, COL.sheet);
   }
-  // Furled jib on the forestay, its blue sun-cover strip spiralling round it.
-  {
-    const v0 = cloth.nv;
-    const i0 = cloth.idx.length;
-    const T = foreTop.clone().sub(stemHead).normalize();
-    const N = T.clone().cross(V(0, 0, 1)).normalize();
-    const B = T.clone().cross(N);
-    const fLen = foreTop.distanceTo(stemHead);
-    const s0 = 0.2 / fLen;
-    const s1 = 1 - 0.75 / fLen;
-    const NL = 56;
-    const K = 10;
-    const turns = 13;
-    const rings: number[][] = [];
-    for (let i = 0; i <= NL; i++) {
-      const s = s0 + (s1 - s0) * (i / NL);
-      const e = i / NL;
-      const c = stemHead.clone().addScaledVector(T, s * fLen);
-      let r = 0.022 + 0.08 * Math.pow(1 - e, 1.3);
-      if (e < 0.03) r *= 0.6 + 0.4 * (e / 0.03);
-      if (e > 0.985) r *= Math.max(0.15, 1 - (e - 0.985) / 0.015);
-      const ring: number[] = [];
-      for (let k = 0; k <= K; k++) {
-        const a = (k / K) * Math.PI * 2;
-        const ph = (((k / K - turns * e) % 1) + 1) % 1;
-        const rr = r * (1 + 0.05 * Math.cos(ph * Math.PI * 2));
-        const d = N.clone().multiplyScalar(Math.cos(a)).addScaledVector(B, Math.sin(a));
-        ring.push(cloth.v(c.x + d.x * rr, c.y + d.y * rr, c.z + d.z * rr, null, 0, 0, ph < 0.88 ? COL.uv : ph < 0.95 ? COL.uvLight : COL.sailShade));
-      }
-      rings.push(ring);
-    }
-    const axis = (q: THREE.Vector3) => {
-      const s = q.clone().sub(stemHead).dot(T);
-      return q.clone().sub(stemHead.clone().addScaledVector(T, s));
-    };
-    for (let i = 0; i < NL; i++) cloth.stitch(rings[i], rings[i + 1], false, axis);
-    cloth.smoothNormals(v0, i0);
-    // Furling drum and swivel.
-    metal.add(new THREE.CylinderGeometry(0.065, 0.065, 0.09, 16), COL.dark, between(stemHead.clone().addScaledVector(T, 0.06), stemHead.clone().addScaledVector(T, 0.15)));
-    metal.add(new THREE.CylinderGeometry(0.02, 0.02, 0.12, 8), COL.steel, between(stemHead.clone().addScaledVector(T, s1 * fLen + 0.01), stemHead.clone().addScaledVector(T, s1 * fLen + 0.13)));
-    // Jib sheets back to the winches.
-    const clew = stemHead.clone().addScaledVector(T, 0.42);
-    for (const s of [-1, 1]) {
-      const fair = V(-0.1, deckY(-0.1, 1.15) + 0.045, s * 1.15);
-      metal.add(roundedBox(0.09, 0.05, 0.05, 0.015), COL.dark, M(fair.x, fair.y - 0.015, fair.z));
-      const sheet = curve([clew.clone().add(V(-0.05, 0, s * 0.06)), V(2.0, 1.12, s * 0.62), fair], 14);
-      tube(cloth, sheet, 0.006, 4, COL.sheet);
-      tube(cloth, curve([fair, V(-1.0, deckY(-1.0, 1.1) + 0.06, s * 1.1), V(WINCH_X + 0.03, COAM_TOP + 0.11, s * (WINCH_Z + 0.06))], 10), 0.006, 4, COL.sheet);
-    }
-  }
-  // Halyards down the back of the mast, topping lift, mainsheet.
+  // Halyards down the back of the mast.
   for (const s of [-1, 1]) rod(cloth, V(MAST_X - 0.06, MAST_TOP - 0.1, s * 0.025), V(MAST_X - 0.065, mastY0 + 0.45, s * 0.03), 0.004, 4, COL.line);
-  rod(cloth, V(MAST_X - 0.1, MAST_TOP - 0.05, 0), V(boomB.x + 0.04, boomB.y + 0.05, 0), 0.0035, 4, COL.line);
-  const msTop = V(-0.62, 2.29, 0);
-  const msBot = V(-0.62, cabinTop(-0.62, 0) + 0.09, 0);
-  metal.add(roundedBox(0.06, 0.08, 0.05, 0.02), COL.dark, M(msTop.x, msTop.y - 0.05, 0));
-  metal.add(roundedBox(0.07, 0.09, 0.06, 0.02), COL.dark, M(msBot.x, msBot.y - 0.02, 0));
-  metal.add(roundedBox(0.16, 0.03, 0.08, 0.012), COL.steel, M(msBot.x, msBot.y - 0.075, 0));
-  for (const dz of [-0.018, 0, 0.018]) rod(cloth, V(msTop.x, msTop.y - 0.08, dz), V(msBot.x, msBot.y + 0.02, dz * 1.2), 0.0045, 4, COL.sheet);
+  // Mainsheet traveller: a track across the cabin top, just forward of the sliding hatch.
+  const ty = travellerY();
+  metal.add(roundedBox(0.05, 0.018, 2 * TRAVELLER_HW + 0.12, 0.006), COL.steel, M(TRAVELLER_X, ty, 0));
+  for (const e of [-1, 0, 1]) {
+    const z = e * (TRAVELLER_HW + 0.07);
+    const base = cabinTop(TRAVELLER_X, z);
+    metal.add(roundedBox(0.06, ty - base + 0.02, 0.04, 0.008), COL.dark, M(TRAVELLER_X, (ty + base) / 2 - 0.005, z));
+  }
 }
 
 /** Stanchions, lifelines, bow pulpit, stern pushpit (with the gap for the ladder). */
@@ -1810,7 +1741,288 @@ function buildFittings(metal: Part, cloth: Part, varnish: Part): void {
   const roller = V(4.37, 1.05, 0);
   metal.add(new THREE.CylinderGeometry(0.035, 0.035, 0.075, 14), COL.black, M(roller.x, roller.y, 0, Math.PI / 2, 0, 0));
 
-  // --- Anchor line: from the bow cleat over the roller, down and forward into the water.
+}
+
+// ============================================================ the moving rig (sailing)
+
+/**
+ * Sail controls, returned by createSloop() as `rig`. Boat-local: +x bow, +z starboard.
+ * Each call only redraws what it changes, so it is fine to call every frame.
+ */
+export interface SloopRig {
+  /** 0 = mainsail furled under its cover on the boom and jib rolled up; 1 = main fully hoisted and jib fully unrolled. In between, the main rises up the mast and the jib unrolls proportionally. */
+  setSail(amount: number): void;
+  /** Boom angle in radians about the gooseneck (vertical axis): 0 = along the centreline, positive swings the boom out to starboard (+z). The boom stops against the aft shrouds at about ±1.25. */
+  setBoom(angle: number): void;
+  /** Jib sheeted to this side, as an angle like the boom's: -1 port .. +1 starboard (radians of the jib's foot from the centreline, up to ±1.1). Pass the same sign as the boom. */
+  setJib(angle: number): void;
+  /** How full the sails are: 1 = drawing, curved and taut; 0 = luffing (nearly flat and rippling; ripple only below 0.6). Pass the time in seconds for the ripple. */
+  setFill(fill: number, time: number): void;
+  /** Tiller/rudder angle in radians, -0.6..0.6. Positive = rudder trailing edge to starboard (the bow turns to starboard); the tiller swings the other way, to port. */
+  setRudder(angle: number): void;
+  /** Anchor down: the line runs from the bow roller into the water. Up: no line in the water, anchor stowed on the bow roller. */
+  setAnchored(down: boolean): void;
+  /** Current state and where the moving bits are (boat-local), for tests, debugging and game logic. */
+  status(): SloopRigStatus;
+}
+
+export interface SloopRigStatus {
+  sail: number;
+  boom: number;
+  jib: number;
+  fill: number;
+  rudder: number;
+  anchored: boolean;
+  coverShown: boolean;
+  mainShown: boolean;
+  jibShown: boolean;
+  rodeShown: boolean;
+  anchorStowedShown: boolean;
+  boomEnd: THREE.Vector3;
+  mainHead: THREE.Vector3;
+  jibClew: THREE.Vector3;
+  rudderTrailingEdge: THREE.Vector3;
+  tillerEnd: THREE.Vector3;
+}
+
+interface RigState {
+  sail: number;
+  boom: number;
+  jib: number;
+  fill: number;
+  time: number;
+  rudder: number;
+  anchored: boolean;
+}
+
+const STEM_HEAD = V(4.25, 1.05, 0); // forestay foot
+const FORE_TOP = V(MAST_X + 0.08, MAST_TOP - 0.1, 0); // forestay head
+const MAST_Y0 = cabinTop(MAST_X, 0);
+const GOOSE_X = MAST_X - 0.09; // the boom swings about a vertical axis through the gooseneck
+const GOOSE_Y = 2.25;
+const BOOM_END = V(-2.85, 2.36, 0);
+const BOOM_MAX = 1.25; // the boom rests against the aft lower shroud beyond this
+const TACK_Y = 2.33;
+const HEAD_Y = 10.7;
+const HEADBOARD = 0.15;
+const ROACH = 0.2;
+const MAIN_CLEW = V(-2.78, 2.43, 0); // on top of the boom near its end, boom amidships
+const MAIN_DEPTH = 0.1; // camber when drawing, as a fraction of the chord
+const JIB_DEPTH = 0.12;
+const JIB_FOOT = 2.72;
+const JIB_MAX = 1.1;
+const RUDDER_MAX = 0.6;
+const TRAVELLER_X = -0.76; // mainsheet traveller across the cabin top, just forward of the hatch
+const TRAVELLER_HW = 0.46;
+const MS_BOOM_X = -0.76; // where the mainsheet block hangs from the boom (boom amidships)
+const FORE_LEN = FORE_TOP.distanceTo(STEM_HEAD);
+const FORE_DIR = FORE_TOP.clone().sub(STEM_HEAD).normalize();
+const JIB_T0 = 0.2 / FORE_LEN; // jib tack just above the furling drum
+const JIB_T1 = 1 - 0.75 / FORE_LEN; // jib head at the swivel
+
+/** Height of the traveller track (it stands a little proud of the cambered cabin top). */
+function travellerY(): number {
+  return cabinTop(TRAVELLER_X, 0) + 0.025;
+}
+function fairlead(side: number): THREE.Vector3 {
+  return V(-0.1, deckY(-0.1, 1.15) + 0.045, side * 1.15);
+}
+/** x of the aft face of the (tapered) mast at height y. */
+function mastAftX(y: number): number {
+  const t = clamp((y - MAST_Y0) / (MAST_TOP - MAST_Y0), 0, 1);
+  return MAST_X - (0.078 - 0.022 * t);
+}
+function boomY(x: number): number {
+  return GOOSE_Y + ((BOOM_END.y - GOOSE_Y) * (GOOSE_X - x)) / (GOOSE_X - BOOM_END.x);
+}
+/** A point fixed to the boom (given with the boom amidships), swung to boom angle b. */
+function onBoom(x: number, y: number, b: number): THREE.Vector3 {
+  const dx = x - GOOSE_X;
+  return V(GOOSE_X + dx * Math.cos(b), y, -dx * Math.sin(b));
+}
+function boomMatrix(b: number): THREE.Matrix4 {
+  return new THREE.Matrix4().makeTranslation(GOOSE_X, 0, 0).multiply(new THREE.Matrix4().makeRotationY(b)).multiply(new THREE.Matrix4().makeTranslation(-GOOSE_X, 0, 0));
+}
+const foreAt = (t: number) => STEM_HEAD.clone().addScaledVector(FORE_DIR, t * FORE_LEN);
+const sideOf = (a: number) => (a < -0.01 ? -1 : 1);
+
+/**
+ * A cloth-material mesh whose pieces move or are rebuilt when the rig changes. The vertex count and
+ * triangles never change: hidden pieces are collapsed to a point.
+ */
+class DynPart {
+  readonly part = new Part();
+  private segs: { start: number; count: number; rest: Float32Array | null; restN: Float32Array | null }[] = [];
+  private posAttr: THREE.BufferAttribute | null = null;
+  private nrmAttr: THREE.BufferAttribute | null = null;
+  /** A piece that moves as a whole: built once at rest, then placed by a matrix. */
+  rigid(build: (p: Part) => void): number {
+    const start = this.part.nv;
+    build(this.part);
+    const count = this.part.nv - start;
+    this.segs.push({
+      start,
+      count,
+      rest: Float32Array.from(this.part.pos.slice(start * 3, (start + count) * 3)),
+      restN: Float32Array.from(this.part.nrm.slice(start * 3, (start + count) * 3)),
+    });
+    return this.segs.length - 1;
+  }
+  /** A piece rebuilt from scratch whenever its ends move (lines). The builder must always make the same number of vertices. */
+  gen(build: (p: Part) => void): number {
+    const start = this.part.nv;
+    build(this.part);
+    this.segs.push({ start, count: this.part.nv - start, rest: null, restN: null });
+    return this.segs.length - 1;
+  }
+  bind(g: THREE.BufferGeometry): void {
+    this.posAttr = g.getAttribute('position') as THREE.BufferAttribute;
+    this.nrmAttr = g.getAttribute('normal') as THREE.BufferAttribute;
+    this.posAttr.setUsage(THREE.DynamicDrawUsage);
+    this.nrmAttr.setUsage(THREE.DynamicDrawUsage);
+  }
+  place(i: number, m: THREE.Matrix4 | null): void {
+    const sg = this.segs[i];
+    if (!m || !sg.rest || !sg.restN || !this.posAttr || !this.nrmAttr) return this.hide(i);
+    const P = this.posAttr.array as Float32Array;
+    const N = this.nrmAttr.array as Float32Array;
+    const e = m.elements;
+    const nm = new THREE.Matrix3().getNormalMatrix(m).elements;
+    for (let k = 0; k < sg.count; k++) {
+      const x = sg.rest[k * 3];
+      const y = sg.rest[k * 3 + 1];
+      const z = sg.rest[k * 3 + 2];
+      const o = (sg.start + k) * 3;
+      P[o] = e[0] * x + e[4] * y + e[8] * z + e[12];
+      P[o + 1] = e[1] * x + e[5] * y + e[9] * z + e[13];
+      P[o + 2] = e[2] * x + e[6] * y + e[10] * z + e[14];
+      const a = sg.restN[k * 3];
+      const b = sg.restN[k * 3 + 1];
+      const c = sg.restN[k * 3 + 2];
+      const nx = nm[0] * a + nm[3] * b + nm[6] * c;
+      const ny = nm[1] * a + nm[4] * b + nm[7] * c;
+      const nz = nm[2] * a + nm[5] * b + nm[8] * c;
+      const l = Math.hypot(nx, ny, nz) || 1;
+      N[o] = nx / l;
+      N[o + 1] = ny / l;
+      N[o + 2] = nz / l;
+    }
+    this.touch();
+  }
+  regen(i: number, build: (p: Part) => void, visible = true): void {
+    if (!visible) return this.hide(i);
+    const sg = this.segs[i];
+    if (!this.posAttr || !this.nrmAttr) return;
+    const tmp = new Part();
+    build(tmp);
+    if (tmp.nv !== sg.count) throw new Error(`sloop rig: piece ${i} changed size (${tmp.nv} vs ${sg.count})`);
+    const P = this.posAttr.array as Float32Array;
+    const N = this.nrmAttr.array as Float32Array;
+    P.set(tmp.pos, sg.start * 3);
+    N.set(tmp.nrm, sg.start * 3);
+    this.touch();
+  }
+  hide(i: number): void {
+    const sg = this.segs[i];
+    if (!this.posAttr) return;
+    const P = this.posAttr.array as Float32Array;
+    const o = sg.start * 3;
+    const hx = sg.rest ? sg.rest[0] : P[o];
+    const hy = sg.rest ? sg.rest[1] : P[o + 1];
+    const hz = sg.rest ? sg.rest[2] : P[o + 2];
+    for (let k = 0; k < sg.count; k++) {
+      P[o + k * 3] = hx;
+      P[o + k * 3 + 1] = hy;
+      P[o + k * 3 + 2] = hz;
+    }
+    this.touch();
+  }
+  private touch(): void {
+    if (this.posAttr) this.posAttr.needsUpdate = true;
+    if (this.nrmAttr) this.nrmAttr.needsUpdate = true;
+  }
+}
+
+/** The furled main on the boom: the sail cover (or, while hoisting, the bare flaked sail). Boom amidships. */
+function boomFurl(p: Part, main: RGB, edge: RGB): void {
+  const v0 = p.nv;
+  const i0 = p.idx.length;
+  const NL = 40;
+  const K = 16;
+  const rings: number[][] = [];
+  const xa = MAST_X - 0.06;
+  const xb = -2.72;
+  for (let i = 0; i <= NL; i++) {
+    const s = i / NL;
+    const x = xa + (xb - xa) * s;
+    const by = boomY(x) + 0.035;
+    let h = 0.33 - 0.13 * s + 0.1 * Math.max(0, 1 - s / 0.05) ** 2;
+    let w = 0.25 - 0.09 * s;
+    const fold = 1 + 0.045 * Math.sin(s * 47) + 0.02 * Math.sin(s * 113);
+    h *= 1 + 0.02 * Math.sin(s * 47 + 1);
+    w *= fold;
+    const endR = s > 0.965 ? Math.sqrt(Math.max(0, 1 - ((s - 0.965) / 0.035) ** 2)) : 1;
+    const ring: number[] = [];
+    for (let k = 0; k < K; k++) {
+      const a = (k / K) * Math.PI * 2;
+      const z = (w / 2) * Math.sin(a) * (0.82 + 0.18 * Math.sin(a / 2)) * endR;
+      const y = by - 0.03 + (h / 2) * (1 - Math.cos(a)) * (0.25 + 0.75 * endR);
+      ring.push(p.v(x, y, z, null, 0, 0, Math.cos(a) > 0.82 ? edge : main));
+    }
+    rings.push(ring);
+  }
+  const ctrOf = (q: THREE.Vector3) => V(0, q.y - (boomY(q.x) + 0.12), q.z);
+  for (let i = 0; i < NL; i++) p.stitch(rings[i], rings[i + 1], true, ctrOf);
+  const end = rings[NL];
+  let ex = 0;
+  let ey = 0;
+  for (const k of end) {
+    ex += p.pos[k * 3];
+    ey += p.pos[k * 3 + 1];
+  }
+  p.fan(p.v(ex / K - 0.005, ey / K, 0, null, 0, 0, main), end, true, V(-1, 0, 0));
+  p.fan(p.v(xa + 0.02, 2.45, 0, null, 0, 0, main), rings[0], true, V(1, 0, 0));
+  p.smoothNormals(v0, i0);
+}
+
+/** The jib rolled round the forestay, its blue sun-cover strip spiralling round it. Thinner as the jib unrolls. */
+function jibRoll(p: Part, sail: number): void {
+  const v0 = p.nv;
+  const i0 = p.idx.length;
+  const N = FORE_DIR.clone().cross(V(0, 0, 1)).normalize();
+  const B = FORE_DIR.clone().cross(N);
+  const NL = 56;
+  const K = 10;
+  const turns = 13;
+  const rolled = Math.pow(1 - clamp(sail, 0, 1), 0.8);
+  const rings: number[][] = [];
+  for (let i = 0; i <= NL; i++) {
+    const e = i / NL;
+    const c = foreAt(JIB_T0 + (JIB_T1 - JIB_T0) * e);
+    let r = 0.022 + 0.08 * Math.pow(1 - e, 1.3);
+    r = 0.016 + (r - 0.016) * rolled;
+    if (e < 0.03) r *= 0.6 + 0.4 * (e / 0.03);
+    if (e > 0.985) r *= Math.max(0.15, 1 - (e - 0.985) / 0.015);
+    const ring: number[] = [];
+    for (let k = 0; k <= K; k++) {
+      const a = (k / K) * Math.PI * 2;
+      const ph = (((k / K - turns * e) % 1) + 1) % 1;
+      const rr = r * (1 + 0.05 * rolled * Math.cos(ph * Math.PI * 2));
+      const d = N.clone().multiplyScalar(Math.cos(a)).addScaledVector(B, Math.sin(a));
+      ring.push(p.v(c.x + d.x * rr, c.y + d.y * rr, c.z + d.z * rr, null, 0, 0, ph < 0.88 ? COL.uv : ph < 0.95 ? COL.uvLight : COL.sailShade));
+    }
+    rings.push(ring);
+  }
+  const axis = (q: THREE.Vector3) => {
+    const t = q.clone().sub(STEM_HEAD).dot(FORE_DIR);
+    return q.clone().sub(STEM_HEAD.clone().addScaledVector(FORE_DIR, t));
+  };
+  for (let i = 0; i < NL; i++) p.stitch(rings[i], rings[i + 1], false, axis);
+  p.smoothNormals(v0, i0);
+}
+
+/** The anchor line: from the bow cleat over the roller, down and forward into the water. */
+function anchorLine(p: Part): void {
   const rode = curve(
     [
       V(3.66, deckY(3.66, 0) + 0.05, 0),
@@ -1825,18 +2037,251 @@ function buildFittings(metal: Part, cloth: Part, varnish: Part): void {
     ],
     44,
   );
-  tube(cloth, rode, (s) => 0.013 * (s > 0.9 ? Math.max(0.05, (1 - s) / 0.1) : 1), 5, COL.rope);
+  tube(p, rode, (s) => 0.013 * (s > 0.9 ? Math.max(0.05, (1 - s) / 0.1) : 1), 5, COL.rope);
 }
 
-// ============================================================ materials
+/** A galvanised plough anchor stowed in the bow roller, with its line made fast to the bow cleat. */
+function stowedAnchor(p: Part): void {
+  const a = V(3.93, 1.048, 0);
+  const b = V(4.48, 1.065, 0);
+  p.add(roundedBox(a.distanceTo(b), 0.03, 0.035, 0.01), COL.galv, M((a.x + b.x) / 2, (a.y + b.y) / 2, 0, 0, 0, Math.atan2(b.y - a.y, b.x - a.x)));
+  // The plough itself: two triangular plates meeting along a ridge, point down, hanging in front of the stem.
+  const crown = V(4.5, 1.03, 0);
+  const tip = V(4.43, 0.72, 0);
+  const shade: RGB = [COL.galv[0] * 0.8, COL.galv[1] * 0.8, COL.galv[2] * 0.8];
+  for (const k of [-1, 1]) {
+    const wing = crown.clone().lerp(tip, 0.3).add(V(-0.08, 0.02, k * 0.13));
+    const n = tip.clone().sub(crown).cross(wing.clone().sub(crown)).normalize();
+    if (n.z * k < 0) n.negate();
+    const t = n.clone().multiplyScalar(-0.012);
+    const front = [crown, tip, wing].map((q) => p.v(q.x, q.y, q.z, n, 0, 0, COL.galv));
+    const nb = n.clone().negate();
+    const back = [crown, tip, wing].map((q) => p.v(q.x + t.x, q.y + t.y, q.z + t.z, nb, 0, 0, shade));
+    p.tri(front[0], front[1], front[2], n);
+    p.tri(back[0], back[1], back[2], nb);
+    for (let e = 0; e < 3; e++) {
+      const a0 = [crown, tip, wing][e];
+      const a1 = [crown, tip, wing][(e + 1) % 3];
+      const mid = a0.clone().add(a1).multiplyScalar(0.5);
+      const centre = crown.clone().add(tip).add(wing).multiplyScalar(1 / 3);
+      const en = mid.clone().sub(centre).normalize();
+      const q = [a0, a1, a1.clone().add(t), a0.clone().add(t)].map((r) => p.v(r.x, r.y, r.z, en, 0, 0, shade));
+      p.tri(q[0], q[1], q[2], en);
+      p.tri(q[0], q[2], q[3], en);
+    }
+  }
+  p.add(roundedBox(0.05, 0.05, 0.05, 0.014), COL.galv, M(crown.x - 0.01, crown.y + 0.01, 0));
+  tube(p, curve([V(3.66, deckY(3.66, 0) + 0.05, 0), V(3.8, 1.04, 0), a], 8), 0.013, 5, COL.rope);
+}
 
-function hullMaterial(): THREE.MeshStandardMaterial {
-  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, metalness: 0 });
-  const lin = (hex: number) => {
-    const c = new THREE.Color(hex);
-    return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
-  };
-  const f = (n: number) => n.toFixed(4);
+const flap = (u: number, v: number, t: number) => Math.sin(6.283 * (1.7 * u - 1.4 * t) + 3.3 * v) + 0.45 * Math.sin(6.283 * (3.1 * u - 2.3 * t) + 1.7 * v + 1.3);
+
+/**
+ * The mainsail and jib as two cloth grids in one mesh, reshaped on the CPU: the main rises up the mast and
+ * swings with the boom; the jib unrolls from the forestay; fill gives them camber, luffing makes them ripple.
+ */
+class Sails {
+  static readonly NUM = 12;
+  static readonly NVM = 26;
+  static readonly NUJ = 10;
+  static readonly NVJ = 22;
+  readonly geometry = new THREE.BufferGeometry();
+  readonly triangles: number;
+  readonly mainHead = new THREE.Vector3();
+  readonly jibClew = new THREE.Vector3();
+  private pos: Float32Array;
+  private uv: Float32Array;
+  private jibStart: number;
+  constructor() {
+    const nm = (Sails.NUM + 1) * (Sails.NVM + 1);
+    const nj = (Sails.NUJ + 1) * (Sails.NVJ + 1);
+    this.jibStart = nm;
+    this.pos = new Float32Array((nm + nj) * 3);
+    this.uv = new Float32Array((nm + nj) * 2);
+    const idx: number[] = [];
+    const grid = (base: number, nu: number, nv: number) => {
+      for (let j = 0; j < nv; j++) {
+        for (let i = 0; i < nu; i++) {
+          const a = base + j * (nu + 1) + i;
+          const b = a + 1;
+          const c = a + nu + 1;
+          const d = c + 1;
+          idx.push(a, b, d, a, d, c);
+        }
+      }
+    };
+    grid(0, Sails.NUM, Sails.NVM);
+    grid(nm, Sails.NUJ, Sails.NVJ);
+    this.triangles = idx.length / 3;
+    const pa = new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage);
+    const ua = new THREE.BufferAttribute(this.uv, 2).setUsage(THREE.DynamicDrawUsage);
+    this.geometry.setAttribute('position', pa);
+    this.geometry.setAttribute('uv', ua);
+    this.geometry.setAttribute('normal', new THREE.BufferAttribute(new Float32Array((nm + nj) * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    this.geometry.setIndex(idx);
+    // Fixed bounds that hold the sails in any position (so the mesh is never wrongly culled).
+    this.geometry.boundingSphere = new THREE.Sphere(V(0.6, 6.4, 0), 8.5);
+  }
+  update(st: RigState): void {
+    const s = Math.max(st.sail, 0.02); // keep a sliver of sail so normals stay sound while hidden
+    const lf = st.fill < 0.6 ? (0.6 - st.fill) / 0.6 : 0;
+    const fill = clamp(st.fill, 0, 1);
+    const P = this.pos;
+    const U = this.uv;
+    // --- Mainsail: luff up the mast, foot along the boom, roached leech with a headboard.
+    {
+      const side = sideOf(st.boom);
+      const headY = TACK_Y + s * (HEAD_Y - TACK_Y);
+      const hx = mastAftX(headY) - HEADBOARD;
+      const lx = hx - MAIN_CLEW.x;
+      const ly = headY - MAIN_CLEW.y;
+      const ll = Math.hypot(lx, ly);
+      const rnx = -ly / ll; // leech normal, pointing aft and up (the roach bulges this way)
+      const rny = lx / ll;
+      const twist = 0.2 * (0.5 + 0.5 * fill);
+      for (let j = 0; j <= Sails.NVM; j++) {
+        const v = j / Sails.NVM;
+        const yL = TACK_Y + v * (headY - TACK_Y);
+        const Lx = mastAftX(yL) - 0.006;
+        const roach = ROACH * s * Math.pow(Math.sin(Math.PI * v), 0.9);
+        const Ex = MAIN_CLEW.x + v * lx + rnx * roach;
+        const Ey = MAIN_CLEW.y + v * ly + rny * roach;
+        const ang = st.boom + side * twist * Math.pow(v, 1.5);
+        const ca = Math.cos(ang);
+        const sa = Math.sin(ang);
+        const chord = Math.hypot(Ex - Lx, Ey - yL);
+        const g = smooth01(v / 0.12) * (1 - 0.35 * v);
+        for (let i = 0; i <= Sails.NUM; i++) {
+          const u = i / Sails.NUM;
+          const dx = (Ex - Lx) * u;
+          const y = yL + (Ey - yL) * u;
+          let off = fill * MAIN_DEPTH * chord * Math.sin(Math.PI * Math.pow(u, 0.85)) * g * side;
+          if (lf > 0) off += lf * 0.1 * Math.sqrt(chord) * Math.pow(u, 0.6) * (0.35 + 0.65 * Math.sin(Math.PI * v)) * smooth01(v / 0.06) * flap(u, v, st.time);
+          const o = (j * (Sails.NUM + 1) + i) * 3;
+          P[o] = Lx + dx * ca + off * sa;
+          P[o + 1] = y;
+          P[o + 2] = -dx * sa + off * ca;
+          const t = (j * (Sails.NUM + 1) + i) * 2;
+          U[t] = 0.01 + 0.47 * u;
+          U[t + 1] = 1 - s + s * v;
+        }
+      }
+      this.mainHead.set(mastAftX(headY), headY, 0);
+    }
+    // --- Jib: luff on the forestay, unrolling from the roll; clew sheeted aft to one side.
+    {
+      const side = sideOf(st.jib);
+      const j = st.jib;
+      const tack = foreAt(JIB_T0);
+      const head = foreAt(JIB_T1);
+      const full = V(tack.x - JIB_FOOT * Math.cos(j), tack.y + 0.5 + 0.2 * Math.abs(Math.sin(j)), JIB_FOOT * Math.sin(j));
+      const clew = tack.clone().lerp(full, s);
+      this.jibClew.copy(clew);
+      const rolled = Math.pow(1 - st.sail, 0.8);
+      const L = new THREE.Vector3();
+      const E = new THREE.Vector3();
+      const C = new THREE.Vector3();
+      const n = new THREE.Vector3();
+      for (let jv = 0; jv <= Sails.NVJ; jv++) {
+        const v = jv / Sails.NVJ;
+        const r = 0.016 + (0.006 + 0.08 * Math.pow(1 - v, 1.3)) * rolled;
+        L.copy(foreAt(JIB_T0 + (JIB_T1 - JIB_T0) * v));
+        L.z += side * r;
+        E.copy(clew).lerp(head, v);
+        E.lerp(L, 0.03 * Math.sin(Math.PI * v) * s); // slightly hollow leech
+        C.copy(E).sub(L);
+        const chord = C.length();
+        n.copy(FORE_DIR).cross(C);
+        if (n.lengthSq() < 1e-10) n.set(0, 0, side);
+        n.normalize();
+        if (n.z * side < 0) n.negate();
+        for (let i = 0; i <= Sails.NUJ; i++) {
+          const u = i / Sails.NUJ;
+          let off = fill * JIB_DEPTH * chord * Math.sin(Math.PI * Math.pow(u, 0.9)) * (1 - 0.25 * v);
+          if (lf > 0) off += lf * 0.09 * Math.sqrt(chord) * Math.pow(u, 0.6) * (0.4 + 0.6 * Math.sin(Math.PI * v)) * flap(u, v + 0.5, st.time * 1.15);
+          const o = (this.jibStart + jv * (Sails.NUJ + 1) + i) * 3;
+          P[o] = L.x + C.x * u + n.x * off;
+          P[o + 1] = L.y + C.y * u + n.y * off;
+          P[o + 2] = L.z + C.z * u + n.z * off;
+          const t = (this.jibStart + jv * (Sails.NUJ + 1) + i) * 2;
+          U[t] = 0.52 + 0.47 * (1 - s + s * u);
+          U[t + 1] = v;
+        }
+      }
+    }
+    this.geometry.getAttribute('position').needsUpdate = true;
+    this.geometry.getAttribute('uv').needsUpdate = true;
+    this.geometry.computeVertexNormals();
+  }
+}
+
+/** Sailcloth: off-white Dacron with stitched panel seams. Left half = mainsail (battens, tapes, patches), right half = jib (blue sun strip). */
+function paintSail(): THREE.DataTexture {
+  const W = 512;
+  const H = 512;
+  const rnd = mulberry32(31);
+  const weave = periodicNoise(128, 128, rnd);
+  const data = new Uint8Array(W * H * 4);
+  const BATTENS = [0.2, 0.41, 0.61, 0.8];
+  const uvc: RGB = [47, 106, 146];
+  for (let y = 0; y < H; y++) {
+    const v = (y + 0.5) / H;
+    for (let x = 0; x < W; x++) {
+      const isMain = x < W / 2;
+      const u = isMain ? ((x + 0.5) / W - 0.01) / 0.47 : ((x + 0.5) / W - 0.52) / 0.47;
+      let shade = 1 + 0.025 * (weave(x / W, y / H) - 0.5);
+      let col: RGB = [244, 241, 232];
+      // panel seams: a stitched double line
+      const panels = isMain ? 15 : 13;
+      const sp = (v * panels) % 1;
+      const pd = Math.min(sp, 1 - sp) * (H / panels);
+      if (pd < 1.0) shade *= 0.86;
+      else if (pd < 2.2) shade *= 1.03;
+      // tapes along the edges
+      if (u < 0.015 || v < 0.012 || u > 0.985) shade *= 0.9;
+      if (isMain) {
+        for (const b of BATTENS) {
+          const bd = Math.abs(v - b) * H;
+          const len = b < 0.7 ? 0.38 : 0.3;
+          if (u > 1 - len && bd < 3.5) shade *= bd > 2.5 ? 0.82 : 0.93;
+        }
+        if (u + v * 2.2 < 0.13 || (u > 0.86 && v < 0.07 && (1 - u) + v * 2 < 0.16) || v > 0.965) shade *= 0.93; // reinforcing patches
+      } else {
+        const strip = u > 0.91 || v < 0.035;
+        if (strip && u < 0.975) col = uvc;
+        if ((Math.abs(u - 0.91) * W * 0.47 < 1 && v > 0.035) || (Math.abs(v - 0.035) * H < 1 && u < 0.91)) shade *= 0.8;
+        if (u > 0.975) col = [236, 232, 222];
+      }
+      const o = (y * W + x) * 4;
+      data[o] = clamp(col[0] * shade, 0, 255);
+      data[o + 1] = clamp(col[1] * shade, 0, 255);
+      data[o + 2] = clamp(col[2] * shade, 0, 255);
+      data[o + 3] = 255;
+    }
+  }
+  const tex = finishTexture(data, W, H);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
+/** The boom and its fittings, built with the boom amidships, then moved so the gooseneck pivot is the origin. */
+function buildBoom(p: Part): void {
+  const boomA = V(GOOSE_X, GOOSE_Y, 0);
+  const boomLen = boomA.distanceTo(BOOM_END);
+  p.add(new THREE.CylinderGeometry(0.055, 0.055, boomLen, 14, 1, false), COL.alu, between(boomA, BOOM_END).multiply(M(0, 0, 0, 0, 0, 0, 1, 1, 0.7)));
+  p.add(roundedBox(0.09, 0.08, 0.07, 0.015), COL.dark, M(GOOSE_X + 0.02, GOOSE_Y, 0)); // gooseneck
+  p.add(roundedBox(0.1, 0.12, 0.08, 0.02), COL.dark, M(BOOM_END.x, BOOM_END.y, 0)); // end fitting
+  rod(p, V(MAST_X - 0.06, MAST_Y0 + 0.25, 0), V(0.3, boomY(0.3) - 0.04, 0), 0.016, 8, COL.alu); // vang
+  const by = boomY(MS_BOOM_X);
+  p.add(roundedBox(0.035, 0.03, 0.04, 0.008), COL.steel, M(MS_BOOM_X, by - 0.06, 0)); // bail
+  p.add(roundedBox(0.045, 0.06, 0.04, 0.016), COL.dark, M(MS_BOOM_X, by - 0.1, 0)); // mainsheet block
+  for (let i = 0; i < p.pos.length; i += 3) p.pos[i] -= GOOSE_X;
+}
+
+/** The varnished-wood material for the rudder and tiller, painting the blade like the hull where vertex colour says so. */
+function rudderMaterial(tex: THREE.Texture): THREE.MeshStandardMaterial {
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: tex, roughness: 0.3, metalness: 0 });
   mat.onBeforeCompile = (sh) => {
     sh.vertexShader = 'varying vec3 vBoatPos;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vBoatPos = transformed;');
     sh.fragmentShader =
@@ -1845,7 +2290,234 @@ function hullMaterial(): THREE.MeshStandardMaterial {
         .replace(
           '#include <color_fragment>',
           `#include <color_fragment>
-  float hy = vBoatPos.y;
+  float hPainted = vColor.g > 1.5 ? 1.0 : 0.0;
+${hullBandGlsl()}
+  diffuseColor.rgb = mix(diffuseColor.rgb, hc, hPainted);`,
+        )
+        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = mix(roughnessFactor, 0.75, hBottom * hPainted);');
+  };
+  mat.customProgramCacheKey = () => 'sloop-rudder-v1';
+  return mat;
+}
+
+/** Builds the moving rig: boom, sails, the soft parts (cover, rolled jib, sheets, anchor line), rudder and tiller. */
+function buildMovingRig(
+  metalMat: THREE.Material,
+  clothMat: THREE.Material,
+  varnishTex: THREE.Texture,
+  rudderPart: Part,
+  rudderInfo: RudderInfo,
+): { objects: THREE.Object3D[]; rig: SloopRig; triangles: number } {
+  const st: RigState = { sail: 0, boom: 0, jib: 0, fill: 1, time: 0, rudder: 0, anchored: true };
+
+  // Boom: its own group, pivoting about the vertical axis through the gooseneck.
+  const boomPart = new Part();
+  buildBoom(boomPart);
+  const boomMesh = new THREE.Mesh(boomPart.geometry(), metalMat);
+  boomMesh.name = 'sloop-boom';
+  const boomGroup = new THREE.Group();
+  boomGroup.name = 'sloop-boom-pivot';
+  boomGroup.position.set(GOOSE_X, 0, 0);
+  boomGroup.add(boomMesh);
+
+  // Soft parts that move or come and go.
+  const dyn = new DynPart();
+  const segCover = dyn.rigid((p) => boomFurl(p, COL.cover, COL.coverEdge));
+  const segBundle = dyn.rigid((p) => boomFurl(p, COL.sail, COL.sailShade));
+  const segRoll = dyn.gen((p) => jibRoll(p, st.sail));
+  const sheetCtrl = (side: number): THREE.Vector3[] => {
+    const fair = fairlead(side);
+    const clew = sails.jibClew;
+    const k = smooth01(st.sail / 0.25);
+    const lee = sideOf(st.jib) === side;
+    const a = clew.clone().add(V(-0.05 * (1 - k), 0, side * 0.06 * (1 - k)));
+    const m0 = V(2.0, 1.12, side * 0.62);
+    const m1 = lee ? clew.clone().lerp(fair, 0.5).add(V(0, -0.04, 0)) : V((clew.x + 1.9) / 2, 1.2, side * 0.5);
+    return [a, m0.lerp(m1, k), fair];
+  };
+  const sheetBuild = (side: number) => (p: Part) => tube(p, curve(sheetCtrl(side), 14), 0.006, 4, COL.sheet);
+  const sails = new Sails();
+  sails.update(st);
+  const segSheets = [dyn.gen(sheetBuild(-1)), dyn.gen(sheetBuild(1))];
+  const liftTop = V(MAST_X - 0.1, MAST_TOP - 0.05, 0);
+  const liftBuild = (p: Part) => rod(p, liftTop, onBoom(BOOM_END.x + 0.04, BOOM_END.y + 0.05, st.boom), 0.0035, 4, COL.line);
+  const segLift = dyn.gen(liftBuild);
+  const msBlock = () => onBoom(MS_BOOM_X, boomY(MS_BOOM_X) - 0.13, st.boom);
+  const carZ = () => clamp(msBlock().z, -TRAVELLER_HW, TRAVELLER_HW);
+  const msBuild = (p: Part) => {
+    const top = msBlock();
+    const car = V(TRAVELLER_X, travellerY() + 0.07, carZ());
+    for (const dx of [-0.014, 0, 0.014]) rod(p, top.clone().add(V(dx, 0, 0)), car.clone().add(V(dx * 1.2, 0, 0)), 0.0045, 4, COL.sheet);
+  };
+  const segMainsheet = dyn.gen(msBuild);
+  const segCar = dyn.rigid((p) => {
+    const y = travellerY();
+    p.add(roundedBox(0.07, 0.025, 0.07, 0.01), COL.dark, M(TRAVELLER_X, y + 0.02, 0));
+    p.add(roundedBox(0.045, 0.05, 0.04, 0.016), COL.dark, M(TRAVELLER_X, y + 0.055, 0));
+  });
+  const segRode = dyn.rigid(anchorLine);
+  const segAnchor = dyn.rigid(stowedAnchor);
+  const dynGeom = dyn.part.geometry();
+  dyn.bind(dynGeom);
+  dynGeom.boundingSphere = new THREE.Sphere(V(2.4, 3.8, 0), 10.5);
+  const dynMesh = new THREE.Mesh(dynGeom, clothMat);
+  dynMesh.name = 'sloop-rig-lines';
+
+  // Sails.
+  sailTexture ??= paintSail();
+  const sailMat = new THREE.MeshStandardMaterial({ map: sailTexture, side: THREE.DoubleSide, roughness: 0.82, metalness: 0 });
+  const sailMesh = new THREE.Mesh(sails.geometry, sailMat);
+  sailMesh.name = 'sloop-sails';
+
+  // Rudder and tiller: one mesh turned about the raked rudder stock.
+  const rudderMesh = new THREE.Mesh(rudderPart.geometry(), rudderMaterial(varnishTex));
+  rudderMesh.name = 'sloop-rudder';
+  rudderMesh.matrixAutoUpdate = false;
+  const rudderMatrix = (a: number, sign: number) => {
+    const p = rudderInfo.axisPoint;
+    return new THREE.Matrix4()
+      .makeTranslation(p.x, p.y, p.z)
+      .multiply(new THREE.Matrix4().makeRotationAxis(rudderInfo.axisDir, sign * a))
+      .multiply(new THREE.Matrix4().makeTranslation(-p.x, -p.y, -p.z));
+  };
+  const rudderSign = rudderInfo.trailingEdge.clone().applyMatrix4(rudderMatrix(0.3, 1)).z > 0 ? 1 : -1;
+
+  for (const m of [boomMesh, dynMesh, sailMesh, rudderMesh]) {
+    m.castShadow = true;
+    m.receiveShadow = true;
+  }
+
+  // --- Applying the state.
+  const boomM = () => boomMatrix(st.boom);
+  const applyFurl = () => {
+    dyn.place(segCover, st.sail < 0.01 ? boomM() : null);
+    if (st.sail >= 0.01 && st.sail < 0.985) {
+      const k = Math.pow(1 - st.sail, 0.85);
+      const yb = GOOSE_Y + 0.06;
+      const m = boomM()
+        .multiply(new THREE.Matrix4().makeTranslation(0, yb, 0))
+        .multiply(new THREE.Matrix4().makeScale(1, Math.max(0.05, k), 0.55 + 0.45 * k))
+        .multiply(new THREE.Matrix4().makeTranslation(0, -yb, 0));
+      dyn.place(segBundle, m);
+    } else dyn.hide(segBundle);
+    dyn.regen(segLift, liftBuild, st.sail < 0.03);
+  };
+  const applyMainsheet = () => {
+    dyn.regen(segMainsheet, msBuild);
+    dyn.place(segCar, new THREE.Matrix4().makeTranslation(0, 0, carZ()));
+  };
+  const applySheets = () => {
+    dyn.regen(segSheets[0], sheetBuild(-1));
+    dyn.regen(segSheets[1], sheetBuild(1));
+  };
+  const applyAnchor = () => {
+    dyn.place(segRode, st.anchored ? new THREE.Matrix4() : null);
+    dyn.place(segAnchor, st.anchored ? null : new THREE.Matrix4());
+  };
+  const applySails = () => {
+    sails.update(st);
+    sailMesh.visible = st.sail > 0.005;
+  };
+  const applyBoom = () => {
+    boomGroup.rotation.y = st.boom;
+    boomGroup.updateMatrix();
+  };
+  const applyRudder = () => {
+    rudderMesh.matrix.copy(rudderMatrix(st.rudder, rudderSign));
+    rudderMesh.matrixWorldNeedsUpdate = true;
+  };
+  applyFurl();
+  applyMainsheet();
+  applySheets();
+  applyAnchor();
+  applySails();
+  applyBoom();
+  applyRudder();
+
+  const same = (a: number, b: number) => Math.abs(a - b) < 1e-6;
+  const rig: SloopRig = {
+    setSail(amount) {
+      const a = clamp(amount, 0, 1);
+      if (same(a, st.sail)) return;
+      st.sail = a;
+      applySails();
+      applyFurl();
+      dyn.regen(segRoll, (p) => jibRoll(p, st.sail));
+      applySheets();
+    },
+    setBoom(angle) {
+      const a = clamp(angle, -BOOM_MAX, BOOM_MAX);
+      if (same(a, st.boom)) return;
+      st.boom = a;
+      applyBoom();
+      applyFurl();
+      applyMainsheet();
+      if (st.sail > 0.005) applySails();
+    },
+    setJib(angle) {
+      const a = clamp(angle, -JIB_MAX, JIB_MAX);
+      if (same(a, st.jib)) return;
+      st.jib = a;
+      applySails();
+      applySheets();
+    },
+    setFill(fill, time) {
+      const f = clamp(fill, 0, 1);
+      const changed = !same(f, st.fill) || (f < 0.6 && !same(time, st.time));
+      st.fill = f;
+      st.time = time;
+      if (changed && st.sail > 0.005) applySails();
+    },
+    setRudder(angle) {
+      const a = clamp(angle, -RUDDER_MAX, RUDDER_MAX);
+      if (same(a, st.rudder)) return;
+      st.rudder = a;
+      applyRudder();
+    },
+    setAnchored(down) {
+      if (down === st.anchored) return;
+      st.anchored = down;
+      applyAnchor();
+    },
+    status() {
+      const rm = rudderMatrix(st.rudder, rudderSign);
+      return {
+        sail: st.sail,
+        boom: st.boom,
+        jib: st.jib,
+        fill: st.fill,
+        rudder: st.rudder,
+        anchored: st.anchored,
+        coverShown: st.sail < 0.01,
+        mainShown: st.sail > 0.005,
+        jibShown: st.sail > 0.005,
+        rodeShown: st.anchored,
+        anchorStowedShown: !st.anchored,
+        boomEnd: onBoom(BOOM_END.x, BOOM_END.y, st.boom),
+        mainHead: sails.mainHead.clone(),
+        jibClew: sails.jibClew.clone(),
+        rudderTrailingEdge: rudderInfo.trailingEdge.clone().applyMatrix4(rm),
+        tillerEnd: rudderInfo.tillerEnd.clone().applyMatrix4(rm),
+      };
+    },
+  };
+  const triangles = (boomPart.idx.length + dyn.part.idx.length + rudderPart.idx.length) / 3 + sails.triangles;
+  return { objects: [boomGroup, dynMesh, sailMesh, rudderMesh], rig, triangles };
+}
+
+/** The painted sailcloth is made once and shared. */
+let sailTexture: THREE.DataTexture | null = null;
+
+// ============================================================ materials
+
+/** GLSL: the hull's paint at boat-local vBoatPos -> hc (colour) and hBottom (1 on the antifouling). */
+function hullBandGlsl(): string {
+  const lin = (hex: number) => {
+    const c = new THREE.Color(hex);
+    return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
+  };
+  const f = (n: number) => n.toFixed(4);
+  return `  float hy = vBoatPos.y;
   float aa = max(fwidth(hy), 0.0008);
   float ht = (clamp(vBoatPos.x, ${f(X_AFT)}, ${f(X_FWD)}) - ${f(X_AFT)}) / ${f(LOA)};
   float hsheer = ht < 0.42 ? 0.78 + 0.45 * (0.42 - ht) * (0.42 - ht) : 0.78 + 0.6 * (ht - 0.42) * (ht - 0.42);
@@ -1855,7 +2527,20 @@ function hullMaterial(): THREE.MeshStandardMaterial {
   float hCove = smoothstep(0.08 - aa, 0.08 + aa, hdown) - smoothstep(0.104 - aa, 0.104 + aa, hdown);
   vec3 hc = ${lin(COL.hull)};
   hc = mix(hc, ${lin(COL.stripe)}, clamp(hBoot + hCove, 0.0, 1.0));
-  hc = mix(hc, ${lin(COL.bottom)}, hBottom);
+  hc = mix(hc, ${lin(COL.bottom)}, hBottom);`;
+}
+
+function hullMaterial(): THREE.MeshStandardMaterial {
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, metalness: 0 });
+  mat.onBeforeCompile = (sh) => {
+    sh.vertexShader = 'varying vec3 vBoatPos;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vBoatPos = transformed;');
+    sh.fragmentShader =
+      'varying vec3 vBoatPos;\n' +
+      sh.fragmentShader
+        .replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+${hullBandGlsl()}
   diffuseColor.rgb *= hc;`,
         )
         .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = mix(roughnessFactor, 0.75, hBottom);');
@@ -1869,8 +2554,22 @@ function hullMaterial(): THREE.MeshStandardMaterial {
 /** The painted textures are made once and shared by every sloop built. */
 let textures: { teak: THREE.DataTexture; varnish: THREE.DataTexture; nonskid: THREE.DataTexture } | null = null;
 
-export function createSloop(): { group: THREE.Group; deck: DeckSurface; points: SloopPoints; length: number; beam: number; draft: number; triangles: number } {
+/** Everything createSloop() makes. */
+export interface Sloop {
+  group: THREE.Group;
+  deck: DeckSurface;
+  points: SloopPoints;
+  length: number;
+  beam: number;
+  draft: number;
+  triangles: number;
+  /** Sail, boom, jib, rudder and anchor controls. */
+  rig: SloopRig;
+}
+
+export function createSloop(): Sloop {
   const hull = new Part();
+  const rudder = new Part();
   const gel = new Part();
   const teak = new Part();
   const varnish = new Part();
@@ -1879,7 +2578,7 @@ export function createSloop(): { group: THREE.Group; deck: DeckSurface; points: 
   const nonskid = new Part();
 
   buildHull(hull);
-  buildKeelAndRudder(hull, varnish, metal);
+  const rudderInfo = buildKeelAndRudder(hull, rudder, metal);
   buildDeck(teak);
   buildRails(varnish);
   buildCockpit(gel, teak, varnish, metal);
@@ -1911,6 +2610,11 @@ export function createSloop(): { group: THREE.Group; deck: DeckSurface; points: 
     group.add(mesh);
     triangles += part.idx.length / 3;
   }
+  const metalMat = mats.find((m) => m[2] === 'sloop-metal')?.[1] as THREE.Material;
+  const clothMat = mats.find((m) => m[2] === 'sloop-cloth')?.[1] as THREE.Material;
+  const moving = buildMovingRig(metalMat, clothMat, varnishTex, rudder, rudderInfo);
+  for (const o of moving.objects) group.add(o);
+  triangles += moving.triangles;
 
   const deck: DeckSurface = {
     heightAt,
@@ -1931,5 +2635,5 @@ export function createSloop(): { group: THREE.Group; deck: DeckSurface; points: 
     potShelf: [V(-1.45, potY(-1.45, -pz), -pz), V(-1.21, potY(-1.21, -pz), -pz), V(-1.45, potY(-1.45, pz), pz), V(-1.21, potY(-1.21, pz), pz)],
     spawn: V(-2.75, SOLE_Y, 0),
   };
-  return { group, deck, points, length: LOA, beam: HALF_BEAM * 2, draft: DRAFT, triangles };
+  return { group, deck, points, length: LOA, beam: HALF_BEAM * 2, draft: DRAFT, triangles, rig: moving.rig };
 }

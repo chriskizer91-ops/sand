@@ -1,5 +1,50 @@
 # What changed, version by version (plain language)
 
+## v0.3, First passage
+You can sail now. Take the helm, raise the sails, find your way out through the gap in the reef, and sail to a second island, Pink Sand Cay.
+
+**What you can do**
+- **Take the helm** in the cockpit:
+  - steer: A/D, or your left thumb on the phone;
+  - raise and lower the sails: W/S, or "More sail" and "Less sail";
+  - drop or raise the anchor: X;
+  - let go: E.
+  The mainsail goes up the mast and the jib unrolls. The boom swings out on the side away from the wind, and the sails flap when you point too close to it.
+- **Real sailing rules:**
+  - you can't sail within about 40° of the wind (the boat stops "in irons");
+  - you're fastest with the wind from the side, and she leans away from it;
+  - she slips a little sideways;
+  - to go upwind you zig-zag.
+
+  A small dial shows where the wind comes from, with a red wedge where you can't sail, plus your speed in knots and your point of sail.
+- **The reef matters.** Home Cay's reef has one gap, to the south-west. Run onto the reef (or a beach) and she's aground: the hull is scraped (that's for the repairs coming next), and you steer for deeper water to get off.
+- **Anchor anywhere** shallow enough (under 16 m) and slow enough.
+- **The chart** (M, or the map button) shows both cays, the reef, the gap, your boat and the wind. Tap "Sail to …" and she sails there by herself: through the gap in the reef, tacking if she must, then anchors. You can walk around the deck while she sails, or take the helm back at any time.
+- **Pink Sand Cay:** a small island beyond the reef with pink beaches. It has its own finds: a netted olive and a rare flamingo tongue shell. Drift pumice can turn up on either island.
+- **A wake** of white water behind you, and new sounds: water rushing past the hull, wind in the rigging, flapping sails, the anchor chain, a thud when you hit bottom.
+
+**Checks that passed before sending**
+- **147 automatic checks**, including new ones for:
+  - the sailing rules: the no-go zone, the best point of sail, speed, turning, heel and leeway, rounding up when left alone, running aground and getting off, anchoring;
+  - the autopilot: downwind, beating upwind by tacking, following waypoints;
+  - Pink Sand Cay;
+  - the passage through the reef gap (deep enough for the keel all the way) and the reef blocking you elsewhere;
+  - island-only finds;
+  - the moving sails, boom, rudder and anchor.
+- **All 46 browser checks**, as a laptop and as a Pixel-sized phone, including new ones:
+  - taking the helm, raising sail, steering and picking up speed (6.1 knots);
+  - the chart and "Sail to Pink Sand Cay": through the reef gap, anchored 18 m from the anchorage with no scrapes;
+  - finds on Pink Sand Cay;
+  - running onto the reef scrapes the hull;
+  - on the phone, taking the helm with the round button, "More sail", and steering with the thumb.
+- **Drawing budgets** measured on the laptop: about 640,000 triangles looking from the boat, 350,000–375,000 ashore.
+
+**Not tested, or known**
+- How it feels to steer with your thumb, and whether the sailing feels right. Tell me if it's too slow, too fast, too twitchy, or confusing.
+- Speed on your Pixel while sailing (more is drawn when both islands are in view).
+- You can't build sandcastles on Pink Sand Cay yet; only Home Cay's cove has building sand.
+- The hull condition is tracked but there's nothing to repair it with yet (that's v0.4).
+
 ## v0.2.2, Overboard fix
 **What changed**
 - **Jumping off the side works.** Before, jumping over the lifelines could leave you stuck against the side of the boat. Now you fly out clear of the hull and land in the sea. If you ever end up pressed against the boat, it eases you away, and swimming away from it always works.

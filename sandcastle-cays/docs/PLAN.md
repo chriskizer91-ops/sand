@@ -29,21 +29,24 @@ First a **vertical slice**: a small piece of the game made to finished quality, 
    - your sloop at anchor off Home Cay: walk the deck, swim ashore, walk the island;
    - beachcombing with a basket, a locker aboard and the logbook;
    - kneel on the cove beach to build sandcastles.
-2. **v0.3, The dinghy and the reef:**
+2. **v0.3, First passage** (moved up by the owner, 2026-11-01):
+   - sailing with real wind: take the helm, raise the sails, steer;
+   - you can't sail straight into the wind; tack (zig-zag) to go upwind;
+   - the chart, with "sail there for me";
+   - anchoring;
+   - the reef and its channel (running aground scrapes the hull);
+   - a second cay (Pink Sand Cay) with its own sand and finds.
+3. **v0.4, Upkeep and living aboard:**
+   - repairs with materials from the beaches (driftwood, planks, rope and more washed-up debris), using a workbench and recipes that unlock as you find new materials;
+   - rations and stores;
+   - fishing and the galley;
+   - fresh water;
+   - deck pots and the Home Cay garden.
+4. **v0.5, The dinghy and the reef:**
    - rowing the dinghy;
    - the shark, now and then, off the reef;
    - dropped finds that wash up later;
    - dinghy repairs.
-3. **v0.4, Living aboard:**
-   - rations and stores;
-   - fishing and the galley;
-   - fresh water;
-   - boat upkeep with a workbench and recipes that unlock as you find new materials;
-   - deck pots and the Home Cay garden.
-4. **v0.5, First passage:**
-   - sailing with real wind;
-   - the chart;
-   - a second cay with different sand and finds.
 5. **v0.6, Polish:** a full pass on look, sound, feel, text and phone speed. This is the finished slice.
 
 ## After the slice (ideas agreed along the way)
