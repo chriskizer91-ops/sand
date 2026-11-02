@@ -21,7 +21,17 @@
   - a fix: the chart's "Sail to …" buttons were being rebuilt several times a second, which could swallow a tap. Now they only change when they need to.
 
 **Checks before sending**
-CHECKS_PLACEHOLDER
+- **158 automatic checks**, including 11 new ones:
+  - the motor: pushing her into the wind, steering at low speed, going astern with reversed steering, getting off when aground, the anchor stopping it, and "Sail to …" motoring a short way upwind and anchoring;
+  - the motor model: tilted up out of the water when off, down with the propeller under water when running, tilting gradually, the propeller spinning, and clearing the rudder and ladder;
+  - the navigation lights.
+- **Browser checks, as a laptop and as a Pixel-sized phone: 47 of 48 passed** in the full run, including 2 new ones:
+  - R and F on the laptop: 2.9 knots ahead under motor, then 2.0 knots astern;
+  - the "Motor ahead" button on the phone.
+
+  "Sail to Pink Sand Cay" still works: she anchored 3 m from the anchorage with the hull untouched.
+- **The one miss** was the sand engine's speed check at simulated phone speed in backup mode: its busiest step took 21.5 ms against a 20 ms safety line (the real limit is 33 ms). Run on its own three more times, it passed each time (12–19 ms). It's a timing measurement that varies on this shared build machine, and no sand code has changed.
+- **Drawing budgets** measured on the laptop: about 640,000 triangles looking from the boat, 350,000–375,000 ashore (the same as v0.3).
 
 **Not tested, or known**
 - How the motor feels with your thumbs, and whether it's too strong or too weak. Tell me.
