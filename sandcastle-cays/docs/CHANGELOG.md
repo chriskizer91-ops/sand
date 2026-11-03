@@ -25,7 +25,21 @@
   The game keeps running while it's open.
 
 **Checks before sending**
-CHECKS_PLACEHOLDER
+- **188 automatic checks** passed, including 7 new ones:
+  - stuck in water shallower than her keel, she can motor astern to deeper water, or motor ahead once she points for it;
+  - she never drives further onto a bank, and turning while aground can't swing her keel deeper into the bottom;
+  - at anchor she doesn't swing onto the shallows;
+  - pushing off finds water with room under the keel, and from shallow spots all round both cays it finds deep water close by.
+- **Browser checks, as a laptop and as a Pixel-sized phone: 54 of 55 passed**, including 3 new ones:
+  - run onto the reef, the anchor button says "Push off", and pressing it gets her afloat;
+  - T opens the dev tools, "Open sea" moves the boat there, "No squalls" clears them, and T closes them;
+  - on the phone, Menu → "Dev tools" opens them and the cross closes them.
+- I also fixed a flaw in one check: the open-sea wind check now switches squalls off while it measures, because a passing squall's wind could skew it.
+- **The one miss** was the sand engine's speed check at simulated phone speed in backup mode: 20.8 ms against its 20 ms safety line (the real limit is 33 ms).
+  - It swings a lot on this busy build machine: today it ranged 13–28 ms for the old v0.3.1 too, and 13–25 ms for this version even with the sea hidden.
+  - The sand code hasn't changed.
+  - To be safe, the sea now skips its open-sea, whitecap and squall work wherever none of those is in view.
+  - The real test is your phone: the dev tools (or Menu → Run the checks on this device) show the frame rate.
 
 **Not tested**
 - Whatever got you stuck: I couldn't see exactly where you were, so I fixed every way I found of getting stuck. If it happens again, open the dev tools (T) and tell me the boat's position from the readout.
