@@ -480,9 +480,9 @@ const BUOY = { x: 560, z: -820 };
 const seaBuoy = createSeaBuoy(BUOY.x, BUOY.z);
 scene.add(seaBuoy.group);
 const PLACES = [
-  { id: 'home', name: 'Home Cay', x: terrain.anchorage.x, z: terrain.anchorage.z, labelDx: 0, labelDz: 150 },
-  { id: 'pink', name: 'Pink Sand Cay', x: world.pink.anchorage.x, z: world.pink.anchorage.z, labelDx: 40, labelDz: -150 },
-  { id: 'buoy', name: 'the sea buoy', label: 'sea buoy', button: 'Round the sea buoy and come home', mark: true, x: BUOY.x, z: BUOY.z, labelDx: 0, labelDz: -70 },
+  { id: 'home', name: 'Home Cay', x: terrain.anchorage.x, z: terrain.anchorage.z, labelDx: 0, labelDz: 240 },
+  { id: 'pink', name: 'Pink Sand Cay', x: world.pink.anchorage.x, z: world.pink.anchorage.z, labelDx: 40, labelDz: -175 },
+  { id: 'buoy', name: 'the sea buoy', label: 'sea buoy', button: 'Round the sea buoy and come home', mark: true, x: BUOY.x, z: BUOY.z, labelDx: 0, labelDz: -95 },
 ];
 const channel = reefChannel(terrain);
 const chart = new Chart(
