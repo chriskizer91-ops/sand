@@ -8,20 +8,27 @@
  * while you reel in. `showCatch` holds a fish up in front of you for a moment.
  * The line itself is drawn in the world (FishingLine, in fishingGear.ts),
  * starting from `rodTipWorld`.
+ *
+ * In the garden you carry a watering can ('can'); `pour()` tips it forward
+ * so a little stream of water runs from the rose, then brings it level.
  */
 import * as THREE from 'three';
 import { basketModel, basketSlots, findModel } from './finds';
 import { disposeFish, fishModel, wiggle, type FishKind } from './fish';
 import { ROD_GRIP_X, rodModel, type Rod } from './fishingGear';
+import { CanStream, canModel, type WateringCan } from './wateringCan';
 import type { FindKind } from '../content/finds';
 
-export type Holding = 'basket' | 'rod' | 'fish';
+export type Holding = 'basket' | 'rod' | 'fish' | 'can';
+const HOLDINGS: Holding[] = ['basket', 'rod', 'fish', 'can'];
 
 /** How long `showCatch` holds the fish up (seconds). */
 export const CATCH_SHOW_TIME = 2.8;
 /** Seconds from `cast()` to the moment the line flies (when to launch the float). */
 export const CAST_RELEASE_TIME = 0.4;
 const CAST_TIME = 0.8;
+/** Seconds to tip the watering can forward (and to bring it level again). */
+export const POUR_TIP_TIME = 0.4;
 
 const ease = (t: number): number => {
   const x = Math.min(1, Math.max(0, t));
@@ -47,7 +54,7 @@ export class HeldView {
   // ---- fishing ----
   private holding: Holding = 'basket';
   /** How far each thing is held up (1) or put away (0), eased. */
-  private shown: Record<Holding, number> = { basket: 1, rod: 0, fish: 0 };
+  private shown: Record<Holding, number> = { basket: 1, rod: 0, fish: 0, can: 0 };
   private rod: Rod | null = null;
   /** The rod turns about your hand, at the reel seat. */
   private rodPivot = new THREE.Group();
@@ -67,6 +74,20 @@ export class HeldView {
   private tmpQ = new THREE.Quaternion();
   private tmpM = new THREE.Matrix4();
 
+  // ---- gardening ----
+  private can: WateringCan | null = null;
+  /** Your hand on the can's handle, and the can tipping about it. */
+  private canPivot = new THREE.Group();
+  private canTilt = new THREE.Group();
+  private stream: CanStream | null = null;
+  private pourT = -1;
+  private pourFor = 0;
+  /** What to go back to holding after a pour that brought the can up just for it. */
+  private pourBack: Holding | null = null;
+  private tmpV = new THREE.Vector3();
+  private tmpD = new THREE.Vector3();
+  private eye = new THREE.Vector3();
+
   constructor() {
     this.basket = basketModel();
     this.slots = basketSlots();
@@ -77,6 +98,9 @@ export class HeldView {
     this.rodPivot.visible = false;
     this.fishHolder.visible = false;
     this.scene.add(this.rodPivot, this.fishHolder);
+    this.canPivot.visible = false;
+    this.canPivot.add(this.canTilt);
+    this.scene.add(this.canPivot);
   }
 
   /** Show these finds in the basket. */
@@ -107,11 +131,38 @@ export class HeldView {
     this.reach = 1;
   }
 
-  /** What's in your hands: the basket, the fishing rod, or a fish (of this kind). The old one dips away and the new one comes up. */
+  /** What's in your hands: the basket, the fishing rod, a fish (of this kind) or the watering can. The old one dips away and the new one comes up. */
   setHolding(what: Holding, fishKind?: FishKind): void {
     if (what === 'rod') this.ensureRod();
     if (what === 'fish') this.ensureFish(fishKind ?? this.fishKind);
+    if (what === 'can') this.ensureCan();
     this.holding = what;
+    this.pourBack = null;
+  }
+
+  /**
+   * Tip the watering can forward and pour for `seconds`, then bring it level.
+   * If you aren't holding the can, it comes up for the pour and goes away
+   * again afterwards (back to what you were holding). Returns the seconds
+   * until it's done.
+   */
+  pour(seconds = 1.2): number {
+    this.ensureCan();
+    let wait = 0;
+    if (this.holding !== 'can') {
+      const back = this.holding;
+      this.setHolding('can');
+      this.pourBack = back;
+      wait = 0.5;
+    } else if (this.shown.can < 0.9) wait = 0.4;
+    this.pourT = 0;
+    this.pourFor = Math.max(0.2, seconds);
+    return wait + 2 * POUR_TIP_TIME + this.pourFor;
+  }
+
+  /** True while the can is tipped (or tipping) for a pour. */
+  get pouring(): boolean {
+    return this.pourT >= 0;
   }
 
   /** What you're holding now. */
@@ -187,6 +238,17 @@ export class HeldView {
     return this.rod;
   }
 
+  private ensureCan(): WateringCan {
+    if (!this.can) {
+      this.can = canModel();
+      this.can.group.position.copy(this.can.grip).multiplyScalar(-1);
+      this.canTilt.add(this.can.group);
+      this.stream = new CanStream();
+      this.scene.add(this.stream.mesh);
+    }
+    return this.can;
+  }
+
   private ensureFish(kind: FishKind): void {
     if (this.fish && this.fishKind === kind) return;
     if (this.fish) {
@@ -214,8 +276,8 @@ export class HeldView {
     }
     // Swap what's in your hands: the old thing goes down before the new one comes up.
     const k = 1 - Math.exp(-dt * 8);
-    for (const h of ['basket', 'rod', 'fish'] as Holding[]) {
-      const others = Math.max(...(['basket', 'rod', 'fish'] as Holding[]).filter((o) => o !== h).map((o) => this.shown[o]));
+    for (const h of HOLDINGS) {
+      const others = Math.max(...HOLDINGS.filter((o) => o !== h).map((o) => this.shown[o]));
       const want = h === this.holding && others < 0.35 ? 1 : 0;
       this.shown[h] += (want - this.shown[h]) * k;
       if (Math.abs(want - this.shown[h]) < 1e-3) this.shown[h] = want;
@@ -235,6 +297,7 @@ export class HeldView {
 
     this.updateRod(dt, a);
     this.updateFish(dt, a);
+    this.updateCan(dt, a);
 
     // Light it like the world around you.
     this.sun.position.copy(opts.sunDir).multiplyScalar(5);
@@ -330,5 +393,47 @@ export class HeldView {
     this.fishHolder.rotation.set(0.15, -0.5, Math.PI / 2 - 0.12 + Math.sin(this.sway * 0.5) * 0.05 * this.dip);
     const every = this.time % 4.2;
     wiggle(fish, this.time, every < 0.6 ? 0.6 * Math.sin((Math.PI * every) / 0.6) : 0.05);
+  }
+
+  private updateCan(dt: number, aspect: number): void {
+    const can = this.can;
+    const hidden = Math.max(this.hidden, 1 - this.shown.can);
+    this.canPivot.visible = !!can && hidden < 0.98;
+    if (!can || !this.stream) return;
+    // ---- the pour: tip forward, hold while the water runs, bring it level ----
+    let tip = 0;
+    if (this.pourT >= 0) {
+      // wait for the can to come up first (unless you've put it away)
+      if (this.shown.can > 0.85 || this.holding !== 'can') this.pourT += dt;
+      const t = this.pourT;
+      const T = POUR_TIP_TIME;
+      if (t < T) tip = ease(t / T);
+      else if (t < T + this.pourFor) tip = 1;
+      else tip = 1 - ease((t - T - this.pourFor) / T);
+      if (t >= 2 * T + this.pourFor) {
+        this.pourT = -1;
+        tip = 0;
+        const back = this.pourBack;
+        if (back) this.setHolding(back);
+      }
+    }
+    const portrait = aspect < 1;
+    const sway = this.dip;
+    // in your right hand, hanging from the top handle, the spout pointing ahead and a little left;
+    // to pour, you lift it a little and tip it forward, so the water falls in front of you
+    this.canPivot.scale.setScalar(portrait ? 0.8 : 0.9);
+    const hx = (portrait ? 0.15 : 0.32) - tip * 0.05;
+    const hy = (portrait ? -0.22 : -0.17) + tip * (portrait ? 0.15 : 0.17) - hidden * 0.7 + Math.sin(this.sway) * 0.01 * sway + Math.sin(this.time * 0.9) * 0.004;
+    const hz = (portrait ? -0.62 : -0.74) - tip * 0.04;
+    this.canPivot.position.set(hx, hy + Math.abs(Math.cos(this.sway * 0.5)) * 0.008 * sway, hz);
+    this.canPivot.rotation.set(0.12, portrait ? 2.25 : 2.4, Math.sin(this.sway * 0.5) * 0.04 * sway, 'YXZ');
+    const slosh = this.pourT >= 0 ? 0.03 * Math.sin(this.time * 7) * tip * (1 - tip) * 4 : 0;
+    this.canTilt.rotation.z = -0.78 * tip - slosh + Math.sin(this.sway) * 0.02 * sway;
+    // ---- the water ----
+    const flow = ease((tip - 0.7) / 0.3) * (1 - hidden);
+    this.canPivot.updateMatrixWorld(true);
+    const rose = can.group.localToWorld(this.tmpV.copy(can.rose));
+    const dir = this.tmpD.copy(can.roseDir).transformDirection(can.group.matrixWorld);
+    this.stream.update(rose, dir, flow, this.time, this.eye.set(0, 0, 0));
   }
 }

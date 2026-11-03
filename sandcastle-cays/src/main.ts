@@ -48,6 +48,7 @@ import { FishingLine } from './render/fishingGear';
 import { prepareFish } from './render/fish';
 import { Gardening, type GardenAction, type GardenViews } from './gardening';
 import { HOME_GARDEN } from './world/homeCay';
+import { DECK_POT_SCALE, GARDEN_SOIL, PlantView, barrelModel, bedModel, potModel, signModel } from './render/garden';
 import { Ui } from './ui/ui';
 import type { CheckResult } from './checks/sandChecks';
 
@@ -1555,8 +1556,19 @@ const living = new Living({
 
 // ---------- the garden ----------
 
-/** The garden's models, once render/garden.ts is in (null until then: the rules still work). */
-const gardenViews: GardenViews | null = null;
+/** The garden's models (the pots on deck are a little smaller, to fit the cabin-top trays). */
+const gardenViews: GardenViews = {
+  plant: (size) => {
+    const p = new PlantView(size);
+    if (size === 'pot') p.group.scale.setScalar(DECK_POT_SCALE);
+    return p;
+  },
+  pot: () => potModel(DECK_POT_SCALE),
+  bed: () => bedModel(),
+  barrel: () => barrelModel(),
+  sign: (text) => signModel(text),
+  soil: { pot: GARDEN_SOIL.pot * DECK_POT_SCALE, bed: GARDEN_SOIL.bed },
+};
 const gardenRain = newWeather();
 const gardening = new Gardening({
   potSpots: sloop.points.potShelf,
