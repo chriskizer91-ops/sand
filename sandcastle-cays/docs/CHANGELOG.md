@@ -28,7 +28,21 @@ Sailing is now the main event. Out past the reefs is the open sea, with more win
 - The view leans with the boat a little less when she heels hard.
 
 **Checks before sending**
-CHECKS_PLACEHOLDER
+- **181 automatic checks** passed, including 23 new ones:
+  - the open sea: it's sheltered at both anchorages and between the cays and opens up beyond the reefs, and the wind is about half as strong again out there;
+  - squalls: at most four at a time, drifting west, growing and fading; under one there's strong wind, rain and a wind shift, and they're milder inside the reef;
+  - the motor gets her moving within seconds, and sailing on a reach is much faster than motoring;
+  - with full sail in a squall she's overpowered and turns up into the wind, while half sail keeps her steady and faster;
+  - surfing down a wave takes her past 11 knots;
+  - the autopilot reefs in strong wind;
+  - the squall, rain and spray drawing stays within its budget (3 draw calls).
+- **Browser checks, as a laptop and as a Pixel-sized phone: 51 of 52 passed**, including 4 new ones:
+  - open sea: 18 knots of wind instead of 11 at home, waves 1.7 m instead of 0.2 m;
+  - surfing: up to 12.4 knots;
+  - in a squall: 24 knots and rain; full sail overpowers her, half sail doesn't;
+  - "Round the sea buoy and come home": she rounded it and anchored 8 m from the spot at home with the hull untouched, in 11 min 28 s, and the time went in the logbook.
+- **The one miss** was the sand engine's speed check at simulated phone speed in backup mode: its busiest step took 23.2 ms against a 20 ms safety line (the real limit is 33 ms). This shared build machine was busy today. Run back to back three times each, the old v0.3.1 took 19–28 ms and v0.4 took 18–22 ms, so it isn't the new version. No sand code changed.
+- **Drawing budgets** measured on the laptop are the same as v0.3: about 640,000 triangles looking from the boat, 350,000–375,000 ashore.
 
 **Not tested, or known**
 - How the open sea and squalls feel to sail, and whether they're exciting enough (or too much). Tell me.
