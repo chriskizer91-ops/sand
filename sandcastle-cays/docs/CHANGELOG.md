@@ -19,7 +19,23 @@ Grow your own food: pots on the boat's cabin top, and a little garden on Home Ca
 - **Dev tools:** ripen everything, water everything, 5 more of each seed.
 
 **Checks before sending**
-CHECKS_PLACEHOLDER
+- **278 automatic checks** passed, including new ones:
+  - the seed tin and planting;
+  - each crop ripening in its time when watered;
+  - no growth without water, then drooping and withering after three dry days;
+  - rain watering plants;
+  - harvests giving food and seeds, with callaloo growing back;
+  - the rain barrel filling;
+  - a kept garden feeding you more than a day of food a day;
+  - more pots from the workbench;
+  - saving and loading;
+  - the plant, pot, bed, barrel, sign and watering-can models staying within their drawing budgets.
+- **All 66 browser checks** passed, as a laptop and as a Pixel-sized phone, including 2 new ones:
+  - a deck pot: plant callaloo, water it from the tank, ripen it, harvest it into the larder;
+  - a bed on Home Cay: plant a cherry tomato and water it from the rain barrel.
+
+  The sand engine's speed check passed (19.3 ms).
+- **Drawing budgets** measured on the laptop: about 668,000 triangles and 168 draws looking from the boat (up from 142, with the pots, beds and plants), 347,000–371,000 ashore.
 
 **Not tested, or known**
 - How the garden feels over a few days of play: too much watering, or too easy? Tell me.
