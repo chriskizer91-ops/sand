@@ -445,7 +445,8 @@ export class Player {
   applyCamera(cam: THREE.Camera, boatRoll = 0): void {
     cam.position.copy(this.eye);
     cam.rotation.order = 'YXZ';
-    cam.rotation.set(this.pitch, this.yaw, this.mode === 'deck' ? boatRoll * 0.6 : 0);
+    // The view leans with the boat, but less and less as she heels hard (you keep your head up).
+    cam.rotation.set(this.pitch, this.yaw, this.mode === 'deck' ? (boatRoll * 0.6) / (1 + Math.abs(boatRoll) * 1.2) : 0);
   }
 
   /** For saving. */

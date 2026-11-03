@@ -268,15 +268,79 @@ export class SandAudio {
     this.sailNodes = { rush, rushF, rig, luff, luffLfo };
   }
 
+  private weatherNodes: { rain: GainNode; rainF: BiquadFilterNode; howl: GainNode; howlF: BiquadFilterNode } | null = null;
+  private rainLevel = 0;
+
+  private ensureWeatherNodes(): void {
+    if (this.weatherNodes || !this.ctx) return;
+    const ctx = this.ctx;
+    // Rain: a soft hiss of countless drops on the sea and the deck.
+    const rainHp = ctx.createBiquadFilter();
+    rainHp.type = 'highpass';
+    rainHp.frequency.value = 1400;
+    const rainF = ctx.createBiquadFilter();
+    rainF.type = 'lowpass';
+    rainF.frequency.value = 7000;
+    const rain = ctx.createGain();
+    rain.gain.value = 0;
+    this.loop(this.noise).connect(rainHp).connect(rainF).connect(rain).connect(this.master);
+    // A strong wind's low moan.
+    const howlF = ctx.createBiquadFilter();
+    howlF.type = 'bandpass';
+    howlF.frequency.value = 380;
+    howlF.Q.value = 1.6;
+    const howl = ctx.createGain();
+    howl.gain.value = 0;
+    this.loop(this.brown).connect(howlF).connect(howl).connect(this.master);
+    this.weatherNodes = { rain, rainF, howl, howlF };
+  }
+
+  /** Every frame: rain falling where you are (0..1) and the wind's strength there (m/s). */
+  setWeather(rain: number, wind: number): void {
+    if (!this.ctx || !this.enabled) return;
+    this.ensureWeatherNodes();
+    const n = this.weatherNodes!;
+    const now = this.ctx.currentTime;
+    this.rainLevel = rain;
+    n.rain.gain.setTargetAtTime(0.11 * rain, now, 0.6);
+    n.rainF.frequency.setTargetAtTime(4500 + 4000 * rain, now, 0.6);
+    const strong = Math.max(0, Math.min(1, (wind - 8) / 8));
+    n.howl.gain.setTargetAtTime(0.09 * strong * strong, now, 0.8);
+    n.howlF.frequency.setTargetAtTime(300 + 260 * strong + 60 * Math.sin(now * 0.7), now, 0.8);
+  }
+
+  /** The bow slamming into a wave, and the spray coming over. */
+  slam(size: number): void {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const k = Math.min(1, size);
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(75, t);
+    o.frequency.exponentialRampToValueAtTime(42, t + 0.3);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.14 * k + 0.01, t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
+    o.connect(g).connect(this.master);
+    o.start(t);
+    o.stop(t + 0.4);
+    // The spray: a burst of hiss falling on the deck.
+    for (let i = 0; i < 10; i++) this.grain(2500 + this.rand() * 4000, 0.9, 0.035 * k, 0.12, 0.12 + i * 0.035 + this.rand() * 0.05);
+  }
+
   /** Every frame while aboard: speed (m/s), wind (m/s), how much the sails flap (0..1), how much she's heeling (radians). */
   setSailing(speed: number, wind: number, luff: number, heel: number, aboard: boolean): void {
     if (!this.ctx || !this.enabled) return;
     this.ensureSailNodes();
     const n = this.sailNodes!;
     const now = this.ctx.currentTime;
-    const v = Math.min(1, speed / 3.4);
-    n.rush.gain.setTargetAtTime(aboard ? 0.13 * v * v + 0.01 * v : 0, now, 0.3);
-    n.rushF.frequency.setTargetAtTime(380 + 900 * v, now, 0.3);
+    // Louder and brighter with speed; surfing (over 9 knots) roars.
+    const v = Math.min(1, speed / 4.3);
+    const surf = Math.max(0, Math.min(1, (speed - 4.6) / 1.8));
+    n.rush.gain.setTargetAtTime(aboard ? 0.13 * v * v + 0.01 * v + 0.12 * surf : 0, now, 0.3);
+    n.rushF.frequency.setTargetAtTime(380 + 900 * v + 900 * surf, now, 0.3);
     n.rig.gain.setTargetAtTime(aboard ? 0.006 + 0.02 * Math.min(1, wind / 9) * (0.4 + Math.abs(heel) * 3) : 0, now, 0.5);
     n.luff.gain.setTargetAtTime(aboard ? 0.09 * luff : 0, now, 0.15);
     n.luffLfo.frequency.setTargetAtTime(5 + 4 * Math.min(1, wind / 9), now, 0.5);

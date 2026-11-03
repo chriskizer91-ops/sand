@@ -433,6 +433,81 @@ async function standBy(page, f) {
     return g.sail(40, 0);
   });
   step('Laptop: sailing onto the reef runs her aground and scrapes the hull', ground.aground && ground.hull < 100, `aground: ${ground.aground}, hull ${Math.round(ground.hull)}%`);
+
+  // ---- The open sea (v0.4) ----
+  const sea = await G(page, () => {
+    const g = window.__game;
+    g.forceSquall(null);
+    const range = (x, z) => {
+      let lo = 9, hi = -9;
+      for (let t = 0; t < 12; t += 0.25) {
+        const h = g.ocean.heightAt(x, z, 500 + t);
+        lo = Math.min(lo, h);
+        hi = Math.max(hi, h);
+      }
+      return hi - lo;
+    };
+    g.placeBoat(2, -40, Math.PI / 2);
+    g.sail(0.1);
+    const home = g.weather;
+    g.placeBoat(700, -150, Math.PI / 2);
+    g.sail(0.1);
+    const open = g.weather;
+    return { home: home.wind, open: open.wind, openness: open.open, wavesHome: range(2, -40), wavesOpen: range(700, -150) };
+  });
+  step('Laptop: out on the open sea the wind is stronger and the waves bigger', sea.openness > 0.9 && sea.open > sea.home * 1.35 && sea.wavesOpen > 0.9 && sea.wavesHome < 0.5,
+    `wind ${(sea.home * 1.944).toFixed(0)} knots at home, ${(sea.open * 1.944).toFixed(0)} out there; waves ${sea.wavesHome.toFixed(2)} m at home, ${sea.wavesOpen.toFixed(2)} m out there`);
+  const surf = await G(page, () => {
+    const g = window.__game;
+    g.aboard(-Math.PI / 2, -0.05);
+    g.takeHelm();
+    g.placeBoat(700, -150, Math.PI - 0.5);
+    const b = g.boat;
+    b.sailSet = 1; b.sail = 1; b.speed = 3.5; b.throttle = 0;
+    return g.sail(40, 0);
+  });
+  step('Laptop: running before the open-sea waves, she surfs', surf.maxSurf > 1 && surf.maxSpeed * 1.944 > 10.5, `top speed ${(surf.maxSpeed * 1.944).toFixed(1)} knots, surfing up to +${(surf.maxSurf * 1.944).toFixed(1)} knots`);
+  await waitFrames(page, 4);
+  await shot(page, '12f-open-sea-at-the-helm.png');
+  const squall = await G(page, () => {
+    const g = window.__game;
+    g.placeBoat(700, -150, Math.PI / 2);
+    g.forceSquall(700, -150, 200, 1);
+    const b = g.boat;
+    b.sailSet = 1; b.sail = 1; b.speed = 3.5;
+    const full = g.sail(10, 0);
+    g.placeBoat(700, -150, Math.PI / 2);
+    b.sailSet = 0.5; b.sail = 0.5; b.speed = 3.5;
+    const half = g.sail(10, 0);
+    return { full, half };
+  });
+  step('Laptop: in a squall the wind gusts and it rains; full sail overpowers her, half sail doesn\'t', squall.full.wind * 1.944 > 22 && squall.full.rain > 0.8 && squall.full.maxOver > 0.1 && squall.half.maxOver < squall.full.maxOver,
+    `wind ${(squall.full.wind * 1.944).toFixed(0)} knots, rain ${squall.full.rain.toFixed(2)}, overpowered ${squall.full.maxOver.toFixed(2)} with full sail and ${squall.half.maxOver.toFixed(2)} with half`);
+  await waitFrames(page, 20);
+  await shot(page, '12g-in-a-squall.png');
+  await G(page, () => window.__game.forceSquall(null));
+  // Out round the sea buoy and home, by herself, timed.
+  await G(page, () => {
+    const g = window.__game;
+    g.leaveHelm();
+    const b = g.boat;
+    b.x = 2; b.z = -31; b.heading = 0; b.speed = 0; b.sailSet = 0; b.sail = 0; b.anchored = true; b.ax = 8; b.az = -31; b.aground = false; b.hull = 100;
+    g.sail(1);
+    g.aboard(Math.PI, -0.05);
+  });
+  await page.keyboard.press('KeyM');
+  await waitFrames(page, 3);
+  const buoyBtn = await page.$('#chart button:has-text("sea buoy")');
+  if (buoyBtn) await buoyBtn.click();
+  await waitFrames(page, 2);
+  let home = null;
+  for (let i = 0; i < 40 && !home; i++) {
+    const r = await G(page, () => window.__game.sail(30));
+    if (r.anchored) home = r;
+  }
+  const rec = await G(page, () => window.__game.records);
+  step('Laptop: "Round the sea buoy and come home": she rounds it, anchors at home, and the time goes in the logbook', !!home && rec.rounds >= 1 && rec.best > 0 && home.hull === 100 && Math.hypot(home.x - 2, home.z + 31) < 60,
+    home ? `round ${rec.rounds} time(s), home in ${Math.floor(rec.best / 60)} min ${Math.round(rec.best % 60)} s, ${Math.round(Math.hypot(home.x - 2, home.z + 31))} m from the anchorage, hull ${home.hull}%` : 'did not get home');
   // Back home for the rest of the checks.
   await G(page, () => {
     const g = window.__game;

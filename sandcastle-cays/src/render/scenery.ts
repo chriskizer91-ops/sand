@@ -506,12 +506,14 @@ export function createDistantIslands(): THREE.Mesh {
   const sand = rgb(PALETTE.sandDry);
   const green = rgb(PALETTE.grassDark);
   // Far out on the horizon, well beyond anywhere you can sail (the cays you can visit are real terrain).
+  // About 1.9 km out (beyond the open sea you can sail). main.ts moves them part of the way with you,
+  // so you never quite reach them.
   const spots = [
-    [380, -1050, 150],
-    [1000, -350, 110],
-    [-1150, 120, 140],
-    [-450, -1250, 190],
-    [900, 600, 120],
+    [627, -1733, 225],
+    [1750, -612, 165],
+    [-1840, 192, 210],
+    [-652, -1812, 285],
+    [1530, 1020, 180],
   ];
   for (const [x, z, s] of spots) {
     const g = new THREE.SphereGeometry(1, 24, 10, 0, Math.PI * 2, 0, Math.PI / 2);

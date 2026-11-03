@@ -35,6 +35,8 @@ import { GroundMap } from './world/ground';
 import { reefChannel } from './world/homeCay';
 import { WorldTerrain } from './world/world';
 import { SAILING, autopilot, boomAngle, dropAnchor, newBoat, pointOfSail, sailFill, stepBoat, weighAnchor, windAngle, windAt, type BoatState, type Course, type WindState } from './game/sailing';
+import { SEA_CENTRE, SEA_RADIUS, newWeather, openness, squallsAt, weatherAt, windWord, type Squall } from './game/weather';
+import { createSeaBuoy } from './render/buoy';
 import { downloadFile, loadAutosave, loadSettings, pickFile, saveAutosave, saveSettings, testStorage, clearAutosave, unwrapSave } from './storage/storage';
 import { Hud, cap } from './ui/hud';
 import { SailHud } from './ui/sailHud';
@@ -119,7 +121,26 @@ sloop.group.traverse((o) => {
 const boatMotion = new BoatMotion(sloop.group, sloop.length, sloop.beam, seaHeight);
 /** Your boat under way (or at anchor), and the wind. */
 let boat: BoatState = newBoat(terrain.anchorage.x, terrain.anchorage.z, terrain.anchorage.heading);
-const wind: WindState = windAt(0);
+/** The wind where your boat is (and the rain, and how open the sea is). */
+const wind = newWeather();
+/** The squalls about now (plus one the checks can call up). */
+const squalls: Squall[] = [];
+let forcedSquall: Squall | null = null;
+function updateWeather(t: number): void {
+  squallsAt(t, squalls);
+  if (forcedSquall) {
+    squalls.unshift(forcedSquall);
+    if (squalls.length > 4) squalls.length = 4;
+  }
+  weatherAt(t, boat.x, boat.z, wind, squalls);
+}
+/** The slope of the sea under the boat along her bow (+ = downhill ahead: a wave lifting her stern). */
+function seaSlope(t: number): number {
+  const c = Math.cos(boat.heading);
+  const s = Math.sin(boat.heading);
+  const L = 3.6;
+  return (seaHeight(boat.x - c * L, boat.z - s * L, t) - seaHeight(boat.x + c * L, boat.z + s * L, t)) / (2 * L);
+}
 /** The sea floor for the keel: the ground and any rocks or coral heads. */
 const seaBed = { floorAt: (x: number, z: number) => Math.max(world.heightAt(x, z), rockTop(ground.rocks, x, z)) };
 
@@ -236,7 +257,8 @@ staticSkip.push(beachView.glints);
 rebuildRefractSkip();
 
 /** You can swim and walk anywhere around both cays. */
-const ISLAND_CENTRE = { cx: -100, cz: -140, r: 430 };
+// You can swim anywhere your boat can sail (and a little more, so jumping off at the edge works).
+const ISLAND_CENTRE = { cx: -100, cz: -140, r: 1090 };
 const player = new Player({
   groundAt: (x, z) => ground.heightAt(x, z),
   waterAt: (x, z) => seaHeight(x, z, time),
@@ -326,6 +348,106 @@ let helmTipShown = false;
 let ironsTime = 0;
 let ironsTipShown = false;
 let lastSea = 0;
+/** Sailing records: times round the sea buoy, and the fastest run from Home Cay round it and back (seconds). */
+const records = { rounds: 0, best: 0 };
+/** The run in progress: when the anchor came up at Home Cay, and whether she's rounded the buoy since. */
+let run = { start: -1, rounded: false };
+let wasAnchored = true;
+
+function minSec(t: number): string {
+  const m = Math.floor(t / 60);
+  const s = Math.round(t - m * 60);
+  return `${m} min ${s < 10 ? '0' : ''}${s} s`;
+}
+
+/** The sea buoy and the run out round it and home. */
+function buoyRun(): void {
+  const nearHome = Math.hypot(boat.x - terrain.anchorage.x, boat.z - terrain.anchorage.z) < 90;
+  if (wasAnchored && !boat.anchored) run = nearHome ? { start: time, rounded: false } : { start: -1, rounded: false };
+  if (!boat.anchored && !run.rounded && Math.hypot(boat.x - BUOY.x, boat.z - BUOY.z) < 45) {
+    run.rounded = true;
+    records.rounds++;
+    changedSinceSave = true;
+    audio.chime(records.rounds === 1);
+    ui.toast(run.start >= 0 ? `Round the sea buoy! ${minSec(time - run.start)} out from Home Cay. Now home!` : 'Round the sea buoy!', 3500);
+  }
+  if (!wasAnchored && boat.anchored && nearHome && run.rounded && run.start >= 0) {
+    const t = time - run.start;
+    const best = !records.best || t < records.best;
+    const before = records.best;
+    if (best) records.best = t;
+    changedSinceSave = true;
+    hud.showCard('Home from the sea buoy', best ? `Out round the buoy and home in ${minSec(t)}${before ? ` (your old best was ${minSec(before)})` : ''}: your best yet!` : `Out round the buoy and home in ${minSec(t)}. Your best is ${minSec(records.best)}.`, 7000);
+    run = { start: -1, rounded: false };
+  }
+  wasAnchored = boat.anchored;
+}
+
+/** Spray over the bow: the sea rising fast against her bow as she drives into a wave. */
+const bowV = new THREE.Vector3();
+let lastBowRel = 0;
+let sprayCool = 0;
+const sprayStats = { bursts: 0, maxRise: 0 };
+let onSpray: ((x: number, y: number, z: number, dx: number, dz: number, k: number) => void) | null = null;
+function bowSpray(dt: number): void {
+  const c = Math.cos(boat.heading);
+  const sn = Math.sin(boat.heading);
+  bowV.set(4.1, 0.15, 0);
+  sloop.group.localToWorld(bowV);
+  const rel = seaHeight(bowV.x, bowV.z, time) - bowV.y;
+  const rise = dt > 0 ? (rel - lastBowRel) / dt : 0;
+  lastBowRel = rel;
+  sprayCool -= dt;
+  if (boat.anchored || boat.speed < 1.8 || dt <= 0) return;
+  sprayStats.maxRise = Math.max(sprayStats.maxRise, rise);
+  if (rise > SPRAY_RISE && rel > -0.25 && sprayCool <= 0) {
+    const k = Math.min(1, (rise - SPRAY_RISE) / 1.2 + 0.25) * Math.min(1, boat.speed / 4.3);
+    sprayCool = 2.2;
+    sprayStats.bursts++;
+    if (player.aboard) audio.slam(k);
+    onSpray?.(bowV.x, bowV.y + 0.6, bowV.z, c, sn, k);
+  }
+}
+const SPRAY_RISE = 1.15;
+
+/** Surfing speed now (smoothed), how long she's been overpowered, and when we last said so. */
+let surfing = 0;
+let overTime = 0;
+let lastOverTip = -99;
+/** Weather notes: the open-sea card (once), whether you're out there now, squalls already warned about. */
+let openCardShown = false;
+let outAtSea = false;
+const warnedSqualls = new Set<number>();
+/** The weather where you stand (rain, squall overhead), smoothed. */
+const here = newWeather();
+let rainNow = 0;
+let overheadNow = 0;
+const tradeWind: WindState = windAt(0);
+
+function weatherNotes(dt: number): void {
+  void dt;
+  if (!started || !player.aboard || boat.anchored) return;
+  if (!outAtSea && wind.open > 0.55) {
+    outAtSea = true;
+    if (!openCardShown) {
+      openCardShown = true;
+      hud.showCard(
+        'The open sea',
+        'Out past the reefs the wind blows harder and a long swell rolls in from the east. If she leans too far, take in some sail. Running before the waves with the wind behind you, she’ll surf.',
+        9000,
+      );
+    } else ui.toast('The open sea', 1800);
+  } else if (outAtSea && wind.open < 0.2) outAtSea = false;
+  for (const q of squalls) {
+    if (q.strength < 0.35 || warnedSqualls.has(q.id)) continue;
+    const edge = Math.hypot(q.x - boat.x, q.z - boat.z) - q.radius;
+    // Coming your way (it drifts west) and close.
+    if (edge < 260 && edge > 0 && (boat.x - q.x) * q.vx + (boat.z - q.z) * q.vz > 0) {
+      warnedSqualls.add(q.id);
+      ui.toast('A squall is coming: wind and rain. Take in some sail if she leans too far.', 4000);
+    }
+  }
+}
 const RIG_SPEED = { boom: 0 };
 interface Rig {
   setSail(a: number): void;
@@ -353,13 +475,23 @@ const sailHud = new SailHud(
   isTouch,
 );
 
+/** The sea buoy, out on the open sea to the south-east: close-hauled out to it, surfing home. */
+const BUOY = { x: 560, z: -820 };
+const seaBuoy = createSeaBuoy(BUOY.x, BUOY.z);
+scene.add(seaBuoy.group);
 const PLACES = [
-  { id: 'home', name: 'Home Cay', x: terrain.anchorage.x, z: terrain.anchorage.z, labelDx: 0, labelDz: 70 },
-  { id: 'pink', name: 'Pink Sand Cay', x: world.pink.anchorage.x, z: world.pink.anchorage.z, labelDx: 70, labelDz: -60 },
+  { id: 'home', name: 'Home Cay', x: terrain.anchorage.x, z: terrain.anchorage.z, labelDx: 0, labelDz: 150 },
+  { id: 'pink', name: 'Pink Sand Cay', x: world.pink.anchorage.x, z: world.pink.anchorage.z, labelDx: 40, labelDz: -150 },
+  { id: 'buoy', name: 'the sea buoy', label: 'sea buoy', button: 'Round the sea buoy and come home', mark: true, x: BUOY.x, z: BUOY.z, labelDx: 0, labelDz: -70 },
 ];
 const channel = reefChannel(terrain);
 const chart = new Chart(
-  { heightAt: (x, z) => world.heightAt(x, z), groundAt: (x, z, h) => world.islandAt(x, z).groundAt(x, z, h) },
+  {
+    heightAt: (x, z) => world.heightAt(x, z),
+    groundAt: (x, z, h) => world.islandAt(x, z).groundAt(x, z, h),
+    openness,
+    sea: { x: SEA_CENTRE.x, z: SEA_CENTRE.z, r: SEA_RADIUS },
+  },
   PLACES,
   channel.outside,
   {
@@ -383,7 +515,7 @@ function toggleChart(show?: boolean): void {
 }
 
 function renderChart(): void {
-  chart.render(boat, wind.from, course ? course.name : null, player.aboard, player.aboard ? null : { x: player.feet.x, z: player.feet.z }, course ? course.waypoints : []);
+  chart.render(boat, wind.from, course ? course.name : null, player.aboard, player.aboard ? null : { x: player.feet.x, z: player.feet.z }, course ? course.waypoints : [], squalls);
 }
 
 function nearHelm(): boolean {
@@ -503,14 +635,27 @@ function startCourse(id: string): void {
   const toIn = inLagoon(dest.x, dest.z);
   if (fromIn && !toIn) wps.push({ ...channel.inside }, { ...channel.outside });
   if (!fromIn && toIn) wps.push({ ...channel.outside }, { ...channel.inside });
-  wps.push({ x: dest.x, z: dest.z });
-  course = { waypoints: wps, tack: 1, name: dest.name };
+  if (id === 'buoy') {
+    // Out round the buoy and home again: through the gap, out to the buoy, back to the gap, home.
+    if (!fromIn) wps.length = 0;
+    wps.push({ x: dest.x, z: dest.z }, { ...channel.outside }, { ...channel.inside }, { x: terrain.anchorage.x, z: terrain.anchorage.z });
+    course = { waypoints: wps, tack: 1, name: 'the sea buoy and home', arrive: 'Home Cay' };
+  } else {
+    wps.push({ x: dest.x, z: dest.z });
+    course = { waypoints: wps, tack: 1, name: dest.name };
+  }
   if (boat.anchored) {
     weighAnchor(boat);
     audio.anchorChain(false);
   }
   toggleChart(false);
-  hud.showCard(`Setting sail for ${dest.name}`, 'She’ll steer herself and anchor when she gets there. Walk about, or take the helm to steer yourself.', 6000);
+  hud.showCard(
+    id === 'buoy' ? 'Out round the sea buoy' : `Setting sail for ${dest.name}`,
+    id === 'buoy'
+      ? 'She’ll beat out to the buoy on the open sea, round it, and run home before the wind. Take the helm whenever you like: it’s more fun steering her yourself.'
+      : 'She’ll steer herself and anchor when she gets there. Walk about, or take the helm to steer yourself.',
+    7000,
+  );
 }
 
 function stopCourse(msg: string | null): void {
@@ -524,7 +669,10 @@ function toggleLogbook(show?: boolean): void {
   if (open) {
     ui.closePanels();
     const near = world.nearest(boat.x, boat.z).island.name;
-    hud.renderLogbook(beach.state.found, beach.state.locker, beach.state.basket, formatClock(clock), { hull: boat.hull, where: boat.anchored ? `At anchor off ${near}` : `Under way near ${near}` });
+    const sailing = records.rounds
+      ? `Round the sea buoy ${records.rounds === 1 ? 'once' : `${records.rounds} times`}.${records.best ? ` Fastest run from Home Cay, round the buoy and back: ${minSec(records.best)}.` : ''}`
+      : 'The sea buoy lies out on the open sea to the south-east. Sail out round it and back to Home Cay, and your time goes here.';
+    hud.renderLogbook(beach.state.found, beach.state.locker, beach.state.basket, formatClock(clock), { hull: boat.hull, where: boat.anchored ? `At anchor off ${near}` : `Under way near ${near}`, sailing });
     input.unlock();
     input.clear();
   }
@@ -803,13 +951,14 @@ interface GameSave {
   version: string;
   clock: Clock;
   boat?: Partial<BoatState>;
+  sailing?: Partial<typeof records>;
   player: { mode: PlayerMode; pos: number[]; yaw: number; pitch: number };
   beach: unknown;
 }
 
 function gameState(): GameSave {
   const { x, z, heading, anchored, ax, az, sailSet, hull } = boat;
-  return { version: GAME_VERSION, clock: { ...clock }, boat: { x, z, heading, anchored, ax, az, sailSet, hull }, player: player.state, beach: beach.state };
+  return { version: GAME_VERSION, clock: { ...clock }, boat: { x, z, heading, anchored, ax, az, sailSet, hull }, sailing: { ...records }, player: player.state, beach: beach.state };
 }
 
 function restoreGame(raw: unknown): void {
@@ -837,6 +986,11 @@ function restoreGame(raw: unknown): void {
   course = null;
   atHelm = false;
   boatMotion.update(time, 1, boat);
+  const sr = g.sailing;
+  records.rounds = Math.max(0, Math.floor(Number(sr?.rounds) || 0));
+  records.best = Number.isFinite(sr?.best) && (sr?.best as number) > 0 ? (sr?.best as number) : 0;
+  run = { start: -1, rounded: false };
+  wasAnchored = boat.anchored;
   const p = g.player;
   if (p && Array.isArray(p.pos) && p.pos.length === 3 && p.pos.every(Number.isFinite)) {
     const v = new THREE.Vector3(p.pos[0], p.pos[1], p.pos[2]);
@@ -1119,7 +1273,7 @@ function frame(now: number): void {
   host?.tick(dt);
 
   // The wind and your boat.
-  windAt(time, wind);
+  updateWeather(time);
   let steer = 0;
   if (course) {
     const ap = autopilot(boat, wind, course);
@@ -1127,7 +1281,7 @@ function frame(now: number): void {
     boat.throttle = ap.throttle;
     steer = ap.steer;
     if (ap.arrived) {
-      const name = course.name;
+      const name = course.arrive ?? course.name;
       const why = dropAnchor(boat, seaBed);
       if (!why) {
         audio.anchorChain(true);
@@ -1137,7 +1291,13 @@ function frame(now: number): void {
       }
     }
   } else if (atHelm && started && view === 'fp' && !anyPanelOpen()) steer = input.move.x;
-  const sailEv = stepBoat(boat, wind, { steer, attended: atHelm || !!course }, seaBed, dt);
+  const sailEv = stepBoat(boat, wind, { steer, attended: atHelm || !!course, slope: seaSlope(time) }, seaBed, dt);
+  surfing += (sailEv.surfing - surfing) * (1 - Math.exp(-dt * 3));
+  overTime = sailEv.over > 0.05 && atHelm ? overTime + dt : 0;
+  if (overTime > 1.2 && time - lastOverTip > 25) {
+    lastOverTip = time;
+    ui.toast(isTouch ? 'She’s overpowered! Tap “Less sail”, or steer off the wind.' : 'She’s overpowered! Take in some sail (S), or steer off the wind.', 3500);
+  }
   if (sailEv.grounded > 0) {
     audio.thud(sailEv.grounded / 2);
     if (navigator.vibrate) navigator.vibrate([60, 40, 90]);
@@ -1159,22 +1319,25 @@ function frame(now: number): void {
       9000,
     );
   }
-  // She stays among the cays for now.
+  // She stays within the waters on your chart.
   {
-    const dx = boat.x + 100;
-    const dz = boat.z + 140;
+    const dx = boat.x - SEA_CENTRE.x;
+    const dz = boat.z - SEA_CENTRE.z;
     const d = Math.hypot(dx, dz);
-    if (d > 640) {
-      boat.x = -100 + (dx / d) * 640;
-      boat.z = -140 + (dz / d) * 640;
+    if (d > SEA_RADIUS) {
+      boat.x = SEA_CENTRE.x + (dx / d) * SEA_RADIUS;
+      boat.z = SEA_CENTRE.z + (dz / d) * SEA_RADIUS;
       boat.speed *= 0.5;
       if (time - lastSea > 10) {
         lastSea = time;
-        ui.toast('That’s the open ocean out there. Turn back toward the cays.', 3000);
+        ui.toast('That’s the edge of your chart. Turn back toward the cays.', 3000);
       }
     }
   }
+  weatherNotes(dt);
+  buoyRun();
   boatMotion.update(time, dt, boat);
+  bowSpray(dt);
   {
     // The wake starts at the stern, where the water leaves the hull.
     const sx = boat.x - Math.cos(boat.heading) * 4.1;
@@ -1277,6 +1440,25 @@ function frame(now: number): void {
     else host.send({ t: 'focus', x: player.feet.x - Math.sin(player.yaw) * 2, y: player.feet.y, z: player.feet.z - Math.cos(player.yaw) * 2 });
   }
 
+  // The weather where you stand: rain, a squall's cloud overhead.
+  weatherAt(time, camera.position.x, camera.position.z, here, squalls);
+  rainNow += (here.rain - rainNow) * (1 - Math.exp(-dt / 2.0));
+  {
+    let over = 0;
+    for (const q of squalls) {
+      const d = Math.hypot(camera.position.x - q.x, camera.position.z - q.z);
+      over = Math.max(over, q.strength * (1 - smooth01(0.9 * q.radius, 1.9 * q.radius, d)));
+    }
+    overheadNow += (over - overheadNow) * (1 - Math.exp(-dt / 2.0));
+  }
+  daylight.weather.rain = rainNow;
+  daylight.weather.overhead = overheadNow * 0.6;
+  windAt(time, tradeWind);
+  ocean.setWeather(tradeWind.speed, squalls);
+  audio.setWeather(rainNow, here.speed);
+  // The far islands drift part of the way with you: you never quite reach them.
+  distant.position.set(camera.position.x * 0.6, 0, camera.position.z * 0.6);
+
   // Light, sky and water.
   const light = daylight.update(dt, time, clock);
   // The far islands take on the colour of the haze at the horizon.
@@ -1290,6 +1472,7 @@ function frame(now: number): void {
   swayTime.value = time;
   cursor.update(dt, time);
   beachView.update(player.feet, time, daylight.info.daylight, window.innerHeight * renderer.getPixelRatio());
+  seaBuoy.update(time, (x, z) => seaHeight(x, z, time), daylight.info.night, window.innerHeight * renderer.getPixelRatio());
 
   // What you're carrying.
   held.setContents(beach.state.basket);
@@ -1321,6 +1504,10 @@ function frame(now: number): void {
         aground: boat.aground,
         course: course ? course.name : null,
         motor: motorWord(boat.throttle ?? 0),
+        windWord: windWord(wind.speed * 1.944),
+        over: overTime > 0.5,
+        surfing: surfing > 0.6,
+        rain: wind.rain > 0.25,
       });
       if (chart.open) renderChart();
     }
@@ -1463,8 +1650,8 @@ void boot();
   /** Test helper: walk (or swim) with a fixed stick input for some seconds, in small even steps (independent of the frame rate). */
   walk: (seconds: number, x: number, y: number, run = false, steerToLadder = false) => {
     for (let t = 0; t < seconds; t += 1 / 30) {
-      windAt(time, wind);
-      stepBoat(boat, wind, { steer: 0, attended: atHelm || !!course }, seaBed, 1 / 30);
+      updateWeather(time);
+      stepBoat(boat, wind, { steer: 0, attended: atHelm || !!course, slope: seaSlope(time) }, seaBed, 1 / 30);
       boatMotion.update(time, 1 / 30, boat);
       if (steerToLadder && player.mode === 'deck') {
         // Head for a spot just past the top of the swim ladder.
@@ -1520,9 +1707,12 @@ void boot();
   toggleChart,
   /** Test helper: sail for some seconds in even steps (autopilot or a fixed helm). */
   sail: (seconds: number, steerInput = 0) => {
+    let maxSurf = 0;
+    let maxSpeed = 0;
+    let maxOver = 0;
     for (let t = 0; t < seconds; t += 1 / 30) {
       time += 1 / 30;
-      windAt(time, wind);
+      updateWeather(time);
       let st = steerInput;
       if (course) {
         const ap = autopilot(boat, wind, course);
@@ -1531,12 +1721,42 @@ void boot();
         st = ap.steer;
         if (ap.arrived && !dropAnchor(boat, seaBed)) course = null;
       }
-      stepBoat(boat, wind, { steer: st, attended: true }, seaBed, 1 / 30);
+      const ev = stepBoat(boat, wind, { steer: st, attended: true, slope: seaSlope(time) }, seaBed, 1 / 30);
+      maxSurf = Math.max(maxSurf, ev.surfing);
+      maxSpeed = Math.max(maxSpeed, boat.speed);
+      maxOver = Math.max(maxOver, ev.over);
       boatMotion.update(time, 1 / 30, boat);
+      bowSpray(1 / 30);
+      buoyRun();
       player.update(1 / 30, { x: 0, y: 0 }, false, false);
     }
-    return { x: boat.x, z: boat.z, speed: boat.speed, anchored: boat.anchored, aground: boat.aground, hull: boat.hull, course: course ? course.name : null };
+    return { x: boat.x, z: boat.z, speed: boat.speed, anchored: boat.anchored, aground: boat.aground, hull: boat.hull, course: course ? course.name : null, maxSurf, maxSpeed, maxOver, wind: wind.speed, open: wind.open, rain: wind.rain, heading: boat.heading };
+  },
+  /** Test helper: call up a squall (or clear it with null). */
+  forceSquall: (x: number | null, z = 0, radius = 180, strength = 1) => {
+    forcedSquall = x === null ? null : { id: -1, x, z, radius, strength, vx: 0, vz: 0 };
+  },
+  /** Test helper: put the boat somewhere, under way, heading h. */
+  placeBoat: (x: number, z: number, h: number) => {
+    boat.x = x;
+    boat.z = z;
+    boat.heading = h;
+    boat.anchored = false;
+    boat.aground = false;
+    boatMotion.update(time, 1, boat);
+  },
+  sprayStats,
+  get records() {
+    return { ...records, run: { ...run } };
+  },
+  get weather() {
+    return { wind: wind.speed, from: wind.from, open: wind.open, rain: wind.rain, squall: wind.squall, rainHere: rainNow, squalls: squalls.length };
   },
   sandInfo: () => ({ edited: editedTiles.size, shown: sand.group.children.filter((m) => m.visible).length, tiles: sand.group.children.length, standIn: standIn.visible }),
   time: () => time,
 };
+
+function smooth01(a: number, b: number, v: number): number {
+  const t = Math.min(1, Math.max(0, (v - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}

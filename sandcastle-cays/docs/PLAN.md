@@ -17,7 +17,7 @@
 - **Upkeep.** The boat occasionally needs repair: a worn sail, a leak, a scraped dinghy. Repairs use what you find.
 - **Gardening.** Pots of herbs and vegetables on deck, and a garden at your home anchorage on Home Cay.
 - **The shark.** It isn't always there: it shows up now and then, in certain waters (reef edges, channels). It can make you drop your basket of finds or bump the dinghy so it needs repairs. Bait lures it away.
-- **Sailing.** Real wind: you steer, the sails trim themselves (with an option to trim by hand), and you can't sail straight into the wind. A chart of the islands you've found.
+- **Sailing, the heart of it.** Real wind: you steer, the sails trim themselves (with an option to trim by hand), and you can't sail straight into the wind. A chart of the islands you've found. Sheltered water inside the reefs; out on the open sea, more wind, bigger waves and squalls for an exciting sail. A small outboard for tight spots, always much slower than sailing.
 
 ## How we build it: one small piece at a time, finished properly
 First a **vertical slice**: a small piece of the game made to finished quality, played by the owner on the phone and the laptop, and adjusted until it feels right. Only then do we add more islands and features.
@@ -36,18 +36,24 @@ First a **vertical slice**: a small piece of the game made to finished quality, 
    - anchoring;
    - the reef and its channel (running aground scrapes the hull);
    - a second cay (Pink Sand Cay) with its own sand and finds.
-3. **v0.4, Upkeep and living aboard:**
+3. **v0.4, Blue water** (added by the owner, 2026-11-03, to make sailing the main thing):
+   - a stronger outboard (about 5 knots), and sailing that is always much faster;
+   - the open sea beyond the reefs: stronger wind, a long ocean swell, whitecaps, spray over the bow, surfing down waves;
+   - squalls you can see coming and sail into: rain, a burst of wind that shifts as you pass through;
+   - too much sail in a strong wind and she's overpowered: take in sail (reef) to stay in control;
+   - the sea buoy out on the open sea, with your fastest run out round it and home in the logbook.
+4. **v0.5, Upkeep and living aboard:**
    - repairs with materials from the beaches (driftwood, planks, rope and more washed-up debris), using a workbench and recipes that unlock as you find new materials;
    - rations and stores;
    - fishing and the galley;
    - fresh water;
    - deck pots and the Home Cay garden.
-4. **v0.5, The dinghy and the reef:**
+5. **v0.6, The dinghy and the reef:**
    - rowing the dinghy;
    - the shark, now and then, off the reef;
    - dropped finds that wash up later;
    - dinghy repairs.
-5. **v0.6, Polish:** a full pass on look, sound, feel, text and phone speed. This is the finished slice.
+6. **v0.7, Polish:** a full pass on look, sound, feel, text and phone speed. This is the finished slice.
 
 ## After the slice (ideas agreed along the way)
 - **Tides:** the tide wins wherever it reaches. Castles near the waves are gone by high tide; castles above the high-tide line last.

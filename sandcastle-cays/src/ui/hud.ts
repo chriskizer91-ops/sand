@@ -169,7 +169,7 @@ export class Hud {
   }
 
   /** Fill the logbook: what you've found, what's aboard, and hints for the rest. */
-  renderLogbook(found: Partial<Record<FindKind, number>>, locker: Partial<Record<FindKind, number>>, basket: FindKind[], clock: string, boat?: { hull: number; where: string }): void {
+  renderLogbook(found: Partial<Record<FindKind, number>>, locker: Partial<Record<FindKind, number>>, basket: FindKind[], clock: string, boat?: { hull: number; where: string; sailing?: string }): void {
     const kinds = FIND_KINDS;
     const nFound = kinds.filter((k) => found[k]).length;
     const aboard = Object.values(locker).reduce((a, b) => a + (b ?? 0), 0);
@@ -180,6 +180,7 @@ export class Hud {
       const hull = Math.round(boat.hull);
       const word = hull >= 95 ? 'sound' : hull >= 70 ? 'a few scrapes' : hull >= 40 ? 'badly scraped' : 'in a bad way';
       this.logList.appendChild(el('div', { class: 'logrow' }, `<div class="name">Hull: ${word}<span>${hull}%</span></div><div class="fact">${boat.where}. Running aground on the reef or a beach scrapes the hull.</div>`));
+      if (boat.sailing) this.logList.appendChild(el('div', { class: 'logrow' }, `<div class="name">The sea buoy</div><div class="fact">${boat.sailing}</div>`));
     }
     const groups: [string, string][] = [
       ['shell', 'Shells'],

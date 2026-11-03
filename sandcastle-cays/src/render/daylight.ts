@@ -74,6 +74,9 @@ export class Daylight {
   private envTimer = 0;
   private tmp = new THREE.Color();
   readonly info: LightInfo = { daylight: 1, night: 0, sunHeight: 1 };
+  /** The weather where you are: rain falling (0..1) and how close a squall's cloud is overhead (0..1). */
+  readonly weather = { rain: 0, overhead: 0 };
+  private rainGrey = C(0x7f8d95);
 
   constructor(
     private scene: THREE.Scene,
@@ -101,8 +104,11 @@ export class Daylight {
     // Clouds build in the afternoon and thin out overnight.
     const cover = 0.12 + 0.18 * Math.max(0, Math.sin(((clock.hour - 9) / 24) * Math.PI * 2)) + 0.06 * Math.sin(clock.day * 2.3);
     SKY.night = night;
-    SKY.cover = Math.max(0, cover);
-    SKY.storm = 0;
+    // Under a squall the sky closes over and darkens.
+    const wet = this.weather.rain;
+    const over = Math.max(wet, this.weather.overhead);
+    SKY.cover = Math.max(0, cover) * (1 - over) + 0.95 * over;
+    SKY.storm = 0.85 * over;
     SKY.flash = 0;
 
     if (sy > 0.02) {
@@ -127,18 +133,21 @@ export class Daylight {
     SKY.horizon.lerp(PAL.sunsetGlow, sunset * 0.72);
     SKY.zenith.lerp(PAL.duskZenith, sunset * 0.45);
     SKY.ground.copy(PAL.groundNight).lerp(PAL.groundDay, daylight);
+    // Rain greys the haze.
+    if (over > 0) SKY.horizon.lerp(this.tmp.copy(this.rainGrey).multiplyScalar(0.25 + 0.75 * daylight), 0.65 * over);
 
-    const dim = 1 - 0.5 * SKY.cover;
+    const dim = (1 - 0.5 * SKY.cover) * (1 - 0.45 * over);
     this.sun.color.copy(SKY.sunColor);
     this.sun.intensity = sy > 0.02 ? 3.3 * smoothstep(0.0, 0.18, sy) * dim : 1.5 * night;
     // Golden hour: less cool sky-fill, so the low warm sun shows.
-    this.hemi.intensity = 0.55 * (0.55 + 0.45 * daylight) * (1 - 0.35 * sunset);
+    this.hemi.intensity = 0.55 * (0.55 + 0.45 * daylight) * (1 - 0.35 * sunset) * (1 - 0.25 * over);
     this.hemi.color.copy(SKY.horizon).lerp(PAL.horizonDay, 0.5 * (1 - sunset));
     this.hemi.groundColor.copy(this.tmp.setRGB(0.78, 0.7, 0.55).multiplyScalar(0.3 + 0.7 * daylight));
 
     const fog = this.scene.fog as THREE.FogExp2;
     fog.color.copy(SKY.horizon);
-    fog.density = 0.0026 + night * 0.002;
+    // In heavy rain you can see a couple of hundred metres.
+    fog.density = 0.0026 + night * 0.002 + 0.0042 * wet;
     this.ocean.setLight(daylight * (1 - 0.35 * SKY.cover), night, fog.density);
 
     this.envTimer -= dt;

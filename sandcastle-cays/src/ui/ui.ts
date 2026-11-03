@@ -258,10 +258,13 @@ export class Ui {
       <h3>Sailing</h3>
       <ul>
         <li><b>Take the helm</b> in the cockpit (E, or the round button). Steer with A and D (phone: your left thumb). W and S raise and lower the sails (phone: “More sail” and “Less sail”). X drops or raises the anchor. E lets go.</li>
-        <li><b>The little outboard</b>: R for more motor, F for less (and on into reverse). Use it to get out of irons, through the gap in the reef, up to an anchorage, or backwards off a sandbank. It goes off when you let go of the tiller.</li>
+        <li><b>The outboard</b>: R for more motor, F for less (and on into reverse). It does about 5 knots, much slower than sailing. Use it to get out of irons, through the gap in the reef, up to an anchorage, or backwards off a sandbank. It goes off when you let go of the tiller.</li>
         <li>You can’t sail straight into the wind. If the sails flap and you slow down (“in irons”), turn away from the wind. To go upwind, zig-zag. The little dial shows where the wind comes from; the red wedge is where you can’t sail.</li>
         <li>You’re fastest with the wind from the side. The reef around Home Cay has one gap, to the south-west: hitting the reef scrapes the hull.</li>
         <li><b>The chart</b> (M, or the map button) shows where you are. Tap a place and she sails there by herself and anchors.</li>
+        <li><b>The open sea</b>: out past the reefs the wind is stronger and a long swell rolls in. Run before the waves with the wind behind you and she surfs. If she leans too far and turns up into the wind by herself, she’s overpowered: take in sail (half sail) or steer away from the wind.</li>
+        <li><b>Squalls</b> are the dark clouds with rain hanging under them, drifting west. Sail into one for a burst of wind and rain (take in sail first!). They pass in a minute or two.</li>
+        <li><b>The sea buoy</b> is the red-and-white buoy out to the south-east. Sail out round it and back to anchor at Home Cay, and your time goes in the logbook.</li>
       </ul>
       <h3>Beachcombing</h3>
       <ul>

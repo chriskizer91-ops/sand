@@ -32,8 +32,13 @@ function smoothstep(a: number, b: number, v: number): number {
 const DEG = Math.PI / 180;
 
 export const SAILING = {
-  /** Fastest speed through the water (m/s) on the best point of sail, full sail, in the usual trade wind. About 6.6 knots. */
-  topSpeed: 3.4,
+  /**
+   * Speed through the water (m/s) on the best point of sail, full sail, in the
+   * usual trade wind: about 8.4 knots. A little quicker than a real boat this
+   * size, so sailing always beats the motor by a long way (the owner's choice).
+   * Stronger wind adds a little more; surfing down waves adds a lot.
+   */
+  topSpeed: 4.3,
   /** How quickly speed builds and fades (per second). */
   accel: 0.3,
   decel: 0.45,
@@ -52,10 +57,27 @@ export const SAILING = {
   anchorDepth: 16,
   /** Usual trade-wind strength (m/s, about 13 knots). */
   windSpeed: 6.5,
-  /** The little outboard: full ahead about 4.5 knots, full astern about 2 knots (m/s). */
-  motorAhead: 2.3,
-  motorAstern: 1.05,
+  /** The outboard (about 6 hp): full ahead about 5 knots, full astern about 2.5 knots (m/s). It gets her moving quickly. */
+  motorAhead: 2.6,
+  motorAstern: 1.3,
+  motorBite: 1.2,
+  /** Past this much heel (radians, about 24°) she's overpowered: she slows, and fights to turn up into the wind. */
+  overHeel: 0.42,
+  /** The most she leans (radians, about 40°). */
+  maxHeel: 0.7,
+  /** Surfing: extra speed (m/s) for each unit of downhill slope of the sea under her, running or reaching fast. */
+  surf: 32,
+  surfMax: 2.6,
 };
+
+/**
+ * How much of her top speed the sails give for a given push (sail area times
+ * wind strength): more push always helps, but less and less, since a hull
+ * can only go so fast through the water. 1 at full sail in the usual wind.
+ */
+export function sailPower(push: number): number {
+  return (1 - Math.exp(-1.8 * push)) / (1 - Math.exp(-1.8));
+}
 
 /** How hard the sails drive the boat at a given angle off the wind (0 .. 1). */
 export function drive(twa: number): number {
@@ -143,6 +165,8 @@ export interface HelmInput {
   steer: number;
   /** Is anyone (or the autopilot) steering? Unattended, she rounds up into the wind and stops. */
   attended: boolean;
+  /** Slope of the sea under her along the bow (+ = downhill ahead, a wave lifting her stern). */
+  slope?: number;
 }
 
 export interface SailEvents {
@@ -150,6 +174,10 @@ export interface SailEvents {
   grounded: number;
   /** She was aground and has just come free. */
   floated: boolean;
+  /** How overpowered she is (0 = fine; above 0 she's leaning too far for this wind). */
+  over: number;
+  /** Extra speed from surfing down a wave right now (m/s). */
+  surfing: number;
 }
 
 export interface SeaBed {
@@ -176,12 +204,15 @@ export function touchesBottom(sea: SeaBed, x: number, z: number, h: number): boo
 
 /** Advance the boat by dt seconds. */
 export function stepBoat(b: BoatState, w: WindState, helm: HelmInput, sea: SeaBed, dt: number): SailEvents {
-  const ev: SailEvents = { grounded: 0, floated: false };
+  const ev: SailEvents = { grounded: 0, floated: false, over: 0, surfing: 0 };
   // Sails go up and down at a steady rate.
   const hoist = dt / SAILING.hoistTime;
   b.sail += Math.max(-hoist, Math.min(hoist, b.sailSet - b.sail));
   const twa = windAngle(b, w);
-  const windK = Math.min(1.3, Math.max(0.4, w.speed / SAILING.windSpeed));
+  const windK = Math.min(3, Math.max(0.3, w.speed / SAILING.windSpeed));
+  // Leaning too far for the wind: the sails spill it and the rudder loses its grip.
+  const over = Math.max(0, Math.abs(b.heel) - SAILING.overHeel);
+  ev.over = over;
 
   // The outboard eases toward its throttle (a second or so to start and bite).
   b.throttle = Math.max(-1, Math.min(1, b.throttle ?? 0));
@@ -210,18 +241,27 @@ export function stepBoat(b: BoatState, w: WindState, helm: HelmInput, sea: SeaBe
     b.heading = wrap(b.heading + wrap(w.from - b.heading) * (1 - Math.exp(-dt * 0.12)));
   } else {
     // Speed eases toward what the wind, the sails and the motor give.
-    const sailTarget = SAILING.topSpeed * drive(twa) * b.sail * windK;
+    const overpowered = Math.max(0.45, 1 - 1.6 * over);
+    const sailTarget = SAILING.topSpeed * drive(twa) * sailPower(b.sail * windK) * overpowered;
     const motorTarget = motor >= 0 ? motor * SAILING.motorAhead : motor * SAILING.motorAstern;
     let target = sailTarget + motorTarget * (motor > 0 ? 1 - 0.35 * Math.min(1, sailTarget / SAILING.topSpeed) : 1);
-    target = Math.min(target, SAILING.topSpeed * 1.05);
+    target = Math.min(target, SAILING.topSpeed * 1.3);
+    // Surfing: running or reaching fast, a wave lifting her stern sends her racing down its face.
+    const downwind = smoothstep(100 * DEG, 135 * DEG, Math.abs(twa));
+    const surf = Math.min(SAILING.surfMax, SAILING.surf * Math.max(0, helm.slope ?? 0)) * downwind * smoothstep(2.4, 3.6, b.speed) * Math.min(1, b.sail * 2);
+    target += surf;
+    ev.surfing = surf;
     // Way carries her through a tack: she coasts slowly when the sails are only flapping.
     let k = target > b.speed ? SAILING.accel : drive(twa) === 0 ? SAILING.decel * 0.4 : SAILING.decel;
-    k = Math.max(k, 0.7 * Math.abs(motor));
+    if (surf > 0.2 && target > b.speed) k = 0.9;
+    k = Math.max(k, SAILING.motorBite * Math.abs(motor));
     b.speed += (target - b.speed) * (1 - Math.exp(-dt * k));
     // Turning needs way on (a little turn is always possible, to get out of irons).
     // Going astern, the stern goes the way the rudder points, so the bow swings the other way.
     const dir = b.speed < -0.05 ? -1 : 1;
-    b.heading = wrap(b.heading + dir * (b.rudder / SAILING.rudderMax) * SAILING.turnRate * grip * dt);
+    b.heading = wrap(b.heading + dir * (b.rudder / SAILING.rudderMax) * SAILING.turnRate * grip * (1 - 0.5 * Math.min(1, over * 3)) * dt);
+    // Overpowered, she tries to turn up into the wind ("rounding up"); steer away, or take in sail.
+    if (over > 0 && Math.abs(twa) > SAILING.noGo) b.heading = wrap(b.heading + Math.sign(twa) * 1.5 * over * dt);
     // Leeway: she slips a little sideways, away from the wind, when sailing across or into it.
     const side = Math.abs(twa) < 120 * DEG ? 4 * DEG * drive(twa) * b.sail : 0;
     const leeSign = twa >= 0 ? -1 : 1; // wind from starboard pushes her to port
@@ -254,9 +294,11 @@ export function stepBoat(b: BoatState, w: WindState, helm: HelmInput, sea: SeaBe
   }
 
   // Heel: the wind leans her away from it; a spring brings her back.
-  const heelTarget = b.anchored ? 0 : -Math.sign(twa) * b.sail * windK * (0.06 + 0.16 * Math.sin(Math.min(Math.PI, Math.abs(twa) * 1.35))) * (Math.abs(twa) < SAILING.noGo ? 0.2 : 1);
+  // The push on the sails grows faster than the wind does, so a strong wind leans her a lot.
+  let heelTarget = b.anchored ? 0 : -Math.sign(twa) * b.sail * Math.pow(windK, 1.6) * (0.06 + 0.16 * Math.sin(Math.min(Math.PI, Math.abs(twa) * 1.35))) * (Math.abs(twa) < SAILING.noGo ? 0.2 : 1);
+  heelTarget = Math.max(-SAILING.maxHeel, Math.min(SAILING.maxHeel, heelTarget));
   b.heelV += (6 * (heelTarget - b.heel) - 1.6 * b.heelV) * dt;
-  b.heel += b.heelV * dt;
+  b.heel = Math.max(-SAILING.maxHeel, Math.min(SAILING.maxHeel, b.heel + b.heelV * dt));
   return ev;
 }
 
@@ -298,6 +340,8 @@ export interface Course {
   /** Current tack when beating upwind: +1 or -1. */
   tack: number;
   name: string;
+  /** Where she anchors at the end, if it's not `name` (a round trip). */
+  arrive?: string;
 }
 
 /**
@@ -336,7 +380,7 @@ export function autopilot(b: BoatState, w: WindState, c: Course): { steer: numbe
   }
   // Stalled head to wind (in irons)? A burst of motor gets her moving again.
   const stalled = Math.abs(b.speed) < 0.4 && Math.abs(wrap(w.from - b.heading)) < SAILING.noGo;
-  // Ease off near the final mark.
-  const sailSet = last && dist < 90 ? 0.5 : 1;
+  // Ease off near the final mark, and reef (half sail) when the wind is strong.
+  const sailSet = (last && dist < 90) || w.speed > SAILING.windSpeed * 1.3 ? 0.5 : 1;
   return { steer: steerTo(want), sailSet, throttle: stalled ? 0.6 : 0, arrived: false };
 }

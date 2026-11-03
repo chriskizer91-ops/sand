@@ -155,3 +155,22 @@ Each stroke opens an undo record. The first time a chunk is changed during that 
 - **Navigation lights** came with it. At anchor the masthead light is on; under way the red and green sidelights and the white sternlight are on. They glow at night and are plain coloured lenses by day.
 - **Not yet:** fuel. It could join the rations in v0.4 as one more thing to manage.
 
+## 25. Blue water comes next (v0.4), before upkeep
+- **What:** the owner asked for a stronger motor, sailing that is always much faster than motoring, and something that makes sailing more exciting, "either a button, or if you sail into a certain area". v0.4 is now "Blue water". Upkeep moves to v0.5, the dinghy to v0.6 and polish to v0.7.
+- **Chosen:** an area, not a button. Sailing out past the reefs takes you onto the open sea, with more wind and bigger waves. Squalls drift across it, and you can choose to sail into one. That way the excitement is part of the world, and a sheltered sail is always there when you want a calm one. A button can still be added if the owner wants a quick way in.
+
+## 26. How the open sea and squalls work (numbers in `src/game/weather.ts`)
+- **Where:** the water is sheltered within about 60 m beyond each cay's reef. Further out it becomes open sea, fully open about 380 m beyond the reef. Between the two cays it stays sheltered.
+- **Wind:** half as strong again on the open sea (about 19 knots instead of 13), with harder gusts.
+- **Waves:** a long ocean swell rolls in from the east (wavelengths of 21–52 m, up to about 1.8 m from trough to crest). Whitecaps appear once the wind passes about 15 knots.
+- **Squalls:** a new one forms about every 200 s far to the east. Each drifts west at 6 m/s, lives about 9 minutes, and has rain 120–240 m across. Under one, the wind gusts up to about 30 knots and blows out from its middle, so it shifts as you pass through. It rains, the light dims and the haze closes in. Inside the reef a squall's wind is less than half as strong. Squalls follow a fixed timetable, so loading a save brings back the same weather.
+- **Where you can sail:** up to 1,050 m from the middle of the chart. The far islands drift part of the way with you, so you never quite reach them.
+
+## 27. Faster sailing, a stronger motor, and handling a blow (numbers in `src/game/sailing.ts`)
+- **Motor:** about 6 hp, up to about 5 knots ahead (2.5 astern), and most of that within 4 seconds.
+- **Sails:** about 8.4 knots on a beam reach in the usual trade wind. That's quicker than a real boat this size, so sailing always beats the motor by a long way (the owner's wish). More wind adds a little more speed, less and less as it builds.
+- **Heel:** grows faster than the wind does. Past about 24° she's **overpowered**: she slows, her steering weakens, and she turns herself up into the wind ("rounds up"). Steer off the wind or take in sail; half sail keeps her steady and faster in a squall.
+- **Surfing:** on a broad reach or a run, going fast, a wave lifting her stern sends her down its face. That's worth up to about 5 extra knots, so 12–13 knots out on the open sea.
+- **The autopilot** reefs to half sail when the wind passes about 16 knots.
+- **The sea buoy:** a red-and-white "safe water" mark at (560, −820). From the reef gap it's a close-hauled sail out and a broad reach, surfing, home. The run is timed from raising the anchor at Home Cay to dropping it there again after rounding the buoy. The logbook keeps the count and your best time.
+

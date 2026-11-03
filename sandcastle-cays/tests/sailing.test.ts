@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SAILING, autopilot, boomAngle, drive, dropAnchor, newBoat, pointOfSail, sailFill, stepBoat, weighAnchor, windAngle, windAt, wrap, type Course, type SeaBed, type WindState } from '../src/game/sailing';
+import { SAILING, sailPower, autopilot, boomAngle, drive, dropAnchor, newBoat, pointOfSail, sailFill, stepBoat, weighAnchor, windAngle, windAt, wrap, type Course, type SeaBed, type WindState } from '../src/game/sailing';
 
 const DEG = Math.PI / 180;
 const deep: SeaBed = { floorAt: () => -10 };
@@ -51,7 +51,7 @@ describe('the points of sail', () => {
 });
 
 describe('sailing the sloop', () => {
-  it('on a beam reach with full sail she picks up to about 6 knots', () => {
+  it('on a beam reach with full sail she picks up to about 8 knots', () => {
     const b = newBoat(0, 0, 90 * DEG); // heading north (+z); wind from the east is on the beam
     weighAnchor(b);
     b.sailSet = 1;
@@ -228,7 +228,7 @@ describe('sail there for me (the autopilot)', () => {
 });
 
 describe('the outboard', () => {
-  it('with the sails down, full ahead motors her at about 4.5 knots, even straight into the wind', () => {
+  it('with the sails down, full ahead motors her at about 5 knots, even straight into the wind', () => {
     const b = newBoat(0, 0, 0); // bow straight into the east wind: in irons for sails
     weighAnchor(b);
     b.throttle = 1;
@@ -304,3 +304,111 @@ describe('the outboard', () => {
     expect(Math.hypot(b.x - 130, b.z)).toBeLessThan(20);
   });
 });
+
+describe('a stronger motor, faster sails (v0.4)', () => {
+  it('the motor gets her moving quickly: most of its speed within 4 seconds', () => {
+    const b = newBoat(0, 0, 0);
+    weighAnchor(b);
+    b.throttle = 1;
+    sail(b, 4);
+    expect(b.speed).toBeGreaterThan(SAILING.motorAhead * 0.7);
+    expect(SAILING.motorAhead * 1.944).toBeGreaterThan(4.8); // about 5 knots
+  });
+
+  it('sailing on a reach is much faster than motoring', () => {
+    const s = newBoat(0, 0, 90 * DEG);
+    weighAnchor(s);
+    s.sailSet = 1;
+    sail(s, 40);
+    const m = newBoat(0, 0, 90 * DEG);
+    weighAnchor(m);
+    m.throttle = 1;
+    sail(m, 40);
+    expect(s.speed).toBeGreaterThan(m.speed * 1.5);
+  });
+
+  it('more wind always helps a little, but less and less', () => {
+    expect(sailPower(1)).toBeCloseTo(1, 5);
+    expect(sailPower(1.5)).toBeGreaterThan(sailPower(1));
+    expect(sailPower(2) - sailPower(1.5)).toBeLessThan(sailPower(1.5) - sailPower(1));
+    expect(sailPower(0.5)).toBeGreaterThan(0.5);
+  });
+});
+
+describe('strong wind', () => {
+  const strong: WindState = { from: 0, speed: 13, gust: 0 }; // about 25 knots, a squall
+
+  it('full sail in a squall: she leans hard, is overpowered and tries to turn up into the wind', () => {
+    const b = newBoat(0, 0, 90 * DEG);
+    weighAnchor(b);
+    b.sailSet = 1;
+    b.sail = 1;
+    b.speed = 3;
+    let maxHeel = 0;
+    const evs = [];
+    for (let t = 0; t < 20; t += 1 / 30) {
+      evs.push(stepBoat(b, strong, { steer: 0, attended: true }, deep, 1 / 30));
+      maxHeel = Math.max(maxHeel, Math.abs(b.heel));
+    }
+    expect(evs.some((e) => e.over > 0.1)).toBe(true);
+    expect(maxHeel).toBeGreaterThan(SAILING.overHeel + 0.1);
+    // She has turned toward the wind (from the beam, 90°, toward the no-go zone).
+    expect(Math.abs(windAngle(b, strong))).toBeLessThan(70 * DEG);
+  });
+
+  it('half sail in the same wind: she stays under control and goes faster', () => {
+    const run = (sailSet: number) => {
+      const b = newBoat(0, 0, 90 * DEG);
+      weighAnchor(b);
+      b.sailSet = sailSet;
+      b.sail = sailSet;
+      b.speed = 3;
+      let speedSum = 0;
+      let n = 0;
+      for (let t = 0; t < 40; t += 1 / 30) {
+        // Steer to hold the beam reach, as a sailor would.
+        const err = wrap(90 * DEG - b.heading);
+        stepBoat(b, strong, { steer: Math.max(-1, Math.min(1, err * 3)), attended: true }, deep, 1 / 30);
+        if (t > 15) {
+          speedSum += b.speed;
+          n++;
+        }
+      }
+      return { speed: speedSum / n, heel: Math.abs(b.heel), heading: b.heading };
+    };
+    const full = run(1);
+    const half = run(0.5);
+    expect(half.heel).toBeLessThan(SAILING.overHeel);
+    expect(half.speed).toBeGreaterThan(full.speed);
+    expect(Math.abs(wrap(half.heading - 90 * DEG))).toBeLessThan(8 * DEG);
+  });
+
+  it('surfing: running fast down the face of a wave sends her well past her usual top speed', () => {
+    const b = newBoat(0, 0, 150 * DEG); // broad reach, wind from the east over the starboard quarter
+    weighAnchor(b);
+    b.sailSet = 1;
+    b.sail = 1;
+    b.speed = 4;
+    let top = 0;
+    let surfed = 0;
+    for (let t = 0; t < 8; t += 1 / 30) {
+      const ev = stepBoat(b, { from: 0, speed: 9, gust: 0 }, { steer: 0, attended: true, slope: 0.07 }, deep, 1 / 30);
+      top = Math.max(top, b.speed);
+      surfed = Math.max(surfed, ev.surfing);
+    }
+    expect(surfed).toBeGreaterThan(1.5);
+    expect(top * 1.944).toBeGreaterThan(11); // over 11 knots
+    // Climbing the back of a wave (uphill) gives nothing extra.
+    const ev = stepBoat(b, { from: 0, speed: 9, gust: 0 }, { steer: 0, attended: true, slope: -0.07 }, deep, 1 / 30);
+    expect(ev.surfing).toBe(0);
+  });
+
+  it('the autopilot reefs (half sail) when the wind is strong', () => {
+    const b = newBoat(0, 0, 90 * DEG);
+    weighAnchor(b);
+    const c: Course = { waypoints: [{ x: 0, z: 2000 }], tack: 1, name: 'far' };
+    expect(autopilot(b, steady, c).sailSet).toBe(1);
+    expect(autopilot(b, strong, c).sailSet).toBe(0.5);
+  });
+});
+

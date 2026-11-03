@@ -39,6 +39,14 @@ export interface SailReadout {
   course: string | null;
   /** The outboard: 'off', 'slow ahead', 'full astern'... */
   motor: string;
+  /** The wind in words ('fresh breeze'). */
+  windWord: string;
+  /** Leaning too far for this wind (take in sail). */
+  over: boolean;
+  /** Racing down a wave. */
+  surfing: boolean;
+  /** Raining here. */
+  rain: boolean;
 }
 
 const NOGO_DEG = 38;
@@ -124,9 +132,11 @@ export class SailHud {
     if (r.anchored) l1 = '<b>At anchor</b>';
     else if (r.aground) l1 = `<b class="bad">Aground!</b> ${motoring ? 'Motor astern, or steer' : 'Steer'} for deeper water`;
     else if (motoring && r.sail < 0.05) l1 = `<b>${r.knots.toFixed(1)} knots</b> · motoring, ${r.motor}`;
+    else if (r.over) l1 = `<b>${r.knots.toFixed(1)} knots</b> · <b class="bad">overpowered</b>: less sail`;
+    else if (r.surfing) l1 = `<b>${r.knots.toFixed(1)} knots</b> · <b class="surf">surfing!</b>`;
     else l1 = `<b>${r.knots.toFixed(1)} knots</b> · ${r.point === 'in irons' ? (motoring ? 'motoring into the wind' : '<b class="bad">in irons</b> (sails flapping)') : r.point}${motoring ? ' + motor' : ''}`;
     const heading = `heading ${compassWord(r.compass)}`;
-    const l2 = r.course ? `Sailing for ${r.course} · ${heading}` : `${heading} · wind ${r.windKnots.toFixed(0)} knots`;
+    const l2 = r.course ? `Sailing for ${r.course} · ${heading}` : `${heading} · wind ${r.windKnots.toFixed(0)} knots${r.windKnots >= 17 ? `, ${r.windWord}` : ''}${r.rain ? ', rain' : ''}`;
     const key = l1 + l2;
     if (key !== this.last) {
       this.last = key;

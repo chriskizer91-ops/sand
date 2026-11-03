@@ -20,11 +20,20 @@ export interface ChartPlace {
   /** Where the label goes relative to the place (metres on the chart). */
   labelDx?: number;
   labelDz?: number;
+  /** What the chart calls it (if not `name`), and what its button says (if not "Sail to …"). */
+  label?: string;
+  button?: string;
+  /** A mark at sea (drawn as a buoy) rather than an anchorage. */
+  mark?: boolean;
 }
 
 export interface ChartWorld {
   heightAt(x: number, z: number): number;
   groundAt(x: number, z: number, h: number): string;
+  /** 0 sheltered .. 1 open sea. */
+  openness(x: number, z: number): number;
+  /** The edge of the waters you can sail. */
+  sea: { x: number; z: number; r: number };
 }
 
 export interface ChartActions {
@@ -34,9 +43,9 @@ export interface ChartActions {
   click(): void;
 }
 
-/** The area the chart shows (metres): x left to right, z bottom (south) to top (north). */
-const AREA = { x0: -470, x1: 330, z0: -520, z1: 280 };
-const RES = 320;
+/** The area the chart shows (metres): x left to right, z bottom (south) to top (north): all the water you can sail. */
+const AREA = { x0: -1170, x1: 970, z0: -1210, z1: 930 };
+const RES = 360;
 
 function hex(c: number): [number, number, number] {
   return [(c >> 16) & 255, (c >> 8) & 255, c & 255];
@@ -102,9 +111,14 @@ export class Chart {
         if (h < -0.4) {
           const g = this.world.groundAt(x, z, h);
           if (g === 'reef') col = COL.reef;
-          else if (h < -9) col = COL.deep;
-          else if (h < -3) col = COL.mid;
+          else if (h < -9) {
+            // The open sea, a deeper blue.
+            const o = this.world.openness(x, z);
+            col = [COL.deep[0] * (1 - 0.3 * o), COL.deep[1] * (1 - 0.25 * o), COL.deep[2] * (1 - 0.12 * o)];
+          } else if (h < -3) col = COL.mid;
           else col = COL.shallow;
+          // Beyond the edge of the chart: faded.
+          if (Math.hypot(x - this.world.sea.x, z - this.world.sea.z) > this.world.sea.r) col = [col[0] * 0.55 + 120, col[1] * 0.55 + 125, col[2] * 0.55 + 130];
         } else {
           const g = this.world.groundAt(x, z, h);
           col = g === 'grass' ? COL.grass : g === 'rock' ? COL.rock : g === 'pinksand' ? COL.pink : COL.sand;
@@ -128,7 +142,7 @@ export class Chart {
    * Redraw with the boat (heading in radians, +x = east) and the wind (blowing from, radians).
    * `courseTo` is the place being sailed to, if any; `aboard` decides whether you can sail from here.
    */
-  render(boat: { x: number; z: number; heading: number }, windFrom: number, courseTo: string | null, aboard: boolean, you: { x: number; z: number } | null, route: { x: number; z: number }[] = []): void {
+  render(boat: { x: number; z: number; heading: number }, windFrom: number, courseTo: string | null, aboard: boolean, you: { x: number; z: number } | null, route: { x: number; z: number }[] = [], squalls: readonly { x: number; z: number; radius: number; strength: number }[] = []): void {
     if (!this.base) this.base = this.drawBase();
     const css = Math.min(340, window.innerWidth - 52);
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -143,18 +157,50 @@ export class Chart {
     const k = S / css;
     ctx.font = `${Math.round(12 * k)}px ui-rounded, system-ui, sans-serif`;
     ctx.textAlign = 'center';
+    // Squalls: grey rain patches, drifting west.
+    for (const q of squalls) {
+      if (q.strength < 0.15) continue;
+      const [px, py] = this.toPx(q.x, q.z, S);
+      const r = (q.radius / (AREA.x1 - AREA.x0)) * S;
+      const g = ctx.createRadialGradient(px, py, r * 0.2, px, py, r * 1.2);
+      g.addColorStop(0, `rgba(70,80,90,${0.55 * q.strength})`);
+      g.addColorStop(1, 'rgba(70,80,90,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(px, py, r * 1.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // The open sea, labelled.
+    ctx.fillStyle = 'rgba(255,255,255,.75)';
+    ctx.font = `italic ${Math.round(11 * k)}px ui-rounded, system-ui, sans-serif`;
+    {
+      const [px, py] = this.toPx(520, 420, S);
+      ctx.fillText('open sea: more wind,', px, py);
+      ctx.fillText('bigger waves', px, py + 13 * k);
+    }
+    ctx.font = `${Math.round(12 * k)}px ui-rounded, system-ui, sans-serif`;
     // Places.
     for (const p of this.places) {
+      if (p.mark) {
+        const [bx, by] = this.toPx(p.x, p.z, S);
+        ctx.fillStyle = '#d23a2a';
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5 * k;
+        ctx.beginPath();
+        ctx.arc(bx, by, 4.5 * k, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
       const [px, py] = this.toPx(p.x + (p.labelDx ?? 0), p.z + (p.labelDz ?? 0), S);
       ctx.fillStyle = 'rgba(30,50,60,.85)';
-      ctx.fillText(p.name, px, py);
+      ctx.fillText(p.label ?? p.name, px, py);
     }
     // The reef channel.
     {
       const [px, py] = this.toPx(this.reefChannel.x, this.reefChannel.z, S);
       ctx.fillStyle = 'rgba(255,255,255,.9)';
       ctx.font = `${Math.round(10.5 * k)}px ui-rounded, system-ui, sans-serif`;
-      ctx.fillText('gap in the reef', px - 26 * k, py + 4 * k);
+      ctx.fillText('gap', px - 12 * k, py + 4 * k);
     }
     // Wind arrow (top right).
     {
@@ -238,11 +284,11 @@ export class Chart {
       this.buttons.appendChild(b);
     } else {
       this.note.textContent = aboard
-        ? 'Tap a place to sail there by yourself. She finds the gap in the reef and tacks if she has to.'
+        ? 'Tap a place and she sails there by herself, finding the gap in the reef and tacking if she has to. Or take the helm and sail there yourself.'
         : 'Go aboard your boat to set sail.';
       for (const p of this.places) {
         if (nearby.includes(p.id)) continue;
-        const b = el('button', { class: 'wide' }, `Sail to ${p.name}`);
+        const b = el('button', { class: 'wide' }, p.button ?? `Sail to ${p.name}`);
         b.disabled = !aboard;
         b.addEventListener('click', () => {
           this.actions.click();
