@@ -1,5 +1,30 @@
 # What changed, version by version (plain language)
 
+## v0.6, The garden
+Grow your own food: pots on the boat's cabin top, and a little garden on Home Cay.
+
+**What's new**
+- **Deck pots.** There are two pots on the teak trays on the cabin top, and the workbench can make two more (a plank and two driftwood sticks each). Walk up to one and press E (or tap) to plant.
+- **The Home Cay garden.** Four raised driftwood beds on the grass just up from the sandcastle cove, with a rain barrel and a sign.
+- **Three crops** from your seed tin:
+  - callaloo, leafy greens ready in 2 days, which grow back after you cut them;
+  - cherry tomatoes, in 3 days;
+  - sweet potatoes, in 4 days, the biggest meal.
+- **Water every day.**
+  - Pots take a little from the boat's water tank. Beds take a watering from the rain barrel, which refills when it rains.
+  - Rain waters everything it falls on.
+  - A plant only grows on days it has water. It droops when it's thirsty, and withers after three dry days.
+- **Harvest** when ripe: food goes straight into the larder, and seeds go back in the tin.
+- **The logbook** has a Garden section, with your seed tin and a true fact about each crop.
+- **Dev tools:** ripen everything, water everything, 5 more of each seed.
+
+**Checks before sending**
+CHECKS_PLACEHOLDER
+
+**Not tested, or known**
+- How the garden feels over a few days of play: too much watering, or too easy? Tell me.
+- Speed on your Pixel with the plants and pots.
+
 ## v0.5, Living aboard
 Your boat is now a home to look after. You have food and water to keep topped up, fish to catch, rain to collect, and a boat to mend with what the sea washes up. (The garden comes next, in v0.6.)
 

@@ -46,6 +46,8 @@ import { DevTools } from './ui/devTools';
 import { Living, type LivingAction, type LivingRig, type RodView } from './living';
 import { FishingLine } from './render/fishingGear';
 import { prepareFish } from './render/fish';
+import { Gardening, type GardenAction, type GardenViews } from './gardening';
+import { HOME_GARDEN } from './world/homeCay';
 import { Ui } from './ui/ui';
 import type { CheckResult } from './checks/sandChecks';
 
@@ -284,10 +286,15 @@ rebuildRefractSkip();
 /** You can swim and walk anywhere around both cays. */
 // You can swim anywhere your boat can sail (and a little more, so jumping off at the edge works).
 const ISLAND_CENTRE = { cx: -100, cz: -140, r: 1090 };
+// The garden's beds and rain barrel are solid too (two circles per bed, one for the barrel).
+const gardenSolid = [
+  ...HOME_GARDEN.beds.flatMap((b) => [-0.42, 0.42].map((d) => ({ x: b.x + Math.cos(b.rot) * d, z: b.z - Math.sin(b.rot) * d, r: 0.5 }))),
+  { x: HOME_GARDEN.barrel.x, z: HOME_GARDEN.barrel.z, r: 0.38 },
+];
 const player = new Player({
   groundAt: (x, z) => ground.heightAt(x, z),
   waterAt: (x, z) => seaHeight(x, z, time),
-  trunks,
+  trunks: [...trunks, ...gardenSolid],
   boat: { obj: sloop.group, deck: sloop.deck, ladderTop: sloop.points.ladderTop, ladderBottom: sloop.points.ladderBottom, length: sloop.length },
   bounds: ISLAND_CENTRE,
 });
@@ -694,6 +701,9 @@ const devTools = new DevTools(
       ui.toast('Three of every find put in the locker', 2000);
     },
     biteNow: () => living.devBite(),
+    growGarden: () => gardening.devGrow(),
+    waterGarden: () => gardening.devWater(),
+    moreSeeds: () => gardening.devSeeds(),
     scrapeHull: () => {
       boat.hull = 30;
       ui.toast('Hull scraped to 30%: she’ll leak', 2000);
@@ -887,6 +897,7 @@ function toggleLogbook(show?: boolean): void {
       formatClock(clock),
       { hull: boat.hull, where: boat.anchored ? `At anchor off ${near}` : `Under way near ${near}`, sailing, rows: living.logRows() },
       living.logFish(),
+      { rows: gardening.logRows(), seeds: gardening.seedLine() },
     );
     input.unlock();
     input.clear();
@@ -923,7 +934,7 @@ function updateLookHint(): void {
   hud.setLookHint(!isTouch && started && view === 'fp' && !input.locked && !input.dragLook && !anyPanelOpen());
 }
 function anyPanelOpen(): boolean {
-  return ui.panelOpen || hud.logbookOpen || chart.open || living.panelOpen;
+  return ui.panelOpen || hud.logbookOpen || chart.open || living.panelOpen || gardening.panelOpen;
 }
 
 // ---------- building (kneeling at the sand) ----------
@@ -1039,6 +1050,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyT' && !e.repeat) toggleDevTools();
   else if (e.code === 'KeyG' && !e.repeat && view === 'fp' && !atHelm && !anyPanelOpen()) living.toggleRod();
   else if (e.code === 'Escape' && living.panelOpen) living.closePanels();
+  else if (e.code === 'Escape' && gardening.panelOpen) gardening.closePanels();
   else if (view === 'build' && (e.code === 'Escape' || e.code === 'KeyB')) exitBuild();
   else if (e.code === 'KeyL' && view === 'fp') toggleLogbook();
   else if (e.code === 'KeyM' && view === 'fp') toggleChart();
@@ -1171,13 +1183,14 @@ interface GameSave {
   boat?: Partial<BoatState>;
   sailing?: Partial<typeof records>;
   living?: unknown;
+  garden?: unknown;
   player: { mode: PlayerMode; pos: number[]; yaw: number; pitch: number };
   beach: unknown;
 }
 
 function gameState(): GameSave {
   const { x, z, heading, anchored, ax, az, sailSet, hull } = boat;
-  return { version: GAME_VERSION, clock: { ...clock }, boat: { x, z, heading, anchored, ax, az, sailSet, hull }, sailing: { ...records }, living: living.save(), player: player.state, beach: beach.state };
+  return { version: GAME_VERSION, clock: { ...clock }, boat: { x, z, heading, anchored, ax, az, sailSet, hull }, sailing: { ...records }, living: living.save(), garden: gardening.save(), player: player.state, beach: beach.state };
 }
 
 function restoreGame(raw: unknown): void {
@@ -1211,6 +1224,7 @@ function restoreGame(raw: unknown): void {
   run = { start: -1, rounded: false };
   wasAnchored = boat.anchored;
   living.restore(g.living);
+  gardening.restore(g.garden);
   const p = g.player;
   if (p && Array.isArray(p.pos) && p.pos.length === 3 && p.pos.every(Number.isFinite)) {
     const v = new THREE.Vector3(p.pos[0], p.pos[1], p.pos[2]);
@@ -1288,6 +1302,7 @@ function newGame(): void {
   beach.washUp(1);
   beachView.sync();
   living.reset();
+  gardening.reset();
   boat = newBoat(terrain.anchorage.x, terrain.anchorage.z, terrain.anchorage.heading);
   course = null;
   atHelm = false;
@@ -1417,6 +1432,7 @@ type Action =
   | { kind: 'build'; label: string }
   | { kind: 'helm'; label: string }
   | { kind: 'living'; a: LivingAction; label: string }
+  | { kind: 'garden'; a: GardenAction; label: string }
   | null;
 
 const center = new THREE.Vector2(0, 0);
@@ -1444,12 +1460,15 @@ function currentAction(): Action {
       [dLocker, 1.4, { kind: 'locker', label: 'Empty your basket into the locker' }],
       [dHelm, 1.2, { kind: 'helm', label: 'Take the helm' }],
       ...living.deckOptions().map(([d, a]) => [d, 1.0, { kind: 'living', a, label: a.label }] as [number, number, Action]),
+      ...(living.rodHeld ? [] : gardening.deckOptions().map(([d, a]) => [d, 0.9, { kind: 'garden', a, label: a.label }] as [number, number, Action])),
     ];
     opts.sort((x, y) => x[0] - y[0]);
     for (const [d, r, a] of opts) if (d < r) return a;
   }
-  // Ashore: under a coconut palm.
+  // Ashore: the garden beds, or under a coconut palm.
   {
+    const ga = living.rodHeld ? null : gardening.landAction();
+    if (ga) return { kind: 'garden', a: ga, label: ga.label };
     const la = living.action();
     if (la) return { kind: 'living', a: la, label: la.label };
   }
@@ -1472,6 +1491,7 @@ function doAction(a: Action): void {
   } else if (a.kind === 'build') enterBuild();
   else if (a.kind === 'helm') takeHelm();
   else if (a.kind === 'living') living.doAction(a.a);
+  else if (a.kind === 'garden') gardening.doAction(a.a);
 }
 
 function pickUp(id: number): void {
@@ -1525,6 +1545,49 @@ const living = new Living({
   closeOtherPanels: () => {
     ui.closePanels();
     hud.showLogbook(false);
+    if (chart.open) toggleChart(false);
+  },
+  unlockPointer: () => {
+    input.unlock();
+    input.clear();
+  },
+});
+
+// ---------- the garden ----------
+
+/** The garden's models, once render/garden.ts is in (null until then: the rules still work). */
+const gardenViews: GardenViews | null = null;
+const gardenRain = newWeather();
+const gardening = new Gardening({
+  potSpots: sloop.points.potShelf,
+  boatGroup: sloop.group,
+  scene,
+  beds: HOME_GARDEN.beds,
+  barrelAt: HOME_GARDEN.barrel,
+  signAt: HOME_GARDEN.sign,
+  groundAt: (x, z) => ground.heightAt(x, z),
+  views: gardenViews,
+  player: () => ({ mode: player.mode, x: player.pos.x, z: player.pos.z }),
+  dayNow: () => clock.day + clock.hour / 24,
+  useTankWater: (d) => {
+    if (living.aboard.water < d) return false;
+    living.aboard.water -= d;
+    return true;
+  },
+  addFood: (d) => {
+    const before = living.aboard.food;
+    living.aboard.food = Math.min(30, living.aboard.food + d);
+    return living.aboard.food - before;
+  },
+  toast: (m, ms) => ui.toast(m, ms),
+  card: (t, x, ms) => hud.showCard(t, x, ms),
+  sound: { splash: (n) => audio.splash(n), chime: (f) => audio.chime(f), click: () => audio.click() },
+  pour: () => (held as unknown as { setHolding?(w: string): void; pour?(): void }).pour?.(),
+  changed: () => (changedSinceSave = true),
+  closeOtherPanels: () => {
+    ui.closePanels();
+    hud.showLogbook(false);
+    living.closePanels();
     if (chart.open) toggleChart(false);
   },
   unlockPointer: () => {
@@ -1616,6 +1679,9 @@ function frame(now: number): void {
     const twa = windAngle(boat, wind);
     const flogging = boat.sail > 0.3 && sailFill(twa) < 0.4 && wind.speed > 10 && !boat.anchored;
     living.update(dt, dt * devSpeed, time, wind.rain, sailEv.over, flogging, daylight.info.night);
+    weatherAt(time, HOME_GARDEN.x, HOME_GARDEN.z, gardenRain, squalls);
+    gardening.setPlanters(living.aboard.made.planter ?? 0);
+    gardening.update(dt, dt * devSpeed, time, wind.rain, gardenRain.rain);
   }
   // Stuck head to wind at the helm for a while? A gentle tip, once.
   if (atHelm && !boat.anchored && boat.sail > 0.5 && Math.abs(boat.motor ?? 0) < 0.05 && Math.abs(boat.speed) < 0.3 && Math.abs(windAngle(boat, wind)) < SAILING.noGo) ironsTime += dt;
@@ -1934,6 +2000,7 @@ void boot();
   terrain,
   sloopPoints: sloop.points,
   trunks,
+  gardening,
   /** Screen position (CSS pixels) of a point in the world. */
   project: (x: number, y: number, z: number) => {
     const v = new THREE.Vector3(x, y, z).project(camera);

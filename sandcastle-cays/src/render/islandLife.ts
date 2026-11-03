@@ -13,6 +13,7 @@ import { boulder, bush, grassTuft, mergeWithSway, palm, paint, rgb, swayMaterial
 import { mergeGeometries } from './sky';
 import { mulberry32 } from '../engine/noise';
 import type { IslandTerrain } from '../world/islands';
+import { HOME_GARDEN } from '../world/homeCay';
 
 export interface Trunk {
   x: number;
@@ -58,7 +59,9 @@ export function createIslandLife(
     list.push(g);
   };
   // The cove already has its own plants and rocks.
-  const nearCove = (x: number, z: number, m: number) => x > region.x0 - m && x < region.x1 + m && z > region.z0 - m && z < region.z1 + 9;
+  // The cove, and your garden on Home Cay, are kept clear (the garden counts as part of the cove here).
+  const nearCove = (x: number, z: number, m: number) =>
+    (x > region.x0 - m && x < region.x1 + m && z > region.z0 - m && z < region.z1 + 9) || (terrain.id === 'home' && Math.hypot(x - HOME_GARDEN.x, z - HOME_GARDEN.z) < HOME_GARDEN.clear + m);
 
   // ---- palms along the top of the beaches, leaning toward the water ----
   const line = terrain.tideline(1.0);

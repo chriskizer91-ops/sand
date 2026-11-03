@@ -32,6 +32,9 @@ export interface DevActions {
   lowStores(): void;
   giveMaterials(): void;
   biteNow(): void;
+  growGarden(): void;
+  waterGarden(): void;
+  moreSeeds(): void;
   scrapeHull(): void;
   click(): void;
 }
@@ -104,6 +107,12 @@ export class DevTools {
       ['3 of every find', () => actions.giveMaterials()],
       ['A fish bites now', () => actions.biteNow()],
       ['Scrape the hull', () => actions.scrapeHull()],
+    ]);
+    section('Garden');
+    row([
+      ['Ripen everything', () => actions.growGarden()],
+      ['Water everything', () => actions.waterGarden()],
+      ['5 more of each seed', () => actions.moreSeeds()],
     ]);
     section('Weather');
     row([

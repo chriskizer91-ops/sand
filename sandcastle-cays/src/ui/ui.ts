@@ -282,6 +282,12 @@ export class Ui {
         <li><b>Coconuts</b>: shake a palm on the beach and one or two fall. Pick them up like any find.</li>
         <li><b>Upkeep</b>: a badly scraped hull leaks, so pump the bilge (the pump is in the cockpit). Sailing hard when she’s overpowered wears the sails. Mend both at the <b>workbench</b> on the stern, with finds from the locker. New finds give you new ideas there: a bigger rain catcher, water jugs, a lure, a fish trap.</li>
       </ul>
+      <h3>The garden</h3>
+      <ul>
+        <li><b>Pots</b> on the cabin top, and <b>beds</b> in the Home Cay garden (just up the grass from the sandcastle cove). Walk up to one and press E (or tap) to plant from your seed tin.</li>
+        <li>Water every day: pots from the boat’s tank, beds from the rain barrel. Rain waters them too. A plant only grows on days it has water, and withers after three dry days.</li>
+        <li>Harvest when ripe: food for the larder and seeds back. Callaloo grows back after you cut it. Make more pots at the workbench.</li>
+      </ul>
       <h3>Dev tools</h3>
       <ul>
         <li>Press T on a laptop (or Menu → Dev tools) for a window that shows what the game is doing, with buttons to move the boat, call up a squall, change the wind, the time and the game’s speed.</li>

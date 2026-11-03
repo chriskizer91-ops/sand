@@ -225,3 +225,19 @@ Each stroke opens an undo record. The first time a chunk is changed during that 
 - **New finds** for the recipes: a scrap of sailcloth, a piece of fishing net, an empty glass bottle.
 - **No fuel** for the outboard yet: there's nowhere to get more on deserted cays.
 
+## 31. The garden (v0.6; numbers in `src/game/garden.ts`)
+- **Where:**
+  - pots on the two teak trays on the cabin top: two to start, and the workbench makes up to two more (1 plank + 2 driftwood each);
+  - four raised beds on Home Cay, on a flat grassy spot about 15 m inland from the sandcastle cove, at (−3, 20). Bushes and palms are kept clear of it, and there's a rain barrel and a "Home garden" sign.
+- **Crops**, real Caribbean garden plants, each with a true fact:
+  - callaloo (amaranth greens): ripe in 2 watered days, 0.5 days of food. It grows back after you cut it, half-grown.
+  - cherry tomatoes: 3 days, 1 day of food, 1–2 seeds back.
+  - sweet potatoes: 4 days, 2 days of food, a slip back.
+- **Seeds:** the seed tin starts with 3 callaloo, 3 tomato and 2 sweet potato. Harvests give seeds back.
+- **Water:**
+  - a plant only grows on days it's watered: a watering lasts a game day, and you can water again after about 7 hours;
+  - rain waters plants where it falls;
+  - pots draw from the boat's tank (0.05 days of water each); beds draw from the rain barrel (12 waterings, refilled by rain, about one per 15 s of heavy rain).
+- **Neglect:** a plant droops after most of a day without water, and withers after three dry days. That's the only thing in the game that can be lost, and only a plant.
+- **Food from it:** four beds and four pots of callaloo, watered daily, give more than a day of food a day, so a well-kept garden makes the stores easy. It takes daily watering and some rain-barrel planning.
+

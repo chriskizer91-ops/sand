@@ -31,6 +31,7 @@ Or download the file: `builds/sandcastle-cays-v0.5.html`.
 | Fishing rod (cast, strike, hold to reel) | rod button, then the round button | G, then E (hold E to reel) |
 | Galley, workbench, bilge pump (on the boat) | the round button | E |
 | Stores (days of food and water) | tap the bowl and drop at the top | click them |
+| Garden: plant, water, harvest (pots on the cabin top, beds on Home Cay) | the round button | E |
 | Chart (tap a place to sail there, or "Round the sea buoy and come home") | map button | M |
 | While building | one finger tool, two fingers swing, pinch zoom | click to use the tool, two-finger swipe to swing, pinch or wheel to zoom |
 | Stand up again | "Stand up" button | Esc or B |
@@ -58,6 +59,7 @@ npm run release         # build + copy to builds/sandcastle-cays-v<version>.html
 - `src/game/sailing.ts`: how the boat sails (points of sail, tacking, heel, leeway, overpowering, surfing, running aground, anchoring, the motor, the autopilot).
 - `src/game/weather.ts`: the trade wind, the open sea beyond the reefs, and the squalls.
 - `src/game/aboard.ts` and `src/game/fishing.ts`: living aboard (stores, rain, coconuts, the hull leaking, sail wear, workbench recipes) and fishing; `src/living.ts` connects them to the game.
+- `src/game/garden.ts`: the garden (crops, seeds, watering, growing, harvests); `src/gardening.ts` puts it in the game.
 - `src/player/player.ts`: you, in first person (deck, land, swimming, the ladder).
 - `src/game/beach.ts`: beachcombing rules (wash-ups, basket, locker, logbook) and the finds on the sand.
 - `src/content/finds.ts`: the catalogue of finds with true facts.

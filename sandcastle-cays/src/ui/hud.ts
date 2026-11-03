@@ -254,6 +254,7 @@ export class Hud {
     clock: string,
     boat?: { hull: number; where: string; sailing?: string; rows?: { name: string; value: string; text: string }[] },
     fish?: { name: string; count: number; fact: string }[],
+    garden?: { rows: { name: string; count: number; fact: string }[]; seeds: string },
   ): void {
     const kinds = FIND_KINDS;
     const nFound = kinds.filter((k) => found[k]).length;
@@ -267,6 +268,17 @@ export class Hud {
       this.logList.appendChild(el('div', { class: 'logrow' }, `<div class="name">Hull: ${word}<span>${hull}%</span></div><div class="fact">${boat.where}. Running aground on the reef or a beach scrapes the hull.</div>`));
       for (const r of boat.rows ?? []) this.logList.appendChild(el('div', { class: 'logrow' }, `<div class="name">${r.name}<span>${r.value}</span></div><div class="fact">${r.text}</div>`));
       if (boat.sailing) this.logList.appendChild(el('div', { class: 'logrow' }, `<div class="name">The sea buoy</div><div class="fact">${boat.sailing}</div>`));
+    }
+    if (garden) {
+      this.logList.appendChild(el('h3', {}, 'Garden'));
+      this.logList.appendChild(el('div', { class: 'logrow' }, `<div class="name">Seed tin</div><div class="fact">${garden.seeds}. Harvests give you seeds back.</div>`));
+      for (const g of garden.rows) {
+        const row = el('div', { class: `logrow${g.count ? '' : ' unknown'}` });
+        row.innerHTML = g.count
+          ? `<div class="name">${cap(g.name)}<span>harvested ${g.count === 1 ? 'once' : `${g.count} times`}</span></div><div class="fact">${g.fact}</div>`
+          : `<div class="name">${cap(g.name)}<span>not grown yet</span></div>`;
+        this.logList.appendChild(row);
+      }
     }
     if (fish) {
       this.logList.appendChild(el('h3', {}, 'Fish'));

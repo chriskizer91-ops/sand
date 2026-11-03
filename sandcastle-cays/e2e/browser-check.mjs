@@ -578,6 +578,47 @@ async function standBy(page, f) {
   step('Laptop: under a palm, E shakes down a coconut or two', /palm/.test(palmPrompt ?? '') && nuts1 > nuts0, `prompt "${palmPrompt}", coconuts on the sand ${nuts0} → ${nuts1} (palm at ${Math.round(palm.x)}, ${Math.round(palm.z)})`);
   await G(page, () => window.__game.squallsOn(true));
 
+  // ---- The garden (v0.6) ----
+  // A pot on the cabin top: plant callaloo, water it (from the tank), ripen it (dev tools), harvest it.
+  await G(page, () => { const g = window.__game; g.aboard(); const p = g.sloopPoints.potShelf[0]; g.player.placeAboard(p.clone().setX(p.x - 0.5), Math.PI / 2); g.player.pitch = -0.6; });
+  await waitFrames(page, 3);
+  const potPrompt = await G(page, () => window.__game.action()?.label);
+  await page.keyboard.press('KeyE');
+  await waitFrames(page, 3);
+  const plantPanel = await page.isVisible('#plantpanel:not(.hidden)');
+  if (plantPanel) await page.click('#plantpanel button:has-text("Plant callaloo")');
+  await waitFrames(page, 3);
+  const tank0 = await G(page, () => window.__game.living.aboard.water);
+  await page.keyboard.press('KeyE');
+  await waitFrames(page, 3);
+  const potState = await G(page, () => ({ label: window.__game.action()?.label, water: window.__game.living.aboard.water, plot: window.__game.gardening.state.plots.pot0 }));
+  await G(page, () => window.__game.gardening.devGrow());
+  await waitFrames(page, 4);
+  await shot(page, '12m-pot-ripe.png');
+  const food2 = await G(page, () => window.__game.living.aboard.food);
+  await page.keyboard.press('KeyE');
+  await waitFrames(page, 3);
+  const food3 = await G(page, () => window.__game.living.aboard.food);
+  step('Laptop: a deck pot: plant callaloo from the seed tin, water it from the tank, harvest it for food', /Plant/.test(potPrompt ?? '') && plantPanel && potState.plot?.crop === 'callaloo' && potState.water < tank0 && food3 > food2 + 0.3,
+    `prompt "${potPrompt}", then "${potState.label}", tank ${tank0.toFixed(2)} → ${potState.water.toFixed(2)}, food ${food2.toFixed(1)} → ${food3.toFixed(1)}`);
+  // The garden on Home Cay: plant a tomato in a bed, water it from the rain barrel.
+  await G(page, () => window.__game.teleport(-5.1, 17.6, Math.PI, -0.5));
+  await waitFrames(page, 4);
+  const bedPrompt = await G(page, () => window.__game.action()?.label);
+  await page.keyboard.press('KeyE');
+  await waitFrames(page, 3);
+  if (await page.isVisible('#plantpanel:not(.hidden)')) await page.click('#plantpanel button:has-text("Plant cherry tomato")');
+  await waitFrames(page, 3);
+  const barrel0 = await G(page, () => window.__game.gardening.state.barrel);
+  await page.keyboard.press('KeyE');
+  await waitFrames(page, 3);
+  const bed = await G(page, () => ({ barrel: window.__game.gardening.state.barrel, plot: window.__game.gardening.state.plots.bed0 }));
+  await G(page, () => { const g = window.__game; g.teleport(-3, 14.5, Math.PI, -0.25); g.lookAt(-3, 0.9, 20.5); });
+  await waitFrames(page, 4);
+  await shot(page, '12n-home-garden.png');
+  step('Laptop: the garden on Home Cay: plant a tomato in a bed and water it from the rain barrel', /Plant/.test(bedPrompt ?? '') && bed.plot?.crop === 'tomato' && bed.barrel === barrel0 - 1,
+    `prompt "${bedPrompt}", barrel ${barrel0} → ${bed.barrel} waterings`);
+
   // ---- The open sea (v0.4) ----
   const sea = await G(page, () => {
     const g = window.__game;

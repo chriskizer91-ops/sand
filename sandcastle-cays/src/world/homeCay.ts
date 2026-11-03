@@ -35,6 +35,27 @@ const REEF_OFF = 95;
 
 export type { Ground } from './islands';
 
+/**
+ * Your garden on Home Cay: a flat grassy spot about 15 m inland from the
+ * sandcastle cove. Four raised beds, a rain barrel and a sign. Plants and
+ * palms are kept clear of it.
+ */
+export const HOME_GARDEN = {
+  x: -3,
+  z: 20,
+  /** Clear of bushes and palms within this distance. */
+  clear: 6.5,
+  /** Bed centres and turn (radians); each bed is about 1.7 × 0.9 m. */
+  beds: [
+    { x: -5.1, z: 18.9, rot: 0 },
+    { x: -0.9, z: 18.9, rot: 0 },
+    { x: -5.1, z: 21.5, rot: 0 },
+    { x: -0.9, z: 21.5, rot: 0 },
+  ],
+  barrel: { x: 1.7, z: 22.6 },
+  sign: { x: -3, z: 16.6 },
+};
+
 export class HomeCayTerrain implements IslandTerrain {
   readonly id = 'home' as const;
   readonly name = 'Home Cay';

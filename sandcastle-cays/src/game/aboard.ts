@@ -50,7 +50,7 @@ export const UPKEEP = {
   torn: 40,
 };
 
-export type Upgrade = 'catcher' | 'jugs' | 'lure' | 'trap';
+export type Upgrade = 'catcher' | 'jugs' | 'lure' | 'trap' | 'planter';
 
 export interface AboardState {
   /** Days of food in the larder and of water in the tank. */
@@ -82,9 +82,9 @@ export function restoreAboard(raw: unknown): AboardState {
   if (!raw || typeof raw !== 'object') return a;
   const r = raw as Partial<AboardState>;
   a.made = {};
-  for (const k of ['catcher', 'jugs', 'lure', 'trap'] as Upgrade[]) {
+  for (const k of ['catcher', 'jugs', 'lure', 'trap', 'planter'] as Upgrade[]) {
     const n = (r.made as Record<string, unknown> | undefined)?.[k];
-    if (typeof n === 'number' && n > 0) a.made[k] = Math.min(k === 'jugs' ? 2 : 1, Math.floor(n));
+    if (typeof n === 'number' && n > 0) a.made[k] = Math.min(k === 'jugs' || k === 'planter' ? 2 : 1, Math.floor(n));
   }
   a.food = num(r.food, a.food, 0, STORES.foodMax);
   a.water = num(r.water, a.water, 0, waterMax(a));
@@ -221,6 +221,7 @@ export const RECIPES: Recipe[] = [
   { id: 'jugs', name: 'Water jugs', text: `Carry ${STORES.jugDays} more days of water (you can make two sets).`, needs: { bottle: 3, rope: 1 }, upgrade: 'jugs', max: 2 },
   { id: 'lure', name: 'Feather lure', text: 'Fish bite sooner.', needs: { feather: 1, float: 1 }, upgrade: 'lure', max: 1 },
   { id: 'trap', name: 'Fish trap', text: 'At anchor overnight it catches a fish or two by morning.', needs: { net: 1, driftwood: 3 }, upgrade: 'trap', max: 1 },
+  { id: 'planter', name: 'Another deck pot', text: 'A pot for the cabin-top trays, to grow more (up to four pots).', needs: { plank: 1, driftwood: 2 }, upgrade: 'planter', max: 2 },
 ];
 
 /** A recipe shows once you've found every kind of thing it needs at least once. */
