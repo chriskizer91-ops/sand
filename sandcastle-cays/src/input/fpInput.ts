@@ -128,6 +128,7 @@ export class FpInput {
       if (e.button !== 0) return;
       if (this.locked) {
         this.pressed.add('Use');
+        this.keys.add('Use');
         return;
       }
       // First click captures the pointer; if that's refused, drag to look and click to use.
@@ -189,6 +190,7 @@ export class FpInput {
 
   private up(e: PointerEvent, cancel = false): void {
     if (e.pointerType === 'mouse') {
+      this.keys.delete('Use');
       if (this.mouseDrag && this.mouseDrag.moved < 6 && !cancel) this.taps.push({ x: e.clientX, y: e.clientY });
       this.mouseDrag = null;
       return;
@@ -255,6 +257,17 @@ export class FpInput {
   /** Press a virtual button (from the on-screen buttons). */
   press(code: string): void {
     this.pressed.add(code);
+  }
+
+  /** Is this key (or held virtual button) down right now? */
+  isDown(code: string): boolean {
+    return this.keys.has(code);
+  }
+
+  /** Hold or let go of a virtual button (an on-screen button held down). */
+  hold(code: string, on: boolean): void {
+    if (on) this.keys.add(code);
+    else this.keys.delete(code);
   }
 
   takeTaps(): Tap[] {

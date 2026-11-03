@@ -36,6 +36,14 @@ export const ICONS = {
   motorUp: svg('<circle cx="8" cy="14" r="1.6" fill="currentColor"/><path d="M8 12.4c-1-3 1-5 2-3.2M8 15.6c1 3-1 5-2 3.2M9.6 14c3 1 5-1 3.2-2" /><path d="M15 9h6M18 6l3 3-3 3"/>'),
   motorDown: svg('<circle cx="16" cy="14" r="1.6" fill="currentColor"/><path d="M16 12.4c-1-3 1-5 2-3.2M16 15.6c1 3-1 5-2 3.2M17.6 14c3 1 5-1 3.2-2" /><path d="M9 9H3M6 6L3 9l3 3"/>'),
   /** A woven basket. */
+  /** A bowl with steam: food in the larder. */
+  food: svg('<path d="M4 12h16c0 4-3.6 7-8 7s-8-3-8-7z" fill="currentColor" fill-opacity=".2"/><path d="M9 9c-.8-1 .8-2 0-3M12 9c-.8-1 .8-2 0-3M15 9c-.8-1 .8-2 0-3"/>'),
+  /** A drop of water. */
+  water: svg('<path d="M12 3.5c3 4 5.5 7 5.5 10a5.5 5.5 0 0 1-11 0c0-3 2.5-6 5.5-10z" fill="currentColor" fill-opacity=".2"/><path d="M9.5 14.5a2.5 2.5 0 0 0 2.5 2.5" opacity=".7"/>'),
+  /** A fishing rod with its line and a hook. */
+  rod: svg('<path d="M4 20L18 4"/><path d="M18 4c1.5 4 1.5 9 0 12"/><path d="M18 16c0 1.5-1 2.5-2.2 2.5S14 17.5 14 16.5" /><circle cx="6.5" cy="17.5" r="1.6"/>'),
+  /** A mallet: the workbench. */
+  mallet: svg('<path d="M10 14l-6 6"/><path d="M9.5 6.5l4-4 8 8-4 4z" fill="currentColor" fill-opacity=".2"/><path d="M11.5 12.5l2-2"/>'),
   basket: svg('<path d="M4 10h16l-2 9H6z" fill="currentColor" fill-opacity=".18"/><path d="M8 10c0-3 1.8-5 4-5s4 2 4 5"/><path d="M5 13.5h14M6 16.5h12" opacity=".6"/>'),
   /** Standing up from the sand. */
   stand: svg('<circle cx="12" cy="4.5" r="2"/><path d="M12 7v7M12 14l-3 6M12 14l3 6M8 10l4-2 4 2"/>'),

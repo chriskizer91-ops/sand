@@ -43,6 +43,7 @@ import { Hud, cap } from './ui/hud';
 import { SailHud } from './ui/sailHud';
 import { Chart } from './ui/chart';
 import { DevTools } from './ui/devTools';
+import { Living, type LivingAction, type LivingRig, type RodView, type LineView } from './living';
 import { Ui } from './ui/ui';
 import type { CheckResult } from './checks/sandChecks';
 
@@ -359,6 +360,9 @@ const hud = new Hud(
     logbook: () => toggleLogbook(),
     standUp: () => exitBuild(),
     click: () => audio.click(),
+    stores: () => living.showGalley(!living.galley.open),
+    rod: () => living.toggleRod(),
+    hold: (on) => input.hold('Action', on),
   },
   isTouch,
 );
@@ -553,6 +557,7 @@ function nearHelm(): boolean {
 }
 
 function takeHelm(): void {
+  living.putRodAway(true);
   if (player.mode !== 'deck') return;
   atHelm = true;
   player.placeAboard(sloop.points.helm.clone(), player.yaw);
@@ -680,6 +685,17 @@ const devTools = new DevTools(
       showFps = on;
       ui.fpsEl.style.display = on ? 'block' : 'none';
     },
+    fillStores: () => living.devFill(),
+    lowStores: () => living.devLow(),
+    giveMaterials: () => {
+      living.devMaterials();
+      ui.toast('Three of every find put in the locker', 2000);
+    },
+    biteNow: () => living.devBite(),
+    scrapeHull: () => {
+      boat.hull = 30;
+      ui.toast('Hull scraped to 30%: she’ll leak', 2000);
+    },
     click: () => audio.click(),
   },
   isTouch,
@@ -739,6 +755,8 @@ function devInfo(): [string, string][] {
     ['sea', `open ${Math.round(wind.open * 100)}% · rain ${Math.round(rainNow * 100)}% · ${squalls.length} squall${squalls.length === 1 ? '' : 's'}${nearest ? `, nearest ${nearest}` : ''}`],
     ['clock', `${formatClock(clock)}${holdTime ? ' (stopped)' : ''} · game ×${devSpeed} · wind ×${devWindK}`],
     ['sea buoy', `${records.rounds} rounds · best ${records.best ? minSec(records.best) : '–'}`],
+    ['stores', `food ${living.aboard.food.toFixed(1)} d · water ${living.aboard.water.toFixed(1)} d · ${living.aboard.coolBox.length} fish`],
+    ['upkeep', `sails ${Math.round(living.aboard.sails)}% · bilge ${Math.round(living.aboard.bilge * 100)}% · fishing ${living.fishing.phase}`],
   ];
 }
 
@@ -860,7 +878,14 @@ function toggleLogbook(show?: boolean): void {
     const sailing = records.rounds
       ? `Round the sea buoy ${records.rounds === 1 ? 'once' : `${records.rounds} times`}.${records.best ? ` Fastest run from Home Cay, round the buoy and back: ${minSec(records.best)}.` : ''}`
       : 'The sea buoy lies out on the open sea to the south-east. Sail out round it and back to Home Cay, and your time goes here.';
-    hud.renderLogbook(beach.state.found, beach.state.locker, beach.state.basket, formatClock(clock), { hull: boat.hull, where: boat.anchored ? `At anchor off ${near}` : `Under way near ${near}`, sailing });
+    hud.renderLogbook(
+      beach.state.found,
+      beach.state.locker,
+      beach.state.basket,
+      formatClock(clock),
+      { hull: boat.hull, where: boat.anchored ? `At anchor off ${near}` : `Under way near ${near}`, sailing, rows: living.logRows() },
+      living.logFish(),
+    );
     input.unlock();
     input.clear();
   }
@@ -896,7 +921,7 @@ function updateLookHint(): void {
   hud.setLookHint(!isTouch && started && view === 'fp' && !input.locked && !input.dragLook && !anyPanelOpen());
 }
 function anyPanelOpen(): boolean {
-  return ui.panelOpen || hud.logbookOpen || chart.open;
+  return ui.panelOpen || hud.logbookOpen || chart.open || living.panelOpen;
 }
 
 // ---------- building (kneeling at the sand) ----------
@@ -1010,6 +1035,8 @@ function exitBuild(): void {
 window.addEventListener('keydown', (e) => {
   if (!started) return;
   if (e.code === 'KeyT' && !e.repeat) toggleDevTools();
+  else if (e.code === 'KeyG' && !e.repeat && view === 'fp' && !atHelm && !anyPanelOpen()) living.toggleRod();
+  else if (e.code === 'Escape' && living.panelOpen) living.closePanels();
   else if (view === 'build' && (e.code === 'Escape' || e.code === 'KeyB')) exitBuild();
   else if (e.code === 'KeyL' && view === 'fp') toggleLogbook();
   else if (e.code === 'KeyM' && view === 'fp') toggleChart();
@@ -1141,13 +1168,14 @@ interface GameSave {
   clock: Clock;
   boat?: Partial<BoatState>;
   sailing?: Partial<typeof records>;
+  living?: unknown;
   player: { mode: PlayerMode; pos: number[]; yaw: number; pitch: number };
   beach: unknown;
 }
 
 function gameState(): GameSave {
   const { x, z, heading, anchored, ax, az, sailSet, hull } = boat;
-  return { version: GAME_VERSION, clock: { ...clock }, boat: { x, z, heading, anchored, ax, az, sailSet, hull }, sailing: { ...records }, player: player.state, beach: beach.state };
+  return { version: GAME_VERSION, clock: { ...clock }, boat: { x, z, heading, anchored, ax, az, sailSet, hull }, sailing: { ...records }, living: living.save(), player: player.state, beach: beach.state };
 }
 
 function restoreGame(raw: unknown): void {
@@ -1180,6 +1208,7 @@ function restoreGame(raw: unknown): void {
   records.best = Number.isFinite(sr?.best) && (sr?.best as number) > 0 ? (sr?.best as number) : 0;
   run = { start: -1, rounded: false };
   wasAnchored = boat.anchored;
+  living.restore(g.living);
   const p = g.player;
   if (p && Array.isArray(p.pos) && p.pos.length === 3 && p.pos.every(Number.isFinite)) {
     const v = new THREE.Vector3(p.pos[0], p.pos[1], p.pos[2]);
@@ -1256,6 +1285,7 @@ function newGame(): void {
   beach.state = Beach.fresh();
   beach.washUp(1);
   beachView.sync();
+  living.reset();
   boat = newBoat(terrain.anchorage.x, terrain.anchorage.z, terrain.anchorage.heading);
   course = null;
   atHelm = false;
@@ -1366,6 +1396,7 @@ function startPlaying(): void {
 
 /** New finds wash up each morning. */
 function washIfDue(): void {
+  if (clock.hour >= DAY.washUpHour) living.morning(clock.day);
   const st = beach.state;
   if (st.lastWash < clock.day && clock.hour >= DAY.washUpHour) {
     const n = beach.washUp(clock.day);
@@ -1383,12 +1414,18 @@ type Action =
   | { kind: 'locker'; label: string }
   | { kind: 'build'; label: string }
   | { kind: 'helm'; label: string }
+  | { kind: 'living'; a: LivingAction; label: string }
   | null;
 
 const center = new THREE.Vector2(0, 0);
 const tmpV = new THREE.Vector3();
 function currentAction(): Action {
   if (player.mode === 'climb') return null;
+  // With the rod in your hands, the use button fishes.
+  if (living.rodHeld) {
+    const la = living.action();
+    if (la) return { kind: 'living', a: la, label: la.label };
+  }
   if (player.nearLadder()) return { kind: 'climb', label: 'Climb aboard' };
   if (player.atLadderTop()) return { kind: 'climbdown', label: 'Climb down the ladder' };
   raycaster.setFromCamera(center, camera);
@@ -1400,8 +1437,19 @@ function currentAction(): Action {
     const hm = sloop.points.helm;
     const dLocker = beach.state.basket.length ? Math.hypot(player.pos.x - lk.x, player.pos.z - lk.z) : Infinity;
     const dHelm = Math.hypot(player.pos.x - hm.x, player.pos.z - hm.z);
-    if (dLocker < 1.4 && dLocker <= dHelm) return { kind: 'locker', label: 'Empty your basket into the locker' };
-    if (dHelm < 1.2) return { kind: 'helm', label: 'Take the helm' };
+    // The galley, the workbench and the pump too: whichever spot you're nearest.
+    const opts: [number, number, Action][] = [
+      [dLocker, 1.4, { kind: 'locker', label: 'Empty your basket into the locker' }],
+      [dHelm, 1.2, { kind: 'helm', label: 'Take the helm' }],
+      ...living.deckOptions().map(([d, a]) => [d, 1.0, { kind: 'living', a, label: a.label }] as [number, number, Action]),
+    ];
+    opts.sort((x, y) => x[0] - y[0]);
+    for (const [d, r, a] of opts) if (d < r) return a;
+  }
+  // Ashore: under a coconut palm.
+  {
+    const la = living.action();
+    if (la) return { kind: 'living', a: la, label: la.label };
   }
   if (canBuildHere()) return { kind: 'build', label: 'Kneel and build' };
   return null;
@@ -1421,6 +1469,7 @@ function doAction(a: Action): void {
     changedSinceSave = true;
   } else if (a.kind === 'build') enterBuild();
   else if (a.kind === 'helm') takeHelm();
+  else if (a.kind === 'living') living.doAction(a.a);
 }
 
 function pickUp(id: number): void {
@@ -1438,6 +1487,49 @@ function pickUp(id: number): void {
   if (r.first) hud.showCard(`New: ${cap(info.name)}`, info.firstLine, 6000);
   if (beach.basketFull) ui.toast('That fills your basket. Time to take it back aboard.', 3200);
 }
+
+// ---------- living aboard ----------
+
+const tipTmp = new THREE.Vector3();
+const living = new Living({
+  boat: () => boat,
+  player,
+  beach,
+  beachView,
+  hud,
+  toast: (m, ms) => ui.toast(m, ms),
+  audio,
+  input,
+  isTouch,
+  points: sloop.points as unknown as { galley?: THREE.Vector3; workbench?: THREE.Vector3; pump?: THREE.Vector3; locker: THREE.Vector3 },
+  rig: () => rig as unknown as LivingRig | null,
+  floorAt: (x, z) => seaBed.floorAt(x, z),
+  seaHeight: (x, z) => seaHeight(x, z, time),
+  openness,
+  camera,
+  held: held as unknown as RodView,
+  line: null as LineView | null,
+  // Until the rod model reports its own tip: a point ahead of you, a little low and to the right.
+  tipWorld: (out) => {
+    camera.getWorldDirection(tipTmp);
+    out.copy(camera.position).addScaledVector(tipTmp, 1.6);
+    out.y -= 0.15;
+    return out;
+  },
+  palms: trunks,
+  dayNow: () => clock.day + clock.hour / 24,
+  atHelm: () => atHelm,
+  changed: () => (changedSinceSave = true),
+  closeOtherPanels: () => {
+    ui.closePanels();
+    hud.showLogbook(false);
+    if (chart.open) toggleChart(false);
+  },
+  unlockPointer: () => {
+    input.unlock();
+    input.clear();
+  },
+});
 
 // ---------- frame loop ----------
 
@@ -1486,7 +1578,7 @@ function frame(now: number): void {
     const simDt = dt * devSpeed;
     const n = Math.max(1, Math.ceil(simDt / 0.05));
     for (let i = 0; i < n; i++) {
-      const e = stepBoat(boat, wind, { steer, attended: atHelm || !!course, slope: seaSlope(time) }, seaBed, simDt / n);
+      const e = stepBoat(boat, wind, { steer, attended: atHelm || !!course, slope: seaSlope(time), sailCondition: living.sailCondition, drag: living.drag }, seaBed, simDt / n);
       sailEv.grounded = Math.max(sailEv.grounded, e.grounded);
       sailEv.floated = sailEv.floated || e.floated;
       sailEv.over = Math.max(sailEv.over, e.over);
@@ -1518,6 +1610,11 @@ function frame(now: number): void {
     changedSinceSave = true;
   }
   if (sailEv.floated) ui.toast('Afloat again', 1800);
+  {
+    const twa = windAngle(boat, wind);
+    const flogging = boat.sail > 0.3 && sailFill(twa) < 0.4 && wind.speed > 10 && !boat.anchored;
+    living.update(dt, dt * devSpeed, time, wind.rain, sailEv.over, flogging, daylight.info.night);
+  }
   // Stuck head to wind at the helm for a while? A gentle tip, once.
   if (atHelm && !boat.anchored && boat.sail > 0.5 && Math.abs(boat.motor ?? 0) < 0.05 && Math.abs(boat.speed) < 0.3 && Math.abs(windAngle(boat, wind)) < SAILING.noGo) ironsTime += dt;
   else ironsTime = 0;
@@ -1947,7 +2044,7 @@ void boot();
         st = ap.steer;
         if (ap.arrived && !dropAnchor(boat, seaBed)) course = null;
       }
-      const ev = stepPushOff(1 / 30) ? { grounded: 0, floated: false, over: 0, surfing: 0 } : stepBoat(boat, wind, { steer: st, attended: true, slope: seaSlope(time) }, seaBed, 1 / 30);
+      const ev = stepPushOff(1 / 30) ? { grounded: 0, floated: false, over: 0, surfing: 0 } : stepBoat(boat, wind, { steer: st, attended: true, slope: seaSlope(time), sailCondition: living.sailCondition, drag: living.drag }, seaBed, 1 / 30);
       maxSurf = Math.max(maxSurf, ev.surfing);
       maxSpeed = Math.max(maxSpeed, boat.speed);
       maxOver = Math.max(maxOver, ev.over);
@@ -1988,6 +2085,7 @@ void boot();
   get devOpen() {
     return devTools.open;
   },
+  living,
   get weather() {
     return { wind: wind.speed, from: wind.from, open: wind.open, rain: wind.rain, squall: wind.squall, rainHere: rainNow, squalls: squalls.length };
   },

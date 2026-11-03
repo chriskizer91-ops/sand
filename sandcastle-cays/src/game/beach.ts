@@ -72,6 +72,15 @@ export class Beach {
     return s;
   }
 
+  /** Put a find on the ground at x, z (a coconut shaken from a palm). Returns its id. */
+  drop(kind: FindKind, x: number, z: number, day: number, rot = 0): number {
+    const st = this.state;
+    const id = st.nextId++;
+    st.ground.push({ id, kind, x, z, rot, day });
+    if (st.ground.length > MAX_ON_SAND) st.ground.splice(0, st.ground.length - MAX_ON_SAND);
+    return id;
+  }
+
   /** The sea leaves new things along each island's tideline. Returns how many arrived. */
   washUp(day: number, count?: number): number {
     const st = this.state;

@@ -268,22 +268,12 @@ export class SandAudio {
     this.sailNodes = { rush, rushF, rig, luff, luffLfo };
   }
 
-  private weatherNodes: { rain: GainNode; rainF: BiquadFilterNode; howl: GainNode; howlF: BiquadFilterNode } | null = null;
-  private rainLevel = 0;
+  private weatherNodes: { howl: GainNode; howlF: BiquadFilterNode } | null = null;
 
   private ensureWeatherNodes(): void {
     if (this.weatherNodes || !this.ctx) return;
     const ctx = this.ctx;
-    // Rain: a soft hiss of countless drops on the sea and the deck.
-    const rainHp = ctx.createBiquadFilter();
-    rainHp.type = 'highpass';
-    rainHp.frequency.value = 1400;
-    const rainF = ctx.createBiquadFilter();
-    rainF.type = 'lowpass';
-    rainF.frequency.value = 7000;
-    const rain = ctx.createGain();
-    rain.gain.value = 0;
-    this.loop(this.noise).connect(rainHp).connect(rainF).connect(rain).connect(this.master);
+    // No rain sound: made-up rain sounds like radio static (the owner's call, v0.5).
     // A strong wind's low moan.
     const howlF = ctx.createBiquadFilter();
     howlF.type = 'bandpass';
@@ -292,18 +282,16 @@ export class SandAudio {
     const howl = ctx.createGain();
     howl.gain.value = 0;
     this.loop(this.brown).connect(howlF).connect(howl).connect(this.master);
-    this.weatherNodes = { rain, rainF, howl, howlF };
+    this.weatherNodes = { howl, howlF };
   }
 
-  /** Every frame: rain falling where you are (0..1) and the wind's strength there (m/s). */
+  /** Every frame: rain falling where you are (0..1, not heard: see above) and the wind's strength there (m/s). */
   setWeather(rain: number, wind: number): void {
     if (!this.ctx || !this.enabled) return;
+    void rain;
     this.ensureWeatherNodes();
     const n = this.weatherNodes!;
     const now = this.ctx.currentTime;
-    this.rainLevel = rain;
-    n.rain.gain.setTargetAtTime(0.11 * rain, now, 0.6);
-    n.rainF.frequency.setTargetAtTime(4500 + 4000 * rain, now, 0.6);
     const strong = Math.max(0, Math.min(1, (wind - 8) / 8));
     n.howl.gain.setTargetAtTime(0.09 * strong * strong, now, 0.8);
     n.howlF.frequency.setTargetAtTime(300 + 260 * strong + 60 * Math.sin(now * 0.7), now, 0.8);

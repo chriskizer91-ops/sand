@@ -49,6 +49,8 @@ const tmp2 = new THREE.Vector3();
 const tmpQ = new THREE.Quaternion();
 
 export class Player {
+  /** 1 normally; less when you're hungry or thirsty (see game/aboard.ts). */
+  vigour = 1;
   mode: PlayerMode = 'deck';
   /** Aboard: boat-local feet position. Otherwise: world feet position. */
   pos = new THREE.Vector3();
@@ -177,8 +179,10 @@ export class Player {
       }
     }
 
+    // Hungry or thirsty, you're slower and can't run.
+    if (this.vigour < 1) run = false;
     if (this.mode === 'deck') {
-      const speed = (run ? PLAYER.run * 0.75 : PLAYER.walk * 0.85) * amount;
+      const speed = (run ? PLAYER.run * 0.75 : PLAYER.walk * 0.85) * amount * this.vigour;
       this.speed = speed;
       const deck = w.boat.deck;
       // Convert the world move to boat-local with the boat's turn.
@@ -240,6 +244,7 @@ export class Player {
       if (this.waterDepth > PLAYER.wadeDepth) speed *= 0.55;
       else if (this.waterDepth > 0.08) speed *= 0.8;
     }
+    speed *= this.vigour;
     this.speed = speed;
     const l = Math.hypot(vx, vz);
     if (l > 0) {

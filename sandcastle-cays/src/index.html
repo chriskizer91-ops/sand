@@ -132,6 +132,43 @@ body[data-mode="build"] [data-fp] { display: none !important; }
 #sailhud .l1 { font-size: 14.5px; color: var(--ink); }
 #sailhud .bad { color: #c2412a; }
 #sailhud .surf { color: #157e93; }
+/* ---------- living aboard ---------- */
+#stores { position: absolute; top: calc(10px + var(--safe-t)); left: 122px; display: flex; align-items: center; gap: 10px; background: var(--paper); box-shadow: var(--shadow); border-radius: 26px; padding: 6px 12px 6px 8px; min-height: 48px; font-size: 14px; color: var(--ink-soft); pointer-events: auto; }
+#stores .st { display: flex; align-items: center; gap: 3px; }
+#stores .st svg { width: 22px; height: 22px; }
+#stores .food { color: #b0753c; }
+#stores .water { color: #2b86b5; }
+#stores b { color: var(--ink); font-size: 14px; }
+#stores .low b { color: #c2412a; }
+#stores .low svg { animation: lowpulse 1.4s ease-in-out infinite; }
+@keyframes lowpulse { 50% { opacity: .35; } }
+#rodbtn { position: absolute; pointer-events: auto; right: calc(118px + env(safe-area-inset-right, 0px)); bottom: calc(22px + var(--safe-b)); width: 62px; height: 62px; border-radius: 50%; background: var(--paper); box-shadow: var(--shadow); display: grid; place-items: center; align-content: center; color: var(--sea-deep); font-size: 11px; font-weight: 800; gap: 0; }
+#rodbtn.on { background: var(--sea); color: #fff; }
+#rodbtn.hide { display: none; }
+#rodbtn svg { width: 24px; height: 24px; }
+#fishpanel { position: absolute; left: 50%; bottom: calc(118px + var(--safe-b)); transform: translateX(-50%); background: rgba(30, 42, 48, .7); color: #fff; border-radius: 16px; padding: 8px 14px 10px; min-width: 220px; max-width: 88vw; text-align: center; font-size: 14px; font-weight: 700; pointer-events: none; }
+#fishpanel.hide { display: none; }
+#fishpanel .bar { position: relative; height: 12px; border-radius: 6px; background: rgba(255,255,255,.2); margin-top: 6px; overflow: hidden; }
+#fishpanel .bar div { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 6px; transition: width .08s linear; }
+#fishpanel .bar span { position: absolute; right: 6px; top: -1px; font-size: 10px; opacity: .8; }
+#fishpanel .tension div { background: #f2c14e; }
+#fishpanel .tension.danger div { background: #e4573d; }
+#fishpanel .progress div { background: #57c7b6; }
+body.athelm #rodbtn { display: none; }
+#galley, #workbench { width: min(380px, calc(100vw - 20px)); }
+.storebar { height: 10px; border-radius: 6px; background: rgba(0,0,0,.08); overflow: hidden; margin: 3px 0 8px; }
+.storebar div { height: 100%; border-radius: 6px; }
+.storebar.food div { background: #d19a5b; }
+.storebar.water div { background: #4aa6d6; }
+.recipe { padding: 9px 0; border-bottom: 1px solid rgba(0,0,0,.06); }
+.recipe .name { font-weight: 800; font-size: 15px; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.recipe .text { font-size: 13px; color: var(--ink-soft); margin: 2px 0 4px; }
+.recipe .needs { font-size: 13px; }
+.recipe .needs .short { color: #c2412a; }
+.recipe button.wide { margin-top: 6px; padding: 9px 12px; }
+.recipe button[disabled] { opacity: .45; }
+.recipe.unknown .name { color: var(--ink-soft); font-weight: 700; }
+@media (max-width: 640px) { #stores { top: calc(66px + var(--safe-t)); left: 170px; min-height: 32px; padding: 3px 10px 3px 6px; gap: 8px; } #stores .st svg { width: 18px; height: 18px; } #stores b { font-size: 12.5px; } #rodbtn { right: calc(100px + env(safe-area-inset-right, 0px)); } }
 /* ---------- dev tools ---------- */
 #devtools { position: fixed; z-index: 32; left: 10px; top: calc(66px + var(--safe-t)); width: min(350px, calc(100vw - 20px)); max-height: calc(100% - 150px - var(--safe-t) - var(--safe-b)); overflow: auto; background: rgba(22, 34, 40, .9); color: #e6f2f2; border-radius: 18px; box-shadow: 0 12px 34px rgba(0,0,0,.3); padding: 12px 14px; transition: opacity .15s; }
 #devtools.hidden { opacity: 0; pointer-events: none; }

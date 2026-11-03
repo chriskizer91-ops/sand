@@ -183,3 +183,45 @@ Each stroke opens an undo record. The first time a chunk is changed during that 
 - **Push off:** the anchor button (X) becomes "Push off" while she's aground. It searches outward (up to 60 m) for the nearest spot with at least 35 cm to spare under the keel, heading away from the shallows, and eases her there over 2.5 s. A check confirms it finds deep water close by from shallow spots all round both cays.
 - **Dev tools:** the owner asked for a dev tool window toggled with T. On the phone it's in the Menu. It doesn't pause the game, so you can watch numbers change while sailing. Its settings (wind strength, squalls off, game speed) aren't saved; they reset when the game is reloaded.
 
+## 29. No rain sound (v0.5)
+- **What:** the rain hiss is gone. The owner said made-up rain sounds like static, and recordings aren't allowed (everything is made in code). The strong-wind moan stays.
+
+## 30. Living aboard (v0.5; numbers in `src/game/aboard.ts` and `src/game/fishing.ts`)
+- **Order:** upkeep and living aboard comes first. The garden is v0.6, the dinghy and shark v0.7 and polish v0.8, so each part can be played sooner.
+- **Stores:**
+  - food and water are counted in days; you use one day of each per game day (about 24 real minutes);
+  - the larder holds 30 days and the tank 20 (water jugs add 5 each, up to two sets);
+  - a new game starts with 10 days of food and 8 of water, so topping up matters early;
+  - warnings come at 3 days. When one runs out, you're slower and can't run. Nothing worse happens.
+- **Food:**
+  - fish, cooked in the galley: blue-striped grunt 0.3 days, yellowtail snapper and bar jack 0.5, mahi-mahi 1.5. A bonefish is let go;
+  - fresh fish keeps 1.5 days in the cool box;
+  - a coconut is 0.2 days of food and 0.3 of water.
+- **Water:** rain fills the tank:
+  - at anchor under the awning: about a day of water per minute of heavy rain, twice that with the bigger catcher;
+  - under sail, off the mainsail: half that;
+  - otherwise only a little off the deck.
+
+  Squalls are the main source, so sailing to meet one and anchoring under it pays.
+- **Fishing:**
+  - cast from the deck (not at the helm, and slower than 1.5 m/s) or from the shore;
+  - a bite comes in 8–30 s (a lure shortens it), and you have 1.3 s to strike;
+  - reel by holding; when the fish runs the line tightens, so ease off before it snaps;
+  - what bites depends on where the float lands: bonefish on the shallow flats, grunts, snappers and jacks in the lagoon, and mahi-mahi only out on the open sea.
+- **Coconuts:** shake a palm and one or two fall; each palm has ripe ones again after two days.
+- **Upkeep:**
+  - below 60% the hull leaks into the bilge (it fills in 5 minutes at 0%);
+  - a bilge more than 40% full slows her (by up to a quarter when full);
+  - each pump stroke empties 5%;
+  - the sails wear when she's badly overpowered or flogging in a strong wind, and worn sails drive her less (down to 55% when torn).
+- **Workbench recipes** (each appears once you've found every material it needs; it uses finds from the locker):
+  - caulk the seams: 2 driftwood + 1 pumice, hull +15%;
+  - patch the hull: 1 plank + 1 rope, +35%;
+  - patch the sails: 1 sailcloth + 1 rope, +40%;
+  - bigger rain catcher: 2 sailcloth + 1 rope;
+  - water jugs: 3 bottles + 1 rope;
+  - feather lure: 1 feather + 1 fishing float;
+  - fish trap: 1 net + 3 driftwood. At anchor overnight it catches one or two fish by morning.
+- **New finds** for the recipes: a scrap of sailcloth, a piece of fishing net, an empty glass bottle.
+- **No fuel** for the outboard yet: there's nowhere to get more on deserted cays.
+

@@ -28,6 +28,11 @@ export interface DevActions {
   setClockRunning(on: boolean): void;
   setSpeed(k: number): void;
   setFps(on: boolean): void;
+  fillStores(): void;
+  lowStores(): void;
+  giveMaterials(): void;
+  biteNow(): void;
+  scrapeHull(): void;
   click(): void;
 }
 
@@ -91,6 +96,14 @@ export class DevTools {
       ['Push off', () => actions.pushOff()],
       ['Mend the hull', () => actions.repairHull()],
       ['Stop her', () => actions.stopBoat()],
+    ]);
+    section('Living aboard');
+    row([
+      ['Fill the stores', () => actions.fillStores()],
+      ['Stores nearly out', () => actions.lowStores()],
+      ['3 of every find', () => actions.giveMaterials()],
+      ['A fish bites now', () => actions.biteNow()],
+      ['Scrape the hull', () => actions.scrapeHull()],
     ]);
     section('Weather');
     row([

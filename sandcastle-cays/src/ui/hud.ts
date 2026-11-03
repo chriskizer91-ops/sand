@@ -25,6 +25,12 @@ export interface HudActions {
   logbook(): void;
   standUp(): void;
   click(): void;
+  /** Tapped the stores readout. */
+  stores(): void;
+  /** Tapped the rod button. */
+  rod(): void;
+  /** The round action button is held down (true) or let go (false). */
+  hold?(on: boolean): void;
 }
 
 export class Hud {
@@ -33,6 +39,14 @@ export class Hud {
   private prompt: HTMLDivElement;
   private clockEl: HTMLDivElement;
   private basketEl: HTMLDivElement;
+  private storesEl: HTMLDivElement;
+  private lastStores = '';
+  private rodBtn: HTMLButtonElement;
+  private fishPanel: HTMLDivElement;
+  private fishLine: HTMLDivElement;
+  private fishTension: HTMLDivElement;
+  private fishProgress: HTMLDivElement;
+  private lastFish = '';
   private actionBtn: HTMLButtonElement;
   private jumpBtn: HTMLButtonElement;
   private standBtn: HTMLButtonElement;
@@ -59,6 +73,26 @@ export class Hud {
     this.clockEl = el('div', { id: 'clock' });
     this.basketEl = el('div', { id: 'basket' });
     this.basketEl.innerHTML = `${ICONS.basket}<span></span>`;
+    // Food and water stores, in days. Tap for the galley.
+    this.storesEl = el('button', { id: 'stores', 'aria-label': 'Stores' }) as unknown as HTMLDivElement;
+    this.storesEl.innerHTML = `<span class="st food">${ICONS.food}<b></b></span><span class="st water">${ICONS.water}<b></b></span>`;
+    this.storesEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+    this.storesEl.addEventListener('click', () => {
+      actions.click();
+      actions.stores();
+    });
+    // The fishing rod: pick it up or put it away.
+    this.rodBtn = el('button', { id: 'rodbtn', class: 'hide', 'aria-label': 'Fishing rod' }, `${ICONS.rod}<span>Fish</span>`);
+    this.rodBtn.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      actions.rod();
+    });
+    // While fishing: what's happening, the line's tension and how close the fish is.
+    this.fishPanel = el('div', { id: 'fishpanel', class: 'hide' });
+    this.fishLine = el('div', { class: 'l' });
+    this.fishTension = el('div', { class: 'bar tension' }, '<div></div><span>line</span>');
+    this.fishProgress = el('div', { class: 'bar progress' }, '<div></div><span>fish</span>');
+    this.fishPanel.append(this.fishLine, this.fishTension, this.fishProgress);
     this.stickBase = el('div', { id: 'stick', class: 'hide' });
     this.stickKnob = el('div', { class: 'knob' });
     this.stickBase.appendChild(this.stickKnob);
@@ -66,7 +100,10 @@ export class Hud {
     this.actionBtn.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
       actions.action();
+      actions.hold?.(true);
     });
+    // Holding the button (reeling in a fish).
+    for (const ev of ['pointerup', 'pointercancel', 'pointerleave'] as const) this.actionBtn.addEventListener(ev, () => actions.hold?.(false));
     this.jumpBtn = el('button', { id: 'jumpbtn', 'aria-label': 'Jump' }, ICONS.up);
     this.jumpBtn.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
@@ -79,7 +116,7 @@ export class Hud {
     });
     this.lookHint = el('div', { id: 'lookhint', class: 'hide' }, 'Click to look around · <b>Esc</b> to let go of the pointer');
     this.card = el('div', { id: 'findcard', role: 'status' });
-    this.root.append(this.dot, this.prompt, this.clockEl, this.basketEl, this.stickBase, this.actionBtn, this.jumpBtn, this.lookHint, this.card);
+    this.root.append(this.dot, this.prompt, this.clockEl, this.basketEl, this.storesEl, this.stickBase, this.actionBtn, this.jumpBtn, this.rodBtn, this.fishPanel, this.lookHint, this.card);
     document.body.appendChild(this.standBtn);
     if (!touch) {
       this.jumpBtn.style.display = 'none';
@@ -114,6 +151,47 @@ export class Hud {
     this.lastBasket = n;
     (this.basketEl.querySelector('span') as HTMLSpanElement).innerHTML = `<b>${n}</b> / ${BASKET_CAPACITY}`;
     this.basketEl.classList.toggle('full', n >= BASKET_CAPACITY);
+  }
+
+  /** The stores (days of food and water); `low` marks one that's nearly out. */
+  setStores(food: number, water: number, foodMax: number, waterMax: number): void {
+    const f = food < 1 ? food.toFixed(1) : Math.floor(food).toString();
+    const w = water < 1 ? water.toFixed(1) : Math.floor(water).toString();
+    const key = `${f}|${w}`;
+    if (key === this.lastStores) return;
+    this.lastStores = key;
+    const [fe, we] = this.storesEl.querySelectorAll('b');
+    fe.textContent = `${f} d`;
+    we.textContent = `${w} d`;
+    this.storesEl.querySelector('.food')!.classList.toggle('low', food < 3);
+    this.storesEl.querySelector('.water')!.classList.toggle('low', water < 3);
+    this.storesEl.setAttribute('aria-label', `Stores: ${f} of ${foodMax} days of food, ${w} of ${waterMax} days of water`);
+  }
+
+  /** The rod button: shown when you could fish here (or are fishing), lit while the rod is in your hands. */
+  setRod(show: boolean, holding: boolean): void {
+    this.rodBtn.classList.toggle('hide', !show);
+    this.rodBtn.classList.toggle('on', holding);
+    (this.rodBtn.querySelector('span') as HTMLSpanElement).textContent = holding ? 'Put away' : 'Fish';
+  }
+
+  /** While fishing: a line of text, and (reeling) the line's tension and how near the fish is. Null hides it. */
+  setFishing(f: { text: string; tension: number | null; progress: number | null } | null): void {
+    const key = f ? `${f.text}|${f.tension?.toFixed(2)}|${f.progress?.toFixed(2)}` : '';
+    if (key === this.lastFish) return;
+    this.lastFish = key;
+    this.fishPanel.classList.toggle('hide', !f);
+    if (!f) return;
+    this.fishLine.innerHTML = f.text;
+    const reeling = f.tension !== null;
+    this.fishTension.style.display = reeling ? '' : 'none';
+    this.fishProgress.style.display = reeling ? '' : 'none';
+    if (reeling) {
+      const t = this.fishTension.firstElementChild as HTMLDivElement;
+      t.style.width = `${Math.round(Math.min(1, f.tension!) * 100)}%`;
+      this.fishTension.classList.toggle('danger', f.tension! > 0.7);
+      (this.fishProgress.firstElementChild as HTMLDivElement).style.width = `${Math.round(Math.min(1, f.progress ?? 0) * 100)}%`;
+    }
   }
 
   /** What you can do right now (null for nothing). `key` is the laptop key to show. */
@@ -169,7 +247,14 @@ export class Hud {
   }
 
   /** Fill the logbook: what you've found, what's aboard, and hints for the rest. */
-  renderLogbook(found: Partial<Record<FindKind, number>>, locker: Partial<Record<FindKind, number>>, basket: FindKind[], clock: string, boat?: { hull: number; where: string; sailing?: string }): void {
+  renderLogbook(
+    found: Partial<Record<FindKind, number>>,
+    locker: Partial<Record<FindKind, number>>,
+    basket: FindKind[],
+    clock: string,
+    boat?: { hull: number; where: string; sailing?: string; rows?: { name: string; value: string; text: string }[] },
+    fish?: { name: string; count: number; fact: string }[],
+  ): void {
     const kinds = FIND_KINDS;
     const nFound = kinds.filter((k) => found[k]).length;
     const aboard = Object.values(locker).reduce((a, b) => a + (b ?? 0), 0);
@@ -180,7 +265,18 @@ export class Hud {
       const hull = Math.round(boat.hull);
       const word = hull >= 95 ? 'sound' : hull >= 70 ? 'a few scrapes' : hull >= 40 ? 'badly scraped' : 'in a bad way';
       this.logList.appendChild(el('div', { class: 'logrow' }, `<div class="name">Hull: ${word}<span>${hull}%</span></div><div class="fact">${boat.where}. Running aground on the reef or a beach scrapes the hull.</div>`));
+      for (const r of boat.rows ?? []) this.logList.appendChild(el('div', { class: 'logrow' }, `<div class="name">${r.name}<span>${r.value}</span></div><div class="fact">${r.text}</div>`));
       if (boat.sailing) this.logList.appendChild(el('div', { class: 'logrow' }, `<div class="name">The sea buoy</div><div class="fact">${boat.sailing}</div>`));
+    }
+    if (fish) {
+      this.logList.appendChild(el('h3', {}, 'Fish'));
+      for (const f of fish) {
+        const row = el('div', { class: `logrow${f.count ? '' : ' unknown'}` });
+        row.innerHTML = f.count
+          ? `<div class="name">${cap(f.name)}<span>caught ${f.count === 1 ? 'once' : `${f.count} times`}</span></div><div class="fact">${f.fact}</div>`
+          : `<div class="name">Not caught yet<span>fish</span></div>`;
+        this.logList.appendChild(row);
+      }
     }
     const groups: [string, string][] = [
       ['shell', 'Shells'],

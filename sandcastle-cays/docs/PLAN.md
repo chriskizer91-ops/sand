@@ -42,18 +42,20 @@ First a **vertical slice**: a small piece of the game made to finished quality, 
    - squalls you can see coming and sail into: rain, a burst of wind that shifts as you pass through;
    - too much sail in a strong wind and she's overpowered: take in sail (reef) to stay in control;
    - the sea buoy out on the open sea, with your fastest run out round it and home in the logbook.
-4. **v0.5, Upkeep and living aboard:**
-   - repairs with materials from the beaches (driftwood, planks, rope and more washed-up debris), using a workbench and recipes that unlock as you find new materials;
-   - rations and stores;
-   - fishing and the galley;
-   - fresh water;
-   - deck pots and the Home Cay garden.
-5. **v0.6, The dinghy and the reef:**
+4. **v0.5, Living aboard** (built first, 2026-11-03):
+   - food and water stores, counted in days;
+   - fishing with a rod, the cool box and the galley;
+   - rain caught in an awning to fill the water tank;
+   - coconuts from the palms;
+   - repairs at a workbench with materials from the beaches (driftwood, planks, rope, sailcloth, net, bottles), with recipes that appear as you find new materials;
+   - sail wear, and a leaking hull you pump out.
+5. **v0.6, The garden:** deck pots and the Home Cay garden.
+6. **v0.7, The dinghy and the reef:**
    - rowing the dinghy;
    - the shark, now and then, off the reef;
    - dropped finds that wash up later;
    - dinghy repairs.
-6. **v0.7, Polish:** a full pass on look, sound, feel, text and phone speed. This is the finished slice.
+7. **v0.8, Polish:** a full pass on look, sound, feel, text and phone speed. This is the finished slice.
 
 ## After the slice (ideas agreed along the way)
 - **Tides:** the tide wins wherever it reaches. Castles near the waves are gone by high tide; castles above the high-tide line last.

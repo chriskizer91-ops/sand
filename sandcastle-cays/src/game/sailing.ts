@@ -167,6 +167,9 @@ export interface HelmInput {
   attended: boolean;
   /** Slope of the sea under her along the bow (+ = downhill ahead, a wave lifting her stern). */
   slope?: number;
+  /** Worn sails push less (1 = as new), and a full bilge slows her (1 = dry). */
+  sailCondition?: number;
+  drag?: number;
 }
 
 export interface SailEvents {
@@ -286,10 +289,10 @@ export function stepBoat(b: BoatState, w: WindState, helm: HelmInput, sea: SeaBe
   } else {
     // Speed eases toward what the wind, the sails and the motor give.
     const overpowered = Math.max(0.45, 1 - 1.6 * over);
-    const sailTarget = SAILING.topSpeed * drive(twa) * sailPower(b.sail * windK) * overpowered;
+    const sailTarget = SAILING.topSpeed * drive(twa) * sailPower(b.sail * windK) * overpowered * (helm.sailCondition ?? 1);
     const motorTarget = motor >= 0 ? motor * SAILING.motorAhead : motor * SAILING.motorAstern;
     let target = sailTarget + motorTarget * (motor > 0 ? 1 - 0.35 * Math.min(1, sailTarget / SAILING.topSpeed) : 1);
-    target = Math.min(target, SAILING.topSpeed * 1.3);
+    target = Math.min(target, SAILING.topSpeed * 1.3) * (helm.drag ?? 1);
     // Surfing: running or reaching fast, a wave lifting her stern sends her racing down its face.
     const downwind = smoothstep(100 * DEG, 135 * DEG, Math.abs(twa));
     const surf = Math.min(SAILING.surfMax, SAILING.surf * Math.max(0, helm.slope ?? 0)) * downwind * smoothstep(2.4, 3.6, b.speed) * Math.min(1, b.sail * 2);
