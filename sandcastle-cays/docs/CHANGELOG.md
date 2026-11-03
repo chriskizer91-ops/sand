@@ -36,7 +36,33 @@ Your boat is now a home to look after. You have food and water to keep topped up
 - **Dev tools** have new buttons: fill the stores, stores nearly out, 3 of every find, a fish bites now, scrape the hull.
 
 **Checks before sending**
-CHECKS_PLACEHOLDER
+- **240 automatic checks** passed, including new ones for:
+  - the stores lasting about a month when full;
+  - the warnings, and running out slowing you down;
+  - rain filling the tank (most at anchor, twice that with the bigger catcher);
+  - coconuts;
+  - fish keeping a day and a half and cooking into food;
+  - the hull leaking and the pump emptying it;
+  - sails wearing in a blow;
+  - every workbench recipe;
+  - saving and loading it all;
+  - which fish bite where;
+  - striking and reeling (careful reeling lands every kind; reeling flat out against a mahi-mahi snaps the line);
+  - the new boat parts, the fish, the rod and the new finds staying within their drawing budgets.
+- **All 64 browser checks** passed, as a laptop and as a Pixel-sized phone, including 10 new ones:
+  - the stores show on screen;
+  - E at the companionway opens the galley;
+  - fishing from the deck: G for the rod, E to cast, a bite, strike, hold to reel. A fish went into the cool box;
+  - cooking it added food;
+  - the workbench patched the hull from 30% to 65%;
+  - a leaking hull filled the bilge to 33%, and four pump strokes took it to 14%;
+  - a squall at anchor added 0.7 days of water;
+  - shaking a palm dropped a coconut;
+  - on the phone, the rod button and the round button cast.
+
+  The sand engine's speed check passed this time (19.1 ms).
+- **Drawing budgets** measured on the laptop: about 657,000 triangles looking from the boat (up from 640,000 with the new boat parts), 350,000–375,000 ashore.
+- **Fixed along the way:** pressing E at the pump once the bilge was dry could open the galley right next to it.
 
 **Not tested, or known**
 - How the stores feel over a long game: too easy, too hard? Tell me.
