@@ -472,7 +472,9 @@ async function standBy(page, f) {
   // ---- The open sea (v0.4) ----
   const sea = await G(page, () => {
     const g = window.__game;
+    // Measure the open sea itself, with no squall nearby to stir the wind.
     g.forceSquall(null);
+    g.squallsOn(false);
     const range = (x, z) => {
       let lo = 9, hi = -9;
       for (let t = 0; t < 12; t += 0.25) {
@@ -488,6 +490,7 @@ async function standBy(page, f) {
     g.placeBoat(700, -150, Math.PI / 2);
     g.sail(0.1);
     const open = g.weather;
+    g.squallsOn(true);
     return { home: home.wind, open: open.wind, openness: open.open, wavesHome: range(2, -40), wavesOpen: range(700, -150) };
   });
   step('Laptop: out on the open sea the wind is stronger and the waves bigger', sea.openness > 0.9 && sea.open > sea.home * 1.35 && sea.wavesOpen > 0.9 && sea.wavesHome < 0.5,

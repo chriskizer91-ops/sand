@@ -414,6 +414,10 @@ let sprayCool = 0;
 const sprayStats = { bursts: 0, maxRise: 0 };
 let onSpray: ((x: number, y: number, z: number, dx: number, dz: number, k: number) => void) | null = null;
 function bowSpray(dt: number): void {
+  if (boat.anchored || boat.speed < 1.5) {
+    lastBowRel = 0;
+    return;
+  }
   const c = Math.cos(boat.heading);
   const sn = Math.sin(boat.heading);
   bowV.set(4.1, 0.15, 0);
@@ -1691,7 +1695,7 @@ function frame(now: number): void {
   swayTime.value = time;
   cursor.update(dt, time);
   beachView.update(player.feet, time, daylight.info.daylight, window.innerHeight * renderer.getPixelRatio());
-  seaBuoy.update(time, (x, z) => seaHeight(x, z, time), daylight.info.night, window.innerHeight * renderer.getPixelRatio());
+  if (Math.hypot(camera.position.x - BUOY.x, camera.position.z - BUOY.z) < 900) seaBuoy.update(time, (x, z) => seaHeight(x, z, time), daylight.info.night, window.innerHeight * renderer.getPixelRatio());
 
   // What you're carrying.
   held.setContents(beach.state.basket);
@@ -1976,6 +1980,11 @@ void boot();
     return !!pushOff;
   },
   devTools: (on?: boolean) => toggleDevTools(on),
+  /** Test helper: squalls on or off (as the dev tools' switch). */
+  squallsOn: (on: boolean) => {
+    devSqualls = on;
+    if (!on) forcedSquall = null;
+  },
   get devOpen() {
     return devTools.open;
   },

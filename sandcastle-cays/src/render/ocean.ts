@@ -172,9 +172,10 @@ void main() {
   amp *= fade;
   // The open sea's long swell (fades further out, so the horizon stays lumpy).
   float open = openness(wp.xz);
-  float oh, odx, odz;
-  openWaves(wp.xz, uTime, oh, odx, odz);
+  float oh = 0.0, odx = 0.0, odz = 0.0;
   float oamp = open * uOpenSwell * (1.0 - smoothstep(220.0, 700.0, camDist));
+  // Sheltered water has no ocean swell: skip the sums there.
+  if (oamp > 0.0) openWaves(wp.xz, uTime, oh, odx, odz);
   wp.y += h * amp + oh * oamp;
   vH = h * amp;
   vHo = oh / ${f(OPEN_SWELL_MAX)} * step(0.001, oamp);
@@ -189,7 +190,7 @@ void main() {
 
 const FRAG = /* glsl */ `
 #include <packing>
-uniform float uTime, uNear, uFar, uFogDensity, uRefract, uGlow, uDay, uWind;
+uniform float uTime, uNear, uFar, uFogDensity, uRefract, uGlow, uDay, uWind, uSquallOn;
 uniform vec4 uSquall[4];
 uniform vec2 uScreen;
 uniform vec3 uSunDir, uSunColor, uDeep, uShallow, uFogColor, uAbsorb;
@@ -215,10 +216,12 @@ void main() {
 
   // Squalls: rough, dark water under each one (rain on the surface, gusts).
   float sq = 0.0;
-  for (int i = 0; i < 4; i++) {
-    vec4 s = uSquall[i];
-    float d = length(vWorld.xz - s.xy);
-    sq = max(sq, s.w * (1.0 - smoothstep(0.45 * s.z, 1.25 * s.z, d)));
+  if (uSquallOn > 0.5) {
+    for (int i = 0; i < 4; i++) {
+      vec4 s = uSquall[i];
+      float d = length(vWorld.xz - s.xy);
+      sq = max(sq, s.w * (1.0 - smoothstep(0.45 * s.z, 1.25 * s.z, d)));
+    }
   }
   // The wind here: the trade wind, half as strong again on the open sea, more under a squall.
   float windHere = uWind * (1.0 + 0.5 * vOpen) + 6.0 * sq;
@@ -276,10 +279,13 @@ void main() {
   // Whitecaps: breaking crests scattered over the sea once the wind passes about 15 knots,
   // more the stronger it blows. They ride the tops of the open swell and drift downwind.
   float cover = clamp((windHere - 8.0) / 14.0, 0.0, 0.32);
-  vec2 wuv = vWorld.xz * 0.045 + vec2(uTime * 0.035, uTime * 0.004);
-  float wn = texture2D(tDetail, wuv).a * 0.65 + texture2D(tDetail, wuv * 2.7 + 0.3).a * 0.35;
-  float whitecap = smoothstep(1.0 - cover, 1.06 - cover * 0.6, wn) * (0.45 + 0.55 * smoothstep(-0.2, 0.55, vHo + vH * 2.0));
-  whitecap *= 1.0 - smoothstep(120.0, 600.0, dist) * 0.6;
+  float whitecap = 0.0;
+  if (cover > 0.0) {
+    vec2 wuv = vWorld.xz * 0.045 + vec2(uTime * 0.035, uTime * 0.004);
+    float wn = texture2D(tDetail, wuv).a * 0.65 + texture2D(tDetail, wuv * 2.7 + 0.3).a * 0.35;
+    whitecap = smoothstep(1.0 - cover, 1.06 - cover * 0.6, wn) * (0.45 + 0.55 * smoothstep(-0.2, 0.55, vHo + vH * 2.0));
+    whitecap *= 1.0 - smoothstep(120.0, 600.0, dist) * 0.6;
+  }
   float foam = clamp(edge + crest * 0.45 + whitecap * 0.75, 0.0, 1.0);
   vec3 foamCol = vec3(0.95, 0.98, 1.0) * (0.55 + 0.45 * sunUp) * lightLvl + uSunColor * 0.08;
   // At night anything that disturbs the water lights it up.
@@ -334,6 +340,7 @@ export class Ocean {
       uSwell: { value: 1 },
       uOpenSwell: { value: 1 },
       uWind: { value: 6.5 },
+      uSquallOn: { value: 0 },
       uSquall: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
       uGlow: { value: 0 },
       uDay: { value: 1 },
@@ -397,11 +404,14 @@ export class Ocean {
   setWeather(tradeWind: number, squalls: readonly { x: number; z: number; radius: number; strength: number }[]): void {
     this.uniforms.uWind.value = tradeWind;
     const u = this.uniforms.uSquall.value as THREE.Vector4[];
+    let on = 0;
     for (let i = 0; i < 4; i++) {
       const s = squalls[i];
       if (s) u[i].set(s.x, s.z, s.radius, s.strength);
       else u[i].set(0, 0, 1, 0);
+      if (s && s.strength > 0.001) on = 1;
     }
+    this.uniforms.uSquallOn.value = on;
   }
 
   update(t: number, focus: THREE.Vector3): void {
