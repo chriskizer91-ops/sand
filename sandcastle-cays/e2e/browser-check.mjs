@@ -434,6 +434,41 @@ async function standBy(page, f) {
   });
   step('Laptop: sailing onto the reef runs her aground and scrapes the hull', ground.aground && ground.hull < 100, `aground: ${ground.aground}, hull ${Math.round(ground.hull)}%`);
 
+  // Stuck on the reef: at the helm, X ("Push off") pushes her off into deeper water.
+  await G(page, () => {
+    const g = window.__game;
+    g.aboard(-Math.PI / 2, -0.05);
+    g.takeHelm();
+  });
+  await waitFrames(page, 3);
+  const pushLabel = await page.evaluate(() => [...document.querySelectorAll('#helmbar button span')].map((e) => e.textContent).find((t) => /Push off/.test(t)) ?? null);
+  await page.keyboard.press('KeyX');
+  await waitFrames(page, 2);
+  const pushed = await G(page, () => {
+    const g = window.__game;
+    const started = g.pushing;
+    const r = g.sail(4, 0);
+    return { started, aground: r.aground, pushing: g.pushing, x: r.x, z: r.z };
+  });
+  step('Laptop: aground, the anchor button becomes "Push off" and pushes her off into deeper water', !!pushLabel && pushed.started && !pushed.aground && !pushed.pushing,
+    `button: "${pushLabel}", afloat at ${Math.round(pushed.x)}, ${Math.round(pushed.z)}`);
+  // Dev tools: T opens them; the buttons move the boat and switch squalls off.
+  await G(page, () => window.__game.leaveHelm());
+  await page.keyboard.press('KeyT');
+  await waitFrames(page, 3);
+  const devShown = await page.isVisible('#devtools:not(.hidden)');
+  await page.click('#devtools button:has-text("Open sea")');
+  await page.click('#devtools button:has-text("No squalls")');
+  await waitFrames(page, 12);
+  const dev = await G(page, () => ({ x: window.__game.boat.x, z: window.__game.boat.z, squalls: window.__game.weather.squalls, info: document.querySelector('#devtools .devinfo').innerText }));
+  await shot(page, '12h-dev-tools.png');
+  await page.click('#devtools button:has-text("Squalls on")');
+  await page.keyboard.press('KeyT');
+  await waitFrames(page, 2);
+  const devHidden = !(await page.isVisible('#devtools:not(.hidden)'));
+  step('Laptop: T opens the dev tools; "Open sea" moves the boat there, "No squalls" clears them; T closes them', devShown && Math.hypot(dev.x - 700, dev.z + 150) < 5 && dev.squalls === 0 && /fps/.test(dev.info) && devHidden,
+    `boat at ${Math.round(dev.x)}, ${Math.round(dev.z)}, squalls ${dev.squalls}, readout ${dev.info.split('\n').length} lines`);
+
   // ---- The open sea (v0.4) ----
   const sea = await G(page, () => {
     const g = window.__game;
@@ -705,6 +740,16 @@ async function standBy(page, f) {
   }
   const phoneThr = await G(page, () => window.__game.boat.throttle);
   step('Phone: the "Motor ahead" button starts the outboard', phoneThr > 0, `throttle ${phoneThr}`);
+  // Dev tools from the menu (no T key on a phone).
+  await page.tap('button[aria-label="Menu"]');
+  await waitFrames(page, 2);
+  await page.tap('#hud ~ .panel button:has-text("Dev tools"), .panel button:has-text("Dev tools")');
+  await waitFrames(page, 2);
+  const phoneDev = await page.isVisible('#devtools:not(.hidden)');
+  await page.tap('#devtools button[aria-label="Close"]');
+  await waitFrames(page, 2);
+  const phoneDevClosed = !(await page.isVisible('#devtools:not(.hidden)'));
+  step('Phone: Menu → "Dev tools" opens the dev tools, and the cross closes them', phoneDev && phoneDevClosed, `opened ${phoneDev}, closed ${phoneDevClosed}`);
   step('Phone: the round button takes the helm, "More sail" raises sail, the thumb steers', helmOk && sailSet > 0 && rudder > 0.05, `helm: ${helmOk}, sails ${sailSet}, rudder ${rudder.toFixed(2)}`);
   await shot(page, '17b-phone-at-the-helm.png');
 

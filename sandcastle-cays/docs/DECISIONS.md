@@ -174,3 +174,12 @@ Each stroke opens an undo record. The first time a chunk is changed during that 
 - **The autopilot** reefs to half sail when the wind passes about 16 knots.
 - **The sea buoy:** a red-and-white "safe water" mark at (560, −820). From the reef gap it's a close-hauled sail out and a broad reach, surfing, home. The run is timed from raising the anchor at Home Cay to dropping it there again after rounding the buoy. The logbook keeps the count and your best time.
 
+## 28. Never stuck aground; dev tools (v0.4.1)
+- **Why:** the owner got stuck aground in v0.4. The old rule only let the boat move to a spot where she wasn't touching. If she was already in water shallower than her keel, every spot nearby touched too, so she couldn't move at all. Turning while touching, and swinging at anchor, could put her there.
+- **The rule now:**
+  - aground, she may move anywhere that is no shallower for her keel than where she is, at up to 0.5 m/s (dragging);
+  - turning and swinging at anchor may not push the keel deeper into the bottom;
+  - one scrape when she first hits, as before.
+- **Push off:** the anchor button (X) becomes "Push off" while she's aground. It searches outward (up to 60 m) for the nearest spot with at least 35 cm to spare under the keel, heading away from the shallows, and eases her there over 2.5 s. A check confirms it finds deep water close by from shallow spots all round both cays.
+- **Dev tools:** the owner asked for a dev tool window toggled with T. On the phone it's in the Menu. It doesn't pause the game, so you can watch numbers change while sailing. Its settings (wind strength, squalls off, game speed) aren't saved; they reset when the game is reloaded.
+

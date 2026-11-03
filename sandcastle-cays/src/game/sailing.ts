@@ -190,16 +190,53 @@ export function windAngle(b: BoatState, w: WindState): number {
   return wrap(w.from - b.heading);
 }
 
-/** Is the boat touching bottom at x, z, heading h? (Checks along the keel.) */
-export function touchesBottom(sea: SeaBed, x: number, z: number, h: number): boolean {
+/**
+ * How far the keel is into the bottom at x, z, heading h (metres): above 0
+ * she's touching; below 0 it's how much water there is to spare under her.
+ * Checks along the keel, which is deepest amidships; the bow and stern sit higher.
+ */
+export function keelShortfall(sea: SeaBed, x: number, z: number, h: number): number {
   const c = Math.cos(h);
   const s = Math.sin(h);
+  let worst = -Infinity;
   for (const along of [-1.6, 0, 1.4, 3.4]) {
-    // The keel is deepest amidships; the bow and stern sit higher.
     const depth = Math.abs(along) < 1.7 ? SAILING.draft : along > 0 ? 0.65 : 0.9;
-    if (sea.floorAt(x + c * along, z + s * along) > -depth) return true;
+    worst = Math.max(worst, sea.floorAt(x + c * along, z + s * along) + depth);
   }
-  return false;
+  return worst;
+}
+
+/** Is the boat touching bottom at x, z, heading h? */
+export function touchesBottom(sea: SeaBed, x: number, z: number, h: number): boolean {
+  return keelShortfall(sea, x, z, h) > 0;
+}
+
+/**
+ * The nearest spot (and heading) with water to spare under the keel: where
+ * she ends up when you push her off. Searches outward in rings; null if
+ * there's nowhere within `reach` metres.
+ */
+export function deepWaterNear(sea: SeaBed, x: number, z: number, h: number, reach = 60, spare = 0.35): { x: number; z: number; heading: number } | null {
+  for (let r = 0; r <= reach; r += r < 6 ? 1 : 2) {
+    const n = r === 0 ? 1 : Math.max(12, Math.round(r * 3));
+    let best: { x: number; z: number; heading: number; score: number } | null = null;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * TAU;
+      const px = x + Math.cos(a) * r;
+      const pz = z + Math.sin(a) * r;
+      // Point her away from the shallows if that works (so she doesn't sail straight back on).
+      for (const hh of r === 0 ? [h] : [wrap(a), wrap(a + Math.PI / 2), wrap(a - Math.PI / 2), h]) {
+        const sf = keelShortfall(sea, px, pz, hh);
+        if (sf < -spare) {
+          const score = sf;
+          if (!best || score < best.score) best = { x: px, z: pz, heading: hh, score };
+          break;
+        }
+      }
+    }
+    if (best) return { x: best.x, z: best.z, heading: best.heading };
+  }
+  return null;
 }
 
 /** Advance the boat by dt seconds. */
@@ -236,9 +273,16 @@ export function stepBoat(b: BoatState, w: WindState, helm: HelmInput, sea: SeaBe
     const rode = 7;
     const tx = b.ax + Math.cos(lieTo) * rode;
     const tz = b.az + Math.sin(lieTo) * rode;
-    b.x += (tx - b.x) * (1 - Math.exp(-dt * 0.08));
-    b.z += (tz - b.z) * (1 - Math.exp(-dt * 0.08));
-    b.heading = wrap(b.heading + wrap(w.from - b.heading) * (1 - Math.exp(-dt * 0.12)));
+    const nx = b.x + (tx - b.x) * (1 - Math.exp(-dt * 0.08));
+    const nz = b.z + (tz - b.z) * (1 - Math.exp(-dt * 0.08));
+    const nh = wrap(b.heading + wrap(w.from - b.heading) * (1 - Math.exp(-dt * 0.12)));
+    // She swings to the wind, but never onto the shallows.
+    const now = keelShortfall(sea, b.x, b.z, b.heading);
+    if (keelShortfall(sea, nx, nz, nh) <= Math.max(0, now)) {
+      b.x = nx;
+      b.z = nz;
+      b.heading = nh;
+    }
   } else {
     // Speed eases toward what the wind, the sails and the motor give.
     const overpowered = Math.max(0.45, 1 - 1.6 * over);
@@ -259,9 +303,13 @@ export function stepBoat(b: BoatState, w: WindState, helm: HelmInput, sea: SeaBe
     // Turning needs way on (a little turn is always possible, to get out of irons).
     // Going astern, the stern goes the way the rudder points, so the bow swings the other way.
     const dir = b.speed < -0.05 ? -1 : 1;
+    const h0 = b.heading;
     b.heading = wrap(b.heading + dir * (b.rudder / SAILING.rudderMax) * SAILING.turnRate * grip * (1 - 0.5 * Math.min(1, over * 3)) * dt);
     // Overpowered, she tries to turn up into the wind ("rounding up"); steer away, or take in sail.
     if (over > 0 && Math.abs(twa) > SAILING.noGo) b.heading = wrap(b.heading + Math.sign(twa) * 1.5 * over * dt);
+    // Turning can't swing her keel further into the bottom.
+    const before = keelShortfall(sea, b.x, b.z, h0);
+    if (keelShortfall(sea, b.x, b.z, b.heading) > Math.max(0, before) + 1e-4) b.heading = h0;
     // Leeway: she slips a little sideways, away from the wind, when sailing across or into it.
     const side = Math.abs(twa) < 120 * DEG ? 4 * DEG * drive(twa) * b.sail : 0;
     const leeSign = twa >= 0 ? -1 : 1; // wind from starboard pushes her to port
@@ -273,7 +321,15 @@ export function stepBoat(b: BoatState, w: WindState, helm: HelmInput, sea: SeaBe
     const nx = b.x + vx * dt;
     const nz = b.z + vz * dt;
     b.scrapeCool = Math.max(0, (b.scrapeCool ?? 0) - dt);
-    if (touchesBottom(sea, nx, nz, b.heading)) {
+    const shortNow = keelShortfall(sea, b.x, b.z, b.heading);
+    const shortNext = keelShortfall(sea, nx, nz, b.heading);
+    if (shortNext > 0 && b.aground && shortNext <= Math.max(0, shortNow) + 1e-4) {
+      // Stuck, but heading for deeper water (or no shallower): she drags slowly over the bottom.
+      b.speed = Math.max(-0.5, Math.min(0.5, b.speed));
+      b.agroundTime = (b.agroundTime ?? 0) + dt;
+      b.x = b.x + (nx - b.x) * Math.min(1, 0.5 / Math.max(0.5, Math.hypot(vx, vz)));
+      b.z = b.z + (nz - b.z) * Math.min(1, 0.5 / Math.max(0.5, Math.hypot(vx, vz)));
+    } else if (shortNext > 0) {
       // She stops against the bottom. A real knock (not a gentle nudge) scrapes the hull.
       if (Math.abs(b.speed) > 0.5 && b.scrapeCool <= 0) {
         ev.grounded = Math.abs(b.speed);

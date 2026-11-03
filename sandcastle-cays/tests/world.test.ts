@@ -1,3 +1,4 @@
+import { deepWaterNear } from '../src/game/sailing';
 import { describe, expect, it } from 'vitest';
 import { FINDS } from '../src/content/finds';
 import { Beach } from '../src/game/beach';
@@ -72,3 +73,24 @@ describe('finds on each island', () => {
     expect(beach.state.ground.some((g) => Math.hypot(g.x + 210, g.z + 300) < 120)).toBe(true);
   });
 });
+
+describe('never stuck aground (v0.4.1)', () => {
+  it('from shallow water anywhere around both cays, pushing off finds deep water close by', () => {
+    // Spots in the water but shallower than the keel, all round both islands and their reefs.
+    const spots: { x: number; z: number }[] = [];
+    for (let x = -300; x <= 200; x += 7) {
+      for (let z = -380; z <= 160; z += 7) {
+        const f = world.heightAt(x, z);
+        if (f < -0.05 && f > -1.4) spots.push({ x, z });
+      }
+    }
+    expect(spots.length).toBeGreaterThan(200);
+    const pick = spots.filter((_, i) => i % Math.ceil(spots.length / 60) === 0);
+    for (const p of pick) {
+      const to = deepWaterNear(sea, p.x, p.z, 1.0);
+      expect(to, `from ${p.x}, ${p.z}`).not.toBeNull();
+      expect(Math.hypot(to!.x - p.x, to!.z - p.z)).toBeLessThan(60);
+    }
+  });
+});
+

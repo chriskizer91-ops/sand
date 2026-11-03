@@ -132,6 +132,22 @@ body[data-mode="build"] [data-fp] { display: none !important; }
 #sailhud .l1 { font-size: 14.5px; color: var(--ink); }
 #sailhud .bad { color: #c2412a; }
 #sailhud .surf { color: #157e93; }
+/* ---------- dev tools ---------- */
+#devtools { position: fixed; z-index: 32; left: 10px; top: calc(66px + var(--safe-t)); width: min(350px, calc(100vw - 20px)); max-height: calc(100% - 150px - var(--safe-t) - var(--safe-b)); overflow: auto; background: rgba(22, 34, 40, .9); color: #e6f2f2; border-radius: 18px; box-shadow: 0 12px 34px rgba(0,0,0,.3); padding: 12px 14px; transition: opacity .15s; }
+#devtools.hidden { opacity: 0; pointer-events: none; }
+@media (max-width: 640px) { #devtools { max-height: 52vh; background: rgba(22, 34, 40, .84); } }
+#devtools h2 { margin: 0 0 8px; font-size: 16px; color: #8fe3df; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#devtools h2 .small { margin: 0; font-weight: 600; color: #9bb; flex: 1; }
+#devtools h2 .round { background: rgba(255,255,255,.12); color: #e6f2f2; }
+#devtools h3 { margin: 10px 0 5px; font-size: 11.5px; color: #9bb; text-transform: uppercase; letter-spacing: .6px; }
+#devtools .pill { background: rgba(255,255,255,.1); color: #e6f2f2; padding: 7px 10px; font-size: 13px; border-radius: 12px; }
+#devtools .pill.on { background: #2fb5b0; color: #fff; }
+#devtools .devinfo { position: sticky; top: -12px; z-index: 1; font: 11.5px/1.4 ui-monospace, Menlo, monospace; background: rgb(14, 24, 29); border-radius: 10px; padding: 6px 8px; margin: 0 -4px; }
+#devtools .devinfo div { display: flex; justify-content: space-between; gap: 10px; }
+#devtools .devinfo span { color: #9bb; }
+#devtools .devinfo b { font-weight: 600; text-align: right; }
+#devtools .devinfo span { flex: none; }
+#devtools .row { gap: 5px; }
 #helmbar { position: fixed; z-index: 6; left: 50%; transform: translateX(-50%); bottom: calc(12px + var(--safe-b)); display: flex; gap: 4px; padding: 6px; border-radius: 26px; background: var(--paper); box-shadow: var(--shadow); }
 #helmbar.hide, body[data-mode="build"] #helmbar { display: none; }
 #helmbar .tool { width: 66px; height: 62px; position: relative; }

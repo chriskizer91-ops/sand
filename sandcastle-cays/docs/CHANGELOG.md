@@ -1,5 +1,35 @@
 # What changed, version by version (plain language)
 
+## v0.4.1, Never stuck aground (and dev tools)
+**What changed**
+- **You can't get stuck aground any more.** Before, if the boat ended up in water shallower than her keel (for example by turning while touching bottom, or swinging at anchor onto a shallow patch), she couldn't move in any direction. Now:
+  - when she's aground, she can always move toward deeper water, slowly, as if dragging over the bottom. Motor astern, or steer and motor for deeper water;
+  - she can't drive further onto the shallows, and turning can't swing her keel further into the bottom;
+  - at anchor, she swings with the wind but never onto the shallows;
+  - **Push off:** while she's aground, the "Drop anchor" button becomes "Push off" (X on the laptop). You push her off into the nearest water deep enough, turned away from the shallows. It always works.
+  - If you're stuck for a few seconds, a card tells you how to get off.
+- **Dev tools**, for trying things out: press **T** on the laptop, or Menu → "Dev tools" on the phone. It shows:
+  - the frame rate and how much is drawn;
+  - where you and the boat are, her speed, heel, sails, motor and hull;
+  - the wind, rain and squalls, the clock and the sea buoy record.
+
+  It has buttons to:
+  - move the boat (with you aboard) to Home Cay, Pink Sand Cay, the reef gap, the open sea or the sea buoy;
+  - push off, mend the hull, or stop her;
+  - call up a squall right here or one coming from the east, or switch squalls off;
+  - set light, normal or strong wind;
+  - set dawn, noon, sunset, night or the next morning (new finds), and stop or start the clock;
+  - run the game at ×1, ×2 or ×4;
+  - show the frame rate on screen.
+
+  The game keeps running while it's open.
+
+**Checks before sending**
+CHECKS_PLACEHOLDER
+
+**Not tested**
+- Whatever got you stuck: I couldn't see exactly where you were, so I fixed every way I found of getting stuck. If it happens again, open the dev tools (T) and tell me the boat's position from the readout.
+
 ## v0.4, Blue water
 Sailing is now the main event. Out past the reefs is the open sea, with more wind and bigger waves, and squalls drift across it that you can sail into.
 

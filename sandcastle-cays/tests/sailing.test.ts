@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SAILING, sailPower, autopilot, boomAngle, drive, dropAnchor, newBoat, pointOfSail, sailFill, stepBoat, weighAnchor, windAngle, windAt, wrap, type Course, type SeaBed, type WindState } from '../src/game/sailing';
+import { SAILING, sailPower, keelShortfall, deepWaterNear, touchesBottom, autopilot, boomAngle, drive, dropAnchor, newBoat, pointOfSail, sailFill, stepBoat, weighAnchor, windAngle, windAt, wrap, type Course, type SeaBed, type WindState } from '../src/game/sailing';
 
 const DEG = Math.PI / 180;
 const deep: SeaBed = { floorAt: () => -10 };
@@ -409,6 +409,70 @@ describe('strong wind', () => {
     const c: Course = { waypoints: [{ x: 0, z: 2000 }], tack: 1, name: 'far' };
     expect(autopilot(b, steady, c).sailSet).toBe(1);
     expect(autopilot(b, strong, c).sailSet).toBe(0.5);
+  });
+});
+
+describe('getting off when aground (v0.4.1)', () => {
+  // A sandbank that gets shallower to the north: at z = 0 there's only 1 m of water, less than her keel.
+  const bank: SeaBed = { floorAt: (_x, z) => -1.0 + 0.08 * z };
+
+  it('stuck in water shallower than her keel, she can still motor astern to deeper water', () => {
+    const b = newBoat(0, 0, 90 * DEG); // bow to the north, into the shallows
+    weighAnchor(b);
+    expect(touchesBottom(bank, b.x, b.z, b.heading)).toBe(true);
+    b.throttle = -1;
+    const evs = sail(b, 40, 0, bank);
+    expect(evs.some((e) => e.floated)).toBe(true);
+    expect(b.aground).toBe(false);
+    expect(b.z).toBeLessThan(-6);
+  });
+
+  it('...or motor ahead, once she points for deeper water', () => {
+    const b = newBoat(0, 0, -90 * DEG); // bow to the south, toward deep water
+    weighAnchor(b);
+    b.throttle = 1;
+    sail(b, 30, 0, bank);
+    expect(b.aground).toBe(false);
+    expect(b.z).toBeLessThan(-6);
+  });
+
+  it('but she never drives further onto the bank', () => {
+    const b = newBoat(0, 0, 90 * DEG);
+    weighAnchor(b);
+    b.throttle = 1;
+    b.sailSet = 1;
+    sail(b, 20, 0, bank);
+    expect(b.z).toBeLessThan(0.05);
+  });
+
+  it('turning while aground can\'t swing her keel deeper into the bottom', () => {
+    const b = newBoat(0, -4.5, 90 * DEG);
+    weighAnchor(b);
+    const start = keelShortfall(bank, b.x, b.z, b.heading);
+    let worst = start;
+    for (let t = 0; t < 20; t += 1 / 30) {
+      stepBoat(b, steady, { steer: 1, attended: true }, bank, 1 / 30);
+      worst = Math.max(worst, keelShortfall(bank, b.x, b.z, b.heading));
+    }
+    expect(worst).toBeLessThanOrEqual(Math.max(0, start) + 1e-3);
+  });
+
+  it('at anchor she swings to the wind but not onto the shallows', () => {
+    // Shallow to the west (downwind of an east wind): she would lie back onto it.
+    const west: SeaBed = { floorAt: (x) => (x < -3 ? -0.8 : -5) };
+    const b = newBoat(0, 0, 0);
+    b.ax = 1;
+    b.az = 0;
+    sail(b, 120, 0, west);
+    expect(touchesBottom(west, b.x, b.z, b.heading)).toBe(false);
+  });
+
+  it('pushing off finds the nearest water with room under the keel', () => {
+    const spot = deepWaterNear(bank, 0, 0, 90 * DEG)!;
+    expect(spot).not.toBeNull();
+    expect(keelShortfall(bank, spot.x, spot.z, spot.heading)).toBeLessThan(-0.35);
+    expect(Math.hypot(spot.x, spot.z)).toBeLessThan(15);
+    expect(deepWaterNear({ floorAt: () => 2 }, 0, 0, 0)).toBeNull(); // high and dry: nowhere
   });
 });
 

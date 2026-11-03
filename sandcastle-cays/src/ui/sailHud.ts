@@ -130,7 +130,7 @@ export class SailHud {
     let l1: string;
     const motoring = r.motor !== 'off';
     if (r.anchored) l1 = '<b>At anchor</b>';
-    else if (r.aground) l1 = `<b class="bad">Aground!</b> ${motoring ? 'Motor astern, or steer' : 'Steer'} for deeper water`;
+    else if (r.aground) l1 = `<b class="bad">Aground!</b> Push off, or motor astern`;
     else if (motoring && r.sail < 0.05) l1 = `<b>${r.knots.toFixed(1)} knots</b> · motoring, ${r.motor}`;
     else if (r.over) l1 = `<b>${r.knots.toFixed(1)} knots</b> · <b class="bad">overpowered</b>: less sail`;
     else if (r.surfing) l1 = `<b>${r.knots.toFixed(1)} knots</b> · <b class="surf">surfing!</b>`;
@@ -145,7 +145,7 @@ export class SailHud {
     }
     const sails = r.sailSet <= 0.01 ? 'Sails down' : r.sailSet < 0.99 ? 'Half sail' : 'Full sail';
     this.sailLabel.textContent = r.sailSet >= 0.99 ? sails : 'More sail';
-    this.anchorLabel.textContent = r.anchored ? 'Raise anchor' : 'Drop anchor';
+    this.anchorLabel.textContent = r.anchored ? 'Raise anchor' : r.aground ? 'Push off' : 'Drop anchor';
     // The motor buttons say what the next press does.
     this.motorUpLabel.textContent = r.motor === 'off' ? 'Motor ahead' : r.motor.includes('astern') ? 'Slower astern' : r.motor === 'full ahead' ? 'Full ahead' : 'Faster';
     this.motorDownLabel.textContent = r.motor === 'off' ? 'Motor astern' : r.motor.includes('astern') ? (r.motor === 'full astern' ? 'Full astern' : 'Faster astern') : 'Slower';

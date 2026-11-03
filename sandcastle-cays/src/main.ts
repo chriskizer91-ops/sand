@@ -34,7 +34,7 @@ import { Player, type PlayerMode } from './player/player';
 import { GroundMap } from './world/ground';
 import { reefChannel } from './world/homeCay';
 import { WorldTerrain } from './world/world';
-import { SAILING, autopilot, boomAngle, dropAnchor, newBoat, pointOfSail, sailFill, stepBoat, weighAnchor, windAngle, windAt, type BoatState, type Course, type WindState } from './game/sailing';
+import { SAILING, autopilot, boomAngle, deepWaterNear, dropAnchor, newBoat, pointOfSail, sailFill, stepBoat, weighAnchor, windAngle, windAt, type BoatState, type Course, type WindState } from './game/sailing';
 import { SEA_CENTRE, SEA_RADIUS, newWeather, openness, squallsAt, weatherAt, windWord, type Squall } from './game/weather';
 import { createSeaBuoy } from './render/buoy';
 import { WeatherFx } from './render/weatherFx';
@@ -42,6 +42,7 @@ import { downloadFile, loadAutosave, loadSettings, pickFile, saveAutosave, saveS
 import { Hud, cap } from './ui/hud';
 import { SailHud } from './ui/sailHud';
 import { Chart } from './ui/chart';
+import { DevTools } from './ui/devTools';
 import { Ui } from './ui/ui';
 import type { CheckResult } from './checks/sandChecks';
 
@@ -126,14 +127,30 @@ let boat: BoatState = newBoat(terrain.anchorage.x, terrain.anchorage.z, terrain.
 const wind = newWeather();
 /** The squalls about now (plus one the checks can call up). */
 const squalls: Squall[] = [];
-let forcedSquall: Squall | null = null;
+let forcedSquall: (Squall & { t0?: number; x0?: number; z0?: number }) | null = null;
+/** Dev tools: squalls on or off, the wind's strength, the game's speed. */
+let devSqualls = true;
+let devWindK = 1;
+let devSpeed = 1;
 function updateWeather(t: number): void {
   squallsAt(t, squalls);
+  if (!devSqualls) squalls.length = 0;
   if (forcedSquall) {
-    squalls.unshift(forcedSquall);
-    if (squalls.length > 4) squalls.length = 4;
+    const f = forcedSquall;
+    if (f.t0 !== undefined) {
+      // A squall called up from the dev tools drifts in on the wind.
+      f.x = f.x0! + f.vx * (t - f.t0);
+      f.z = f.z0! + f.vz * (t - f.t0);
+      f.strength = Math.min(1, (t - f.t0) / 20 + 0.3);
+      if (f.x < SEA_CENTRE.x - 1800) forcedSquall = null;
+    }
+    if (forcedSquall) {
+      squalls.unshift(forcedSquall);
+      if (squalls.length > 4) squalls.length = 4;
+    }
   }
   weatherAt(t, boat.x, boat.z, wind, squalls);
+  wind.speed *= devWindK;
 }
 /** The slope of the sea under the boat along her bow (+ = downhill ahead: a wave lifting her stern). */
 function seaSlope(t: number): number {
@@ -307,6 +324,7 @@ const ui = new Ui(
     loadFile: () => void loadFromFile(),
     newBeach: () => newBeach(),
     newGame: () => newGame(),
+    devTools: () => toggleDevTools(true),
     setDrying: (d) => {
       settings.drying = d;
       saveSettings(settings);
@@ -331,7 +349,8 @@ const ui = new Ui(
   settings,
 );
 ui.setTool(tool);
-if (debug) ui.fpsEl.style.display = 'block';
+let showFps = debug;
+if (showFps) ui.fpsEl.style.display = 'block';
 
 const hud = new Hud(
   {
@@ -610,7 +629,166 @@ function sailDown(): void {
   if (course) stopCourse(null);
 }
 
+// ---------- dev tools ----------
+
+const devTools = new DevTools(
+  {
+    goTo: (id) => devGoTo(id),
+    pushOff: () => {
+      if (!startPushOff()) return;
+    },
+    repairHull: () => {
+      boat.hull = 100;
+      ui.toast('Hull mended', 1500);
+    },
+    stopBoat: () => {
+      boat.speed = 0;
+      boat.sailSet = boat.sail = 0;
+      boat.throttle = boat.motor = 0;
+      if (course) stopCourse(null);
+    },
+    squallHere: () => {
+      forcedSquall = { id: -2, x: boat.x, z: boat.z, radius: 200, strength: 1, vx: 0, vz: 0 };
+      ui.toast('A squall, right here', 1500);
+    },
+    squallComing: () => {
+      forcedSquall = { id: -3, x: boat.x + 900, z: boat.z, radius: 190, strength: 0.3, vx: -6, vz: 0, t0: time, x0: boat.x + 900, z0: boat.z };
+      ui.toast('A squall is on its way from the east (about two minutes)', 2500);
+    },
+    setSqualls: (on) => {
+      devSqualls = on;
+      if (!on) forcedSquall = null;
+    },
+    setWind: (k) => (devWindK = k),
+    setHour: (h) => {
+      clock.hour = h;
+      daylight.refresh();
+    },
+    nextMorning: () => {
+      clock.day += 1;
+      clock.hour = DAY.washUpHour + 0.6;
+      daylight.refresh();
+      washIfDue();
+    },
+    setClockRunning: (on) => (holdTime = !on),
+    setSpeed: (k) => (devSpeed = k),
+    setFps: (on) => {
+      showFps = on;
+      ui.fpsEl.style.display = on ? 'block' : 'none';
+    },
+    click: () => audio.click(),
+  },
+  isTouch,
+);
+
+function toggleDevTools(on?: boolean): void {
+  devTools.toggle(on);
+  // Let go of the mouse so you can click the buttons.
+  if (devTools.open) input.unlock();
+}
+
+function devGoTo(id: 'home' | 'pink' | 'gap' | 'open' | 'buoy'): void {
+  if (course) stopCourse(null);
+  pushOff = null;
+  const spots = {
+    home: { x: terrain.anchorage.x, z: terrain.anchorage.z, h: 0, anchor: true },
+    pink: { x: world.pink.anchorage.x, z: world.pink.anchorage.z, h: 0, anchor: true },
+    gap: { x: channel.outside.x, z: channel.outside.z, h: Math.atan2(channel.outside.z - channel.inside.z, channel.outside.x - channel.inside.x), anchor: false },
+    open: { x: 700, z: -150, h: Math.PI / 2, anchor: false },
+    buoy: { x: BUOY.x - 70, z: BUOY.z + 60, h: -0.75, anchor: false },
+  };
+  const s0 = spots[id];
+  boat.x = s0.x;
+  boat.z = s0.z;
+  boat.heading = s0.h;
+  boat.speed = 0;
+  boat.aground = false;
+  boat.anchored = s0.anchor;
+  boat.ax = s0.x + Math.cos(s0.h) * 6;
+  boat.az = s0.z + Math.sin(s0.h) * 6;
+  wasAnchored = boat.anchored;
+  run = { start: -1, rounded: false };
+  boatMotion.update(time, 1, boat);
+  player.placeAboard((atHelm ? sloop.points.helm : sloop.points.spawn).clone(), player.yaw);
+  changedSinceSave = true;
+}
+
+let lastDraws = 0;
+let lastTris = 0;
+function devInfo(): [string, string][] {
+  const kn = (v: number) => `${(v * 1.944).toFixed(1)} kn`;
+  const deg = (a: number) => `${Math.round(((90 - (a * 180) / Math.PI) % 360 + 360) % 360)}°`;
+  let nearest = '';
+  for (const q of squalls) {
+    const d = Math.hypot(q.x - boat.x, q.z - boat.z) - q.radius;
+    if (!nearest || d < Number(nearest.split(' ')[0])) nearest = `${Math.max(0, Math.round(d))} m away (${Math.round(q.strength * 100)}%)`;
+  }
+  const state = pushOff ? 'pushing off' : boat.anchored ? 'at anchor' : boat.aground ? `aground ${(boat.agroundTime ?? 0).toFixed(0)} s` : 'under way';
+  const extra = [surfing > 0.6 ? 'surfing' : '', overTime > 0.5 ? 'overpowered' : ''].filter(Boolean).join(' · ');
+  return [
+    ['frame', `${fpsShown} fps · ${pipeline.quality} · ${lastDraws} draws · ${Math.round(lastTris / 1000)}k tris`],
+    ['you', `${player.mode}${atHelm ? ' (helm)' : ''} · ${Math.round(player.feet.x)}, ${Math.round(player.feet.z)}`],
+    ['boat', `${state} · ${Math.round(boat.x)}, ${Math.round(boat.z)} · hull ${Math.round(boat.hull)}%`],
+    ['speed', `${kn(Math.abs(boat.speed))} · ${deg(boat.heading)} · heel ${Math.round((Math.abs(boat.heel) * 180) / Math.PI)}°${extra ? ` · ${extra}` : ''}`],
+    ['sail, motor', `${Math.round(boat.sail * 100)}% · ${motorWord(boat.throttle ?? 0)}`],
+    ['wind', `${kn(wind.speed)} from ${deg(wind.from)} · ${windWord(wind.speed * 1.944)}`],
+    ['sea', `open ${Math.round(wind.open * 100)}% · rain ${Math.round(rainNow * 100)}% · ${squalls.length} squall${squalls.length === 1 ? '' : 's'}${nearest ? `, nearest ${nearest}` : ''}`],
+    ['clock', `${formatClock(clock)}${holdTime ? ' (stopped)' : ''} · game ×${devSpeed} · wind ×${devWindK}`],
+    ['sea buoy', `${records.rounds} rounds · best ${records.best ? minSec(records.best) : '–'}`],
+  ];
+}
+
+/** Pushing her off the bottom into deeper water (a few seconds, as if poling her off). */
+let pushOff: { fx: number; fz: number; fh: number; tx: number; tz: number; th: number; t: number } | null = null;
+let lastStuckTip = -99;
+
+function startPushOff(): boolean {
+  if (pushOff) return true;
+  const to = deepWaterNear(seaBed, boat.x, boat.z, boat.heading);
+  if (!to) {
+    ui.toast('She’s high and dry: there’s no deep water close enough to push her into.', 3500);
+    return false;
+  }
+  pushOff = { fx: boat.x, fz: boat.z, fh: boat.heading, tx: to.x, tz: to.z, th: to.heading, t: 0 };
+  boat.throttle = 0;
+  boat.speed = 0;
+  if (course) stopCourse(null);
+  audio.thud(0.25);
+  ui.toast('You push her off into deeper water…', 2500);
+  changedSinceSave = true;
+  return true;
+}
+
+/** Each frame while pushing off: ease her to the deep spot. Returns true while it's happening. */
+function stepPushOff(dt: number): boolean {
+  if (!pushOff) return false;
+  const p = pushOff;
+  p.t = Math.min(1, p.t + dt / 2.5);
+  const k = p.t * p.t * (3 - 2 * p.t);
+  boat.x = p.fx + (p.tx - p.fx) * k;
+  boat.z = p.fz + (p.tz - p.fz) * k;
+  boat.heading = wrapAngle(p.fh + wrapAngle(p.th - p.fh) * k);
+  boat.speed = 0;
+  boat.aground = false;
+  boat.agroundTime = 0;
+  if (p.t >= 1) {
+    pushOff = null;
+    audio.splash(0.4);
+    ui.toast('Afloat again', 1800);
+  }
+  return true;
+}
+
+function wrapAngle(a: number): number {
+  return Math.atan2(Math.sin(a), Math.cos(a));
+}
+
 function toggleAnchor(): void {
+  // Aground, the anchor button pushes her off instead.
+  if (boat.aground && !boat.anchored) {
+    startPushOff();
+    return;
+  }
   if (boat.anchored) {
     weighAnchor(boat);
     audio.anchorChain(false);
@@ -827,7 +1005,8 @@ function exitBuild(): void {
 
 window.addEventListener('keydown', (e) => {
   if (!started) return;
-  if (view === 'build' && (e.code === 'Escape' || e.code === 'KeyB')) exitBuild();
+  if (e.code === 'KeyT' && !e.repeat) toggleDevTools();
+  else if (view === 'build' && (e.code === 'Escape' || e.code === 'KeyB')) exitBuild();
   else if (e.code === 'KeyL' && view === 'fp') toggleLogbook();
   else if (e.code === 'KeyM' && view === 'fp') toggleChart();
   else if (e.code === 'Escape' && chart.open) toggleChart(false);
@@ -1273,7 +1452,7 @@ const blendTarget = new THREE.Vector3();
 function frame(now: number): void {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
-  time += dt;
+  time += dt * devSpeed;
   frames++;
   renderer.info.reset();
   host?.tick(dt);
@@ -1297,7 +1476,30 @@ function frame(now: number): void {
       }
     }
   } else if (atHelm && started && view === 'fp' && !anyPanelOpen()) steer = input.move.x;
-  const sailEv = stepBoat(boat, wind, { steer, attended: atHelm || !!course, slope: seaSlope(time) }, seaBed, dt);
+  const pushing = stepPushOff(dt);
+  const sailEv = { grounded: 0, floated: false, over: 0, surfing: 0 };
+  if (!pushing) {
+    const simDt = dt * devSpeed;
+    const n = Math.max(1, Math.ceil(simDt / 0.05));
+    for (let i = 0; i < n; i++) {
+      const e = stepBoat(boat, wind, { steer, attended: atHelm || !!course, slope: seaSlope(time) }, seaBed, simDt / n);
+      sailEv.grounded = Math.max(sailEv.grounded, e.grounded);
+      sailEv.floated = sailEv.floated || e.floated;
+      sailEv.over = Math.max(sailEv.over, e.over);
+      sailEv.surfing = Math.max(sailEv.surfing, e.surfing);
+    }
+  }
+  // Stuck a while? Say how to get off.
+  if (boat.aground && !boat.anchored && player.aboard && (boat.agroundTime ?? 0) > 6 && time - lastStuckTip > 60) {
+    lastStuckTip = time;
+    hud.showCard(
+      'Stuck aground',
+      isTouch
+        ? 'At the helm, tap “Push off” and you’ll push her off into deeper water. Or motor astern and steer away from the shallows.'
+        : 'At the helm, press X (“Push off”) and you’ll push her off into deeper water. Or motor astern (F) and steer away from the shallows.',
+      8000,
+    );
+  }
   surfing += (sailEv.surfing - surfing) * (1 - Math.exp(-dt * 3));
   overTime = sailEv.over > 0.05 && atHelm ? overTime + dt : 0;
   if (overTime > 1.2 && time - lastOverTip > 25) {
@@ -1366,7 +1568,7 @@ function frame(now: number): void {
 
   // The clock (paused while a menu or the logbook is open).
   if (started && !anyPanelOpen() && !holdTime) {
-    advanceClock(clock, dt);
+    advanceClock(clock, dt * devSpeed);
     washIfDue();
   }
 
@@ -1448,6 +1650,7 @@ function frame(now: number): void {
 
   // The weather where you stand: rain, a squall's cloud overhead.
   weatherAt(time, camera.position.x, camera.position.z, here, squalls);
+  here.speed *= devWindK;
   rainNow += (here.rain - rainNow) * (1 - Math.exp(-dt / 2.0));
   {
     let over = 0;
@@ -1460,7 +1663,7 @@ function frame(now: number): void {
   daylight.weather.rain = rainNow;
   daylight.weather.overhead = overheadNow * 0.6;
   windAt(time, tradeWind);
-  ocean.setWeather(tradeWind.speed, squalls);
+  ocean.setWeather(tradeWind.speed * devWindK, squalls);
   audio.setWeather(rainNow, here.speed);
   // The far islands drift part of the way with you: you never quite reach them.
   distant.position.set(camera.position.x * 0.6, 0, camera.position.z * 0.6);
@@ -1517,7 +1720,7 @@ function frame(now: number): void {
         sail: boat.sail,
         sailSet: boat.sailSet,
         anchored: boat.anchored,
-        aground: boat.aground,
+        aground: boat.aground && !boat.anchored,
         course: course ? course.name : null,
         motor: motorWord(boat.throttle ?? 0),
         windWord: windWord(wind.speed * 1.944),
@@ -1526,6 +1729,7 @@ function frame(now: number): void {
         rain: wind.rain > 0.25,
       });
       if (chart.open) renderChart();
+      if (devTools.open) devTools.setInfo(devInfo());
     }
     audio.setMotor(Math.abs(boat.motor ?? 0), aboard || Math.hypot(player.feet.x - boat.x, player.feet.z - boat.z) < 60);
     audio.setSailing(Math.abs(boat.speed), wind.speed, boat.sail * (1 - sailFill(windAngle(boat, wind))) * (boat.anchored ? 0 : 1), boat.heel, aboard);
@@ -1542,6 +1746,8 @@ function frame(now: number): void {
 
   pipeline.shadowSpan = view === 'build' ? Math.min(14, Math.max(4, cam.dist * 1.1)) : 16;
   pipeline.render(started && view === 'fp' && !blend, view === 'build' ? cam.target : player.feet);
+  lastDraws = renderer.info.render.calls;
+  lastTris = renderer.info.render.triangles;
   void light;
 
   // Frame rate, and automatic quality when it drops.
@@ -1559,7 +1765,7 @@ function frame(now: number): void {
         if (pipeline.stepDown()) resize();
       }
     }
-    if (debug) {
+    if (showFps) {
       const info = renderer.info.render;
       ui.fpsEl.textContent = `${fpsShown} fps · ${host?.mode} · ${pipeline.quality} ×${pipeline.pixelRatio.toFixed(2)} · draws ${info.calls} · tris ${Math.round(info.triangles / 1000)}k · ${player.mode}${lastPerf ? ` · sim ${lastPerf.simMs.toFixed(1)}ms` : ''}`;
     }
@@ -1737,7 +1943,7 @@ void boot();
         st = ap.steer;
         if (ap.arrived && !dropAnchor(boat, seaBed)) course = null;
       }
-      const ev = stepBoat(boat, wind, { steer: st, attended: true, slope: seaSlope(time) }, seaBed, 1 / 30);
+      const ev = stepPushOff(1 / 30) ? { grounded: 0, floated: false, over: 0, surfing: 0 } : stepBoat(boat, wind, { steer: st, attended: true, slope: seaSlope(time) }, seaBed, 1 / 30);
       maxSurf = Math.max(maxSurf, ev.surfing);
       maxSpeed = Math.max(maxSpeed, boat.speed);
       maxOver = Math.max(maxOver, ev.over);
@@ -1764,6 +1970,14 @@ void boot();
   sprayStats,
   get records() {
     return { ...records, run: { ...run } };
+  },
+  pushOff: () => startPushOff(),
+  get pushing() {
+    return !!pushOff;
+  },
+  devTools: (on?: boolean) => toggleDevTools(on),
+  get devOpen() {
+    return devTools.open;
   },
   get weather() {
     return { wind: wind.speed, from: wind.from, open: wind.open, rain: wind.rain, squall: wind.squall, rainHere: rainNow, squalls: squalls.length };
