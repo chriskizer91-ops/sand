@@ -1,5 +1,41 @@
 # What changed, version by version (plain language)
 
+## v0.4, Blue water
+Sailing is now the main event. Out past the reefs is the open sea, with more wind and bigger waves, and squalls drift across it that you can sail into.
+
+**What's new**
+- **Faster sailing, a stronger motor.**
+  - She now sails at about 8 knots with the wind on the side, and 10 or more out on the open sea.
+  - The outboard is stronger (about 5 knots, and it gets her moving within seconds), but sailing is always much faster.
+- **The open sea**, once you're well past the reefs:
+  - the wind is half as strong again (about 19 knots instead of 13) and gusts harder;
+  - a long ocean swell rolls in from the east and the boat rides up and over it;
+  - whitecaps on the water, and spray over the bow (with a slap) when she drives into a wave;
+  - with the wind behind you, a wave can pick her up and **surf** her down its face, at 12 knots or more. The dial says "surfing!".
+  - A card tells you when you first reach it.
+- **Too much sail in a strong wind:** she leans hard, slows, and turns herself up into the wind. The dial says "overpowered". Take in sail ("Less sail", or S) or steer away from the wind. Half sail is faster and steadier in a blow.
+- **Squalls**: dark clouds with grey rain hanging under them.
+  - They drift west across the sea, about one every few minutes, and you can see them coming from a long way off.
+  - Sail into one for a burst of wind (up to about 30 knots) that shifts as you pass through, with rain, dark rough water and the light closing in. It passes in a minute or two.
+  - You get a warning when one is heading your way. Inside the reef they're much gentler.
+  - The chart shows them as grey patches.
+- **The sea buoy**: a red-and-white buoy out on the open sea to the south-east, with a light that flashes at night.
+  - Sail out round it and back to anchor at Home Cay, and the logbook keeps your best time.
+  - It's a close-hauled beat out and a downwind run, surfing, home.
+  - "Round the sea buoy and come home" on the chart lets her sail it herself.
+- **The chart** now shows all the water you can sail, out to about a kilometre, with the open sea a deeper blue.
+- **Sounds**: rain, a strong wind's moan, the bow slapping into waves, and the rush of surfing.
+- The view leans with the boat a little less when she heels hard.
+
+**Checks before sending**
+CHECKS_PLACEHOLDER
+
+**Not tested, or known**
+- How the open sea and squalls feel to sail, and whether they're exciting enough (or too much). Tell me.
+- Speed on your Pixel out on the open sea and inside a squall (the test browser has no real graphics chip).
+- Inside a squall, a hill more than 30 m away gets a little more rain haze than it should.
+- Sails don't get damaged yet; sail repairs could come with the upkeep in v0.5.
+
 ## v0.3.1, A little outboard (and a polish pass)
 **What changed**
 - **A small outboard motor** on the stern, for when the wind isn't helping: getting out of an anchorage, through the reef gap, or out of irons.

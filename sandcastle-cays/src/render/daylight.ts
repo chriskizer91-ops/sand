@@ -136,7 +136,9 @@ export class Daylight {
     // Rain greys the haze.
     if (over > 0) SKY.horizon.lerp(this.tmp.copy(this.rainGrey).multiplyScalar(0.25 + 0.75 * daylight), 0.65 * over);
 
-    const dim = (1 - 0.5 * SKY.cover) * (1 - 0.45 * over);
+    // Under a squall's cloud the sun is hidden: its light and its glitter on the water fade.
+    SKY.sunColor.multiplyScalar(1 - 0.7 * over);
+    const dim = (1 - 0.5 * SKY.cover) * (1 - 0.25 * over);
     this.sun.color.copy(SKY.sunColor);
     this.sun.intensity = sy > 0.02 ? 3.3 * smoothstep(0.0, 0.18, sy) * dim : 1.5 * night;
     // Golden hour: less cool sky-fill, so the low warm sun shows.

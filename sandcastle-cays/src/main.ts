@@ -37,6 +37,7 @@ import { WorldTerrain } from './world/world';
 import { SAILING, autopilot, boomAngle, dropAnchor, newBoat, pointOfSail, sailFill, stepBoat, weighAnchor, windAngle, windAt, type BoatState, type Course, type WindState } from './game/sailing';
 import { SEA_CENTRE, SEA_RADIUS, newWeather, openness, squallsAt, weatherAt, windWord, type Squall } from './game/weather';
 import { createSeaBuoy } from './render/buoy';
+import { WeatherFx } from './render/weatherFx';
 import { downloadFile, loadAutosave, loadSettings, pickFile, saveAutosave, saveSettings, testStorage, clearAutosave, unwrapSave } from './storage/storage';
 import { Hud, cap } from './ui/hud';
 import { SailHud } from './ui/sailHud';
@@ -154,7 +155,10 @@ cursor.hide();
 
 // What the under-the-water picture can skip: anything that never sits below the surface.
 const refractSkip: THREE.Object3D[] = [];
-const staticSkip: THREE.Object3D[] = [sky.mesh, particles.points, cursor.mesh, distant, covePlants, wake.mesh];
+// Squall clouds, rain and spray.
+const weatherFx = new WeatherFx({ phone: isTouch });
+scene.add(weatherFx.group);
+const staticSkip: THREE.Object3D[] = [sky.mesh, particles.points, cursor.mesh, distant, covePlants, wake.mesh, weatherFx.group];
 pinkGround.traverse((o) => o.userData.dry && staticSkip.push(o));
 islandGround.traverse((o) => o.userData.dry && staticSkip.push(o));
 life.group.traverse((o) => o.userData.dry && staticSkip.push(o));
@@ -242,6 +246,7 @@ function resize(): void {
   const h = window.innerHeight;
   pipeline.resize(w, h);
   particles.setViewport(h * renderer.getPixelRatio(), camera.fov);
+  weatherFx.setViewport(h * renderer.getPixelRatio());
 }
 window.addEventListener('resize', resize);
 
@@ -409,6 +414,7 @@ function bowSpray(dt: number): void {
   }
 }
 const SPRAY_RISE = 1.15;
+onSpray = (x, y, z, dx, dz, k) => weatherFx.spray(x, y, z, dx, dz, k, time, boat.speed);
 
 /** Surfing speed now (smoothed), how long she's been overpowered, and when we last said so. */
 let surfing = 0;
@@ -1461,6 +1467,16 @@ function frame(now: number): void {
 
   // Light, sky and water.
   const light = daylight.update(dt, time, clock);
+  weatherFx.setLocalRain(rainNow);
+  weatherFx.update(
+    squalls,
+    camera,
+    time,
+    dt,
+    { daylight: light.daylight, night: light.night, sunDir: SKY.sunDir, sunColor: SKY.sunColor, horizon: SKY.horizon, zenith: SKY.zenith },
+    -Math.cos(here.from) * here.speed,
+    -Math.sin(here.from) * here.speed,
+  );
   // The far islands take on the colour of the haze at the horizon.
   (distant.material as THREE.MeshBasicMaterial).color.copy(SKY.horizon).multiplyScalar(0.62 + 0.25 * light.daylight);
   sky.update(time, camera.position);
