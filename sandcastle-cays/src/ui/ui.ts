@@ -273,6 +273,15 @@ export class Ui {
         <li><b>Squalls</b> are the dark clouds with rain hanging under them, drifting west. Sail into one for a burst of wind and rain (take in sail first!). They pass in a minute or two.</li>
         <li><b>The sea buoy</b> is the red-and-white buoy out to the south-east. Sail out round it and back to anchor at Home Cay, and your time goes in the logbook.</li>
       </ul>
+      <h3>Living aboard</h3>
+      <ul>
+        <li><b>Stores</b>: the bowl and the drop at the top show how many days of food and water you have. You use a day of each every day. Run out and you’re slower until you top up. Tap them (or go below to the galley) for more.</li>
+        <li><b>Fishing</b>: tap the rod button (G on a laptop) on deck or on the shore, face the water and cast. When the float dips, strike quickly! Then hold to reel in, and ease off when the line goes red or it snaps. Different fish bite in different places: try the shallow flats, the lagoon, and out on the open sea.</li>
+        <li><b>The galley</b> is down the companionway, at the front of the cockpit. Cook your fish there (fresh fish keeps a day and a half), and open coconuts from the locker.</li>
+        <li><b>Water</b>: rain runs off the awning into the tank at anchor (and off the mainsail when sailing). Sail to meet a squall and anchor under it!</li>
+        <li><b>Coconuts</b>: shake a palm on the beach and one or two fall. Pick them up like any find.</li>
+        <li><b>Upkeep</b>: a badly scraped hull leaks, so pump the bilge (the pump is in the cockpit). Sailing hard when she’s overpowered wears the sails. Mend both at the <b>workbench</b> on the stern, with finds from the locker. New finds give you new ideas there: a bigger rain catcher, water jugs, a lure, a fish trap.</li>
+      </ul>
       <h3>Dev tools</h3>
       <ul>
         <li>Press T on a laptop (or Menu → Dev tools) for a window that shows what the game is doing, with buttons to move the boat, call up a squall, change the wind, the time and the game’s speed.</li>

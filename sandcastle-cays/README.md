@@ -28,6 +28,9 @@ Or download the file: `builds/sandcastle-cays-v0.4.1.html`.
 | Steer / sails up and down (take in sail when she's overpowered) | left thumb / "More sail", "Less sail" | A D / W S |
 | Outboard motor (ahead / astern) | "Motor" buttons | R / F |
 | Anchor (when aground it becomes "Push off") | "Drop anchor" / "Push off" button | X |
+| Fishing rod (cast, strike, hold to reel) | rod button, then the round button | G, then E (hold E to reel) |
+| Galley, workbench, bilge pump (on the boat) | the round button | E |
+| Stores (days of food and water) | tap the bowl and drop at the top | click them |
 | Chart (tap a place to sail there, or "Round the sea buoy and come home") | map button | M |
 | While building | one finger tool, two fingers swing, pinch zoom | click to use the tool, two-finger swipe to swing, pinch or wheel to zoom |
 | Stand up again | "Stand up" button | Esc or B |
@@ -54,6 +57,7 @@ npm run release         # build + copy to builds/sandcastle-cays-v<version>.html
 - `src/world/`: `homeCay.ts` and `pinkCay.ts` (each island's shape, reef, tideline and anchorage), `islands.ts` (what islands share), `world.ts` (both on one sea floor) and `ground.ts` (what's underfoot, including your castles).
 - `src/game/sailing.ts`: how the boat sails (points of sail, tacking, heel, leeway, overpowering, surfing, running aground, anchoring, the motor, the autopilot).
 - `src/game/weather.ts`: the trade wind, the open sea beyond the reefs, and the squalls.
+- `src/game/aboard.ts` and `src/game/fishing.ts`: living aboard (stores, rain, coconuts, the hull leaking, sail wear, workbench recipes) and fishing; `src/living.ts` connects them to the game.
 - `src/player/player.ts`: you, in first person (deck, land, swimming, the ladder).
 - `src/game/beach.ts`: beachcombing rules (wash-ups, basket, locker, logbook) and the finds on the sand.
 - `src/content/finds.ts`: the catalogue of finds with true facts.
@@ -68,7 +72,7 @@ npm run release         # build + copy to builds/sandcastle-cays-v<version>.html
   - `scenery.ts`: the cove's own rocks and plants, and the distant islands;
   - the sand material and tiles.
 - `src/input/`: `fpInput.ts` (first-person controls), `camera.ts` and `controls.ts` (the building camera).
-- `src/ui/`: `hud.ts` (first-person screen and logbook), `sailHud.ts` (the wind dial and helm buttons), `chart.ts` (the chart), `devTools.ts` (the dev tools window), `ui.ts` (menus, building tray), `icons.ts`.
+- `src/ui/`: `hud.ts` (first-person screen and logbook), `sailHud.ts` (the wind dial and helm buttons), `chart.ts` (the chart), `galley.ts` and `workbench.ts` (living aboard), `devTools.ts` (the dev tools window), `ui.ts` (menus, building tray), `icons.ts`.
 - `src/audio/`, `src/storage/`: synthesised sounds, saves.
 - `src/checks/sandChecks.ts`: the sand checks, shared by `tests/` and the in-game Checks page.
 - `docs/`: plan, decisions log, changelog.

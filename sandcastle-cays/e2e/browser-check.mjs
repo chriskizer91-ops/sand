@@ -469,6 +469,114 @@ async function standBy(page, f) {
   step('Laptop: T opens the dev tools; "Open sea" moves the boat there, "No squalls" clears them; T closes them', devShown && Math.hypot(dev.x - 700, dev.z + 150) < 5 && dev.squalls === 0 && /fps/.test(dev.info) && devHidden,
     `boat at ${Math.round(dev.x)}, ${Math.round(dev.z)}, squalls ${dev.squalls}, readout ${dev.info.split('\n').length} lines`);
 
+  // ---- Living aboard (v0.5) ----
+  const standAt = (pt) => G(page, (pt) => { const g = window.__game; g.aboard(Math.PI / 2, -0.15); const p = g.sloopPoints[pt]; g.player.placeAboard(p.clone(), g.player.yaw); }, pt);
+  await G(page, () => { const g = window.__game; g.leaveHelm(); g.forceSquall(null); g.squallsOn(false); const b = g.boat; b.x = 2; b.z = -31; b.heading = 0; b.speed = 0; b.sailSet = 0; b.sail = 0; b.anchored = true; b.ax = 8; b.az = -31; b.aground = false; b.hull = 100; g.sail(1); });
+  const storesText = await page.evaluate(() => document.querySelector('#stores')?.innerText.replace(/\s+/g, ' ').trim());
+  step('Laptop: the stores (days of food and water) show on screen', /\d+ d .*\d+ d/.test(storesText ?? ''), `"${storesText}"`);
+  // The galley.
+  await standAt('galley');
+  await waitFrames(page, 3);
+  const galleyPrompt = await G(page, () => window.__game.action()?.label);
+  await page.keyboard.press('KeyE');
+  await waitFrames(page, 3);
+  const galleyOpen = await page.isVisible('#galley:not(.hidden)');
+  await shot(page, '12i-galley.png');
+  await page.keyboard.press('Escape');
+  await waitFrames(page, 2);
+  step('Laptop: by the companionway, E goes below to the galley (stores, cool box, coconuts)', /galley/.test(galleyPrompt ?? '') && galleyOpen, `prompt "${galleyPrompt}"`);
+  // Fishing from the deck: G for the rod, E to cast, a bite, E to strike, hold E to reel.
+  await G(page, () => window.__game.aboard(Math.PI / 2, -0.15));
+  await waitFrames(page, 3);
+  await page.keyboard.press('KeyG');
+  await waitFrames(page, 3);
+  const rodHeld = await G(page, () => window.__game.living.rodHeld);
+  await page.keyboard.press('KeyE');
+  await waitFrames(page, 4);
+  const castPhase = await G(page, () => window.__game.living.fishing.phase);
+  await G(page, () => window.__game.living.devBite());
+  await waitFrames(page, 2);
+  const bitePhase = await G(page, () => window.__game.living.fishing.phase);
+  await page.keyboard.press('KeyE');
+  await waitFrames(page, 2);
+  let fishResult = await G(page, () => window.__game.living.fishing.phase);
+  let reeledShot = false;
+  for (let i = 0; i < 900 && fishResult === 'reeling'; i++) {
+    const st = await G(page, () => { const f = window.__game.living.fishing; return { ph: f.phase, t: f.tension, r: f.running }; });
+    fishResult = st.ph;
+    if (st.ph !== 'reeling') break;
+    await G(page, (h) => window.__game.input.hold('KeyE', h), st.t < 0.6 && !(st.r && st.t > 0.35));
+    await waitFrames(page, 1);
+    if (i === 25 && !reeledShot) {
+      reeledShot = true;
+      await shot(page, '12j-reeling-in.png');
+    }
+  }
+  await G(page, () => window.__game.input.hold('KeyE', false));
+  const coolBox = await G(page, () => window.__game.living.aboard.coolBox.map((f) => f.kind));
+  await waitFrames(page, 6);
+  await shot(page, '12k-caught.png');
+  step('Laptop: fishing from the deck: G takes the rod, E casts, a bite, E strikes, holding E reels it in to the cool box', rodHeld && castPhase === 'waiting' && bitePhase === 'bite' && coolBox.length >= 1,
+    `cast: ${castPhase}, bite: ${bitePhase}, cool box: ${coolBox.join(', ') || 'empty'}`);
+  await page.keyboard.press('KeyG');
+  await waitFrames(page, 2);
+  // Cook it.
+  const food0 = await G(page, () => window.__game.living.aboard.food);
+  await G(page, () => window.__game.living.showGalley(true));
+  await waitFrames(page, 2);
+  if (await page.isVisible('#galley button:has-text("Cook")')) await page.click('#galley button:has-text("Cook")');
+  await waitFrames(page, 2);
+  const food1 = await G(page, () => window.__game.living.aboard.food);
+  await G(page, () => window.__game.living.closePanels());
+  step('Laptop: cooking the fish in the galley fills the larder', food1 > food0 + 0.2, `food ${food0.toFixed(1)} → ${food1.toFixed(1)} days`);
+  // The workbench: patch the hull with a plank and rope.
+  await G(page, () => { const g = window.__game; g.living.devMaterials(); g.boat.hull = 30; });
+  await standAt('workbench');
+  await waitFrames(page, 3);
+  const benchPrompt = await G(page, () => window.__game.action()?.label);
+  await page.keyboard.press('KeyE');
+  await waitFrames(page, 3);
+  await shot(page, '12l-workbench.png');
+  if (await page.isVisible('#workbench .recipe:has-text("Patch the hull") button')) await page.click('#workbench .recipe:has-text("Patch the hull") button');
+  await waitFrames(page, 2);
+  const hullAfter = await G(page, () => window.__game.boat.hull);
+  await page.keyboard.press('Escape');
+  step('Laptop: at the workbench, "Patch the hull" uses a plank and rope and mends the hull', /workbench/.test(benchPrompt ?? '') && hullAfter >= 64, `prompt "${benchPrompt}", hull 30% → ${Math.round(hullAfter)}%`);
+  // A badly scraped hull leaks; pump it out.
+  await G(page, () => { const g = window.__game; g.boat.hull = 10; g.living.aboard.bilge = 0; g.sail(60); });
+  const bilge0 = await G(page, () => window.__game.living.aboard.bilge);
+  await standAt('pump');
+  await waitFrames(page, 3);
+  const pumpPrompt = await G(page, () => window.__game.action()?.label);
+  for (let i = 0; i < 4; i++) {
+    await page.keyboard.press('KeyE');
+    await waitFrames(page, 2);
+  }
+  const bilge1 = await G(page, () => window.__game.living.aboard.bilge);
+  await G(page, () => { const g = window.__game; g.boat.hull = 100; g.living.aboard.bilge = 0; });
+  step('Laptop: a badly scraped hull leaks into the bilge; E at the pump pumps it out', bilge0 > 0.05 && /Pump/.test(pumpPrompt ?? '') && bilge1 < bilge0 - 0.15, `bilge ${Math.round(bilge0 * 100)}% → ${Math.round(bilge1 * 100)}% after 4 strokes`);
+  // Rain fills the tank at anchor.
+  const rain = await G(page, () => {
+    const g = window.__game;
+    g.living.aboard.water = 2;
+    g.forceSquall(g.boat.x, g.boat.z, 200, 1);
+    g.sail(40);
+    const w = g.living.aboard.water;
+    g.forceSquall(null);
+    return w;
+  });
+  step('Laptop: a squall at anchor fills the water tank', rain > 2.4, `water 2.0 → ${rain.toFixed(1)} days`);
+  // Coconuts from a palm.
+  const palm = await G(page, () => { const g = window.__game; const t = g.trunks[5]; g.teleport(t.x + 1.0, t.z + 0.2, 0, 0); return { x: t.x, z: t.z }; });
+  await waitFrames(page, 4);
+  const palmPrompt = await G(page, () => window.__game.action()?.label);
+  const nuts0 = await G(page, () => window.__game.beach.state.ground.filter((f) => f.kind === 'coconut').length);
+  await page.keyboard.press('KeyE');
+  await waitFrames(page, 3);
+  const nuts1 = await G(page, () => window.__game.beach.state.ground.filter((f) => f.kind === 'coconut').length);
+  step('Laptop: under a palm, E shakes down a coconut or two', /palm/.test(palmPrompt ?? '') && nuts1 > nuts0, `prompt "${palmPrompt}", coconuts on the sand ${nuts0} → ${nuts1} (palm at ${Math.round(palm.x)}, ${Math.round(palm.z)})`);
+  await G(page, () => window.__game.squallsOn(true));
+
   // ---- The open sea (v0.4) ----
   const sea = await G(page, () => {
     const g = window.__game;
@@ -753,6 +861,19 @@ async function standBy(page, f) {
   await waitFrames(page, 2);
   const phoneDevClosed = !(await page.isVisible('#devtools:not(.hidden)'));
   step('Phone: Menu → "Dev tools" opens the dev tools, and the cross closes them', phoneDev && phoneDevClosed, `opened ${phoneDev}, closed ${phoneDevClosed}`);
+  // Fishing on the phone: the rod button, then the round button casts.
+  await G(page, () => { const g = window.__game; if (g.atHelm) g.leaveHelm(); g.boat.speed = 0; g.aboard(Math.PI / 2, -0.15); });
+  await waitFrames(page, 4);
+  const rodShown = await page.isVisible('#rodbtn:not(.hide)');
+  if (rodShown) await page.tap('#rodbtn');
+  await waitFrames(page, 3);
+  const phoneRod = await G(page, () => window.__game.living.rodHeld);
+  if (await page.isVisible('#actionbtn:not(.hide)')) await page.tap('#actionbtn');
+  await waitFrames(page, 4);
+  const phoneCast = await G(page, () => window.__game.living.fishing.phase);
+  await shot(page, '17c-phone-fishing.png');
+  await G(page, () => window.__game.living.putRodAway());
+  step('Phone: the rod button takes the rod, and the round button casts', rodShown && phoneRod && phoneCast === 'waiting', `rod button ${rodShown}, holding ${phoneRod}, after tap: ${phoneCast}`);
   step('Phone: the round button takes the helm, "More sail" raises sail, the thumb steers', helmOk && sailSet > 0 && rudder > 0.05, `helm: ${helmOk}, sails ${sailSet}, rudder ${rudder.toFixed(2)}`);
   await shot(page, '17b-phone-at-the-helm.png');
 

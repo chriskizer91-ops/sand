@@ -62,7 +62,8 @@ export interface LineView {
 export interface LivingRig {
   setAwning?(shown: number, big: boolean): void;
   setPump?(stroke: number): void;
-  setBilge?(level: number): void;
+  setBilge?(level: number, time?: number): void;
+  setHatch?(open: number): void;
   setTrap?(set: boolean): void;
   setRodStowed?(shown: boolean): void;
   setGalleyLight?(on: boolean): void;
@@ -139,6 +140,7 @@ export class Living {
   private pumpHoldT = 0;
   private notes = { leak: -999, rain: -999, full: -999, torn: false, worn: false, hungryCard: false, thirstyCard: false };
   private clock = 0;
+  private hatch = 0;
 
   constructor(private ctx: LivingCtx) {
     this.galley = new Galley({
@@ -265,7 +267,10 @@ export class Living {
     rig?.setAwning?.(boat.anchored ? 1 : 0, (a.made.catcher ?? 0) > 0);
     rig?.setTrap?.((a.made.trap ?? 0) > 0 && boat.anchored);
     rig?.setRodStowed?.(!this.rodHeld);
-    rig?.setBilge?.(a.bilge);
+    rig?.setBilge?.(a.bilge, time);
+    // The hatch slides open while you're below in the galley.
+    this.hatch += ((this.galley.open ? 1 : 0) - this.hatch) * Math.min(1, dt * 4);
+    rig?.setHatch?.(this.hatch);
     rig?.setGalleyLight?.(night > 0.5);
     this.pumpAnim = Math.max(0, this.pumpAnim - dt * 2.5);
     rig?.setPump?.(Math.sin(Math.min(1, this.pumpAnim) * Math.PI));
@@ -543,7 +548,8 @@ export class Living {
       dir.y = 0;
       if (dir.lengthSq() < 1e-4) return;
       dir.normalize();
-      const pl = ctx.player.pos;
+      // Where you stand in the world (on deck, player.pos is on the boat's own grid).
+      const pl = ctx.player.feet;
       let hit: THREE.Vector3 | null = null;
       for (const d of [FISHING.castDistance, 7, 5]) {
         const x = pl.x + dir.x * d;
@@ -564,7 +570,7 @@ export class Living {
       const kind = fishHere({ depth, open: ctx.openness(hit.x, hit.z) }, this.rand());
       cast(s, kind, (this.aboard.made.lure ?? 0) > 0, this.rand);
       this.castAt.copy(hit);
-      this.castFrom.copy(pl);
+      this.castFrom.copy(ctx.player.mode === 'deck' ? ctx.player.pos : pl);
       ctx.held.cast?.();
       ctx.line?.setOut(true);
       setTimeout(() => {
@@ -592,6 +598,7 @@ export class Living {
     }
     if (!this.rodHeld) return;
     // Walked away from where you cast, or the boat got going: reel in.
+    // (On deck that's measured on the boat's own grid, so her swinging at anchor doesn't count.)
     if (s.phase !== 'idle' && (Math.hypot(ctx.player.pos.x - this.castFrom.x, ctx.player.pos.z - this.castFrom.z) > 5 || Math.abs(ctx.boat().speed) > 1.5)) {
       reelIn(s);
       ctx.line?.setOut(false);
@@ -604,7 +611,8 @@ export class Living {
     // The float: where it landed, pulled toward you as you reel.
     if (s.phase !== 'idle') {
       const k = s.phase === 'reeling' ? s.progress * 0.75 : 0;
-      this.float.set(this.castAt.x + (ctx.player.pos.x - this.castAt.x) * k, 0, this.castAt.z + (ctx.player.pos.z - this.castAt.z) * k);
+      const me = ctx.player.feet;
+      this.float.set(this.castAt.x + (me.x - this.castAt.x) * k, 0, this.castAt.z + (me.z - this.castAt.z) * k);
       this.float.y = ctx.seaHeight(this.float.x, this.float.z);
       ctx.tipWorld(this.tip);
       ctx.line?.update(this.tip, this.float, time, s.phase === 'reeling' ? s.tension : 0);

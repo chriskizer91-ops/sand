@@ -32,7 +32,7 @@ function expectStandable(x: number, z: number, label: string): number {
 }
 
 describe('sloop model', () => {
-  it('builds within the phone budget (<= 50k triangles, <= 13 draw calls, rig, motor and lights included)', () => {
+  it('builds within the phone budget (<= 50k triangles, <= 15 draw calls, everything included)', () => {
     let tris = 0;
     for (const m of meshes) {
       const g = m.geometry;
@@ -41,7 +41,7 @@ describe('sloop model', () => {
     console.log(`sloop: ${tris} triangles in ${meshes.length} meshes`);
     expect(tris).toBe(boat.triangles);
     expect(boat.triangles).toBeLessThanOrEqual(50000);
-    expect(meshes.length).toBeLessThanOrEqual(13);
+    expect(meshes.length).toBeLessThanOrEqual(15);
   });
 
   it('has the agreed size: about 8.4 m long, 2.8 m beam, with a keel below', () => {
@@ -56,7 +56,7 @@ describe('sloop model', () => {
   });
 
   it('casts shadows (all but the light glows), and the deck receives them', () => {
-    for (const m of meshes) if (m.name !== 'sloop-nav-lights') expect(m.castShadow, m.name).toBe(true);
+    for (const m of meshes) if (m.name !== 'sloop-nav-lights' && m.name !== 'sloop-bilge') expect(m.castShadow, m.name).toBe(true);
     const teak = meshes.find((m) => m.name === 'sloop-teak');
     expect(teak?.receiveShadow).toBe(true);
   });
@@ -239,7 +239,7 @@ describe('rig (sailing)', () => {
 
   it('exists with all its controls', () => {
     for (const k of ['setSail', 'setBoom', 'setJib', 'setFill', 'setRudder', 'setAnchored', 'status'] as const) expect(typeof rig[k]).toBe('function');
-    for (const n of ['sloop-boom', 'sloop-sails', 'sloop-rig-lines', 'sloop-rudder']) expect(mesh(n), n).toBeTruthy();
+    for (const n of ['sloop-boom', 'sloop-sails', 'sloop-rig-lines', 'sloop-woodwork']) expect(mesh(n), n).toBeTruthy();
   });
 
   it('setSail(0) keeps the furled look: cover on, no hoisted sail', () => {
@@ -300,15 +300,12 @@ describe('rig (sailing)', () => {
 
   it('setRudder(0.4) moves the rudder trailing edge to starboard and the tiller to port', () => {
     reset();
-    const rudder = mesh('sloop-rudder');
-    const rest = restVerts(rudder);
-    const te = rest.filter((p) => p.y < 0).reduce((a, b) => (b.x < a.x ? b : a));
-    const tiller = rest.reduce((a, b) => (b.x > a.x ? b : a));
+    // The rudder and tiller live in the woodwork mesh (with the hatch, trap frame and rod); they are the parts near the stern centreline.
+    const rudderVerts = () => localVerts(mesh('sloop-woodwork')).filter((p) => p.x < -2.9 && Math.abs(p.z) < 1.0 && p.y > -1.05);
     rig.setRudder(0.4);
-    boat.group.updateMatrixWorld(true);
-    const toBoat = new THREE.Matrix4().copy(boat.group.matrixWorld).invert().multiply(rudder.matrixWorld);
-    expect(te.clone().applyMatrix4(toBoat).z).toBeGreaterThan(0.1);
-    expect(tiller.clone().applyMatrix4(toBoat).z).toBeLessThan(-0.3);
+    const v = rudderVerts();
+    expect(Math.max(...v.filter((p) => p.y < 0).map((p) => p.z))).toBeGreaterThan(0.1); // trailing edge to starboard
+    expect(Math.min(...v.filter((p) => p.x > -3.15 && p.y > 0.95).map((p) => p.z))).toBeLessThan(-0.3); // tiller end to port
     const st = rig.status();
     expect(st.rudderTrailingEdge.z).toBeGreaterThan(0.1);
     expect(st.tillerEnd.z).toBeLessThan(-0.3);
@@ -364,7 +361,7 @@ describe('rig (sailing)', () => {
       const p = m.geometry.getAttribute('position').array;
       for (let i = 0; i < p.length; i++) if (!Number.isFinite(p[i])) throw new Error(`${m.name} has a bad vertex`);
     });
-    expect(n).toBeLessThanOrEqual(13);
+    expect(n).toBeLessThanOrEqual(15);
     expect(tris).toBeLessThanOrEqual(50000);
     reset();
   });
@@ -435,7 +432,7 @@ describe('outboard and navigation lights', () => {
       expect(motor.intersectsBox(ladder), `ladder, throttle ${throttle}`).toBe(false);
       for (const r of [-0.6, 0, 0.6]) {
         rig.setRudder(r);
-        const blade = boxOf(mesh('sloop-rudder'), (p) => p.y < 0.9); // the blade, below the tiller and rudder head
+        const blade = boxOf(mesh('sloop-woodwork'), (p) => p.x < -4.0 && Math.abs(p.z) < 0.4 && p.y < 0.9); // the rudder blade
         expect(motor.intersectsBox(blade), `rudder ${r}, throttle ${throttle}`).toBe(false);
       }
       rig.setRudder(0);
@@ -473,5 +470,215 @@ describe('outboard and navigation lights', () => {
     expect(lit((r, g) => r > 2 && g < r / 3)).toBe(true); // red to port
     expect(lit((r, g) => g > 2 && r < g / 3)).toBe(true); // green to starboard
     rig.setLights('anchor', 0);
+  });
+});
+
+describe('living aboard: galley, workbench, pump, awning, trap and rod', () => {
+  const rig = boat.rig;
+  const mesh = (name: string) => boat.group.getObjectByName(name) as THREE.Mesh;
+  const verts = (m: THREE.Mesh): THREE.Vector3[] => {
+    boat.group.updateMatrixWorld(true);
+    const toBoat = new THREE.Matrix4().copy(boat.group.matrixWorld).invert().multiply(m.matrixWorld);
+    const p = m.geometry.getAttribute('position');
+    const out: THREE.Vector3[] = [];
+    for (let i = 0; i < p.count; i++) out.push(new THREE.Vector3().fromBufferAttribute(p, i).applyMatrix4(toBoat));
+    return out;
+  };
+  const boxOf = (vs: THREE.Vector3[]) => new THREE.Box3().setFromPoints(vs);
+  const reset = () => {
+    rig.setHatch(0);
+    rig.setGalleyLight(false);
+    rig.setPump(0);
+    rig.setBilge(0);
+    rig.setAwning(0, false);
+    rig.setTrap(false);
+    rig.setRodStowed(true);
+    rig.setBoom(0);
+    rig.setSail(0);
+    rig.setRudder(0);
+  };
+  const R = 0.25; // a person's radius (the game's is about 0.3, tested with 0.8 of it)
+
+  it('has the new spots on walkable deck, inside the lifelines and not blocked', () => {
+    for (const k of ['galley', 'workbench', 'pump'] as const) {
+      const p = points[k];
+      expect(deck.heightAt(p.x, p.z), k).toBeCloseTo(p.y, 2);
+      expect(deck.insideLifelines(p.x, p.z), k).toBe(true);
+      expect(deck.blocked(p.x, p.z, R), k).toBe(false);
+    }
+    // each is where it says: galley just aft of the washboards, pump beside its coaming, workbench in reach of the box
+    expect(points.galley.x).toBeLessThan(-1.6);
+    expect(points.galley.x).toBeGreaterThan(-2.2);
+    const f = boat.fittings;
+    expect(new THREE.Vector2(points.pump.x - f.pump.getCenter(new THREE.Vector3()).x, points.pump.z - f.pump.max.z).length()).toBeLessThan(1.0);
+    const wb = f.workbench.getCenter(new THREE.Vector3());
+    expect(Math.hypot(points.workbench.x - wb.x, points.workbench.z - wb.z)).toBeLessThan(0.9);
+    expect(f.workbench.max.y - points.workbench.y).toBeGreaterThan(0.6); // a bench top at about waist height
+    expect(f.workbench.max.y - points.workbench.y).toBeLessThan(1.0);
+  });
+
+  it('keeps the cockpit, side decks and the way to the ladder open', () => {
+    // the workbench blocks its own box only
+    expect(deck.blocked((-4.02 + -3.7) / 2, -0.7, 0.05)).toBe(true);
+    for (const p of [points.spawn, points.helm, points.locker, points.ladderTop, points.galley, points.pump]) expect(deck.blocked(p.x, p.z, R)).toBe(false);
+    // the stern deck between the box and the ladder is still walkable
+    expect(deck.blocked(-3.95, 0.15, R)).toBe(false);
+  });
+
+  it('puts the workbench clear of the ladder, outboard, rudder and tiller swing', () => {
+    const wb = boat.fittings.workbench;
+    const ladder = new THREE.Box3(new THREE.Vector3(-4.6, -0.8, points.ladderTop.z - 0.25), new THREE.Vector3(points.ladderTop.x + 0.15, 1.6, points.ladderTop.z + 0.25));
+    expect(wb.intersectsBox(ladder)).toBe(false);
+    for (const throttle of [0, 1]) {
+      for (let t = 0; t < 1.5; t += 1 / 30) rig.setMotor(throttle, 500 + throttle * 10 + t);
+      expect(wb.intersectsBox(boxOf(verts(mesh('sloop-outboard')))), `outboard ${throttle}`).toBe(false);
+    }
+    for (let t = 0; t < 1.5; t += 1 / 30) rig.setMotor(0, 520 + t);
+    for (const r of [-0.6, -0.3, 0, 0.3, 0.6]) {
+      rig.setRudder(r);
+      const tiller = verts(mesh('sloop-woodwork')).filter((p) => p.x < -2.9 && Math.abs(p.z) < 1.0 && p.y > 0.95);
+      for (const p of tiller) expect(wb.containsPoint(p), `tiller at ${r}`).toBe(false);
+    }
+    rig.setRudder(0);
+    for (const b of [boat.fittings.pump, boat.fittings.rodHolder, ...boat.fittings.fillers]) expect(b.intersectsBox(ladder)).toBe(false);
+  });
+
+  it('slides the hatch open and lights the galley', () => {
+    reset();
+    const hatchTop = () => {
+      const top = verts(mesh('sloop-woodwork')).filter((p) => p.x > -1.8 && p.x < 0 && Math.abs(p.z) < 0.4 && p.y > 1.22);
+      return Math.min(...top.map((p) => p.x));
+    };
+    const closed = hatchTop();
+    rig.setHatch(1);
+    expect(hatchTop() - closed).toBeGreaterThan(0.3);
+    expect(rig.status().hatchOpen).toBe(1);
+    rig.setLights('anchor', 1);
+    rig.setGalleyLight(true);
+    expect(rig.status().galleyLight).toBe(true);
+    const c = mesh('sloop-nav-lights').geometry.getAttribute('color').array as Float32Array;
+    let warm = false;
+    for (let i = 0; i < c.length; i += 4) if (c[i + 3] > 0.99 && c[i] > 0.6 && c[i + 2] < c[i] * 0.4) warm = true;
+    expect(warm).toBe(true);
+    rig.setLights('anchor', 0);
+    reset();
+  });
+
+  it('moves the pump handle with the stroke', () => {
+    reset();
+    const handleTop = () => {
+      const h = verts(mesh('sloop-rig-lines')).filter((p) => Math.abs(p.x - boat.fittings.pump.getCenter(new THREE.Vector3()).x) < 0.5 && p.z > 0.4 && p.z < 1.1 && p.y > 1.05 && p.y < 1.6);
+      return h.reduce((a, b) => a + b.x, 0) / h.length;
+    };
+    rig.setPump(0);
+    const a = handleTop();
+    rig.setPump(1);
+    expect(Math.abs(handleTop() - a)).toBeGreaterThan(0.15);
+    reset();
+  });
+
+  it('shows bilge water on the sole only when she is leaking badly', () => {
+    reset();
+    const water = mesh('sloop-bilge');
+    rig.setBilge(0.5);
+    expect(water.visible).toBe(false);
+    rig.setBilge(0.9, 1.5);
+    expect(water.visible).toBe(true);
+    const ys = verts(water).map((p) => p.y);
+    expect(Math.min(...ys)).toBeGreaterThan(points.spawn.y);
+    expect(Math.max(...ys)).toBeLessThan(points.spawn.y + 0.15);
+    reset();
+    expect(water.visible).toBe(false);
+  });
+
+  it('spreads the awning under the boom over the cabin top, clear of the boom, the cockpit and the lifelines', () => {
+    reset();
+    expect(rig.status().awning.clothBox).toBeNull();
+    const boomBottom = (x0: number, x1: number) => Math.min(...verts(mesh('sloop-boom')).filter((p) => p.x > x0 && p.x < x1).map((p) => p.y));
+    for (const big of [false, true]) {
+      rig.setAwning(1, big);
+      const st = rig.status().awning;
+      expect(st.big).toBe(big);
+      const b = st.clothBox as THREE.Box3;
+      expect(b).not.toBeNull();
+      expect(b.max.y).toBeLessThan(boomBottom(b.min.x, b.max.x) - 0.05);
+      // it hangs over the cabin top, never over the cockpit where you stand on the sole
+      expect(b.min.x).toBeGreaterThan(-1.6);
+      expect(b.min.y - (deck.heightAt(-1.0, 0) as number)).toBeGreaterThan(0.55);
+      // inside the lifelines, and above them where it reaches past the cabin top
+      expect(b.max.z).toBeLessThan(deck.halfBeam(b.max.x, true) - 0.2);
+      expect(b.min.z).toBeGreaterThan(-(deck.halfBeam(b.max.x, true) - 0.2));
+      expect(b.min.y).toBeGreaterThan(1.6);
+      const area = (b.max.x - b.min.x) * (b.max.z - b.min.z);
+      if (big) expect(area).toBeGreaterThan(1.5);
+      else expect(area).toBeLessThan(1.2);
+    }
+    rig.setAwning(0.5, true);
+    const half = rig.status().awning.clothBox as THREE.Box3;
+    rig.setAwning(1, true);
+    const full = rig.status().awning.clothBox as THREE.Box3;
+    expect(half.max.z - half.min.z).toBeLessThan(full.max.z - full.min.z);
+    reset();
+  });
+
+  it('hangs the fish trap about a metre down off the stern, clear of the ladder, rudder and outboard', () => {
+    reset();
+    const trapVerts = () => verts(mesh('sloop-woodwork')).filter((p) => p.y < -0.5 && p.z > 1.0);
+    expect(trapVerts().length).toBe(0);
+    rig.setTrap(true);
+    expect(rig.status().trapSet).toBe(true);
+    const tb = boxOf(trapVerts());
+    expect(tb.isEmpty()).toBe(false);
+    const c = tb.getCenter(new THREE.Vector3());
+    expect(c.y).toBeLessThan(-0.7);
+    expect(c.y).toBeGreaterThan(-1.3);
+    expect(c.x).toBeLessThan(-3);
+    const ladder = new THREE.Box3(new THREE.Vector3(-4.6, -0.8, points.ladderTop.z - 0.25), new THREE.Vector3(-3.9, 1.6, points.ladderTop.z + 0.25));
+    expect(tb.intersectsBox(ladder)).toBe(false);
+    for (const r of [-0.6, 0.6]) {
+      rig.setRudder(r);
+      const blade = boxOf(verts(mesh('sloop-woodwork')).filter((p) => p.x < -4.0 && Math.abs(p.z) < 0.5 && p.y < 0.9));
+      expect(tb.intersectsBox(blade)).toBe(false);
+    }
+    for (let t = 0; t < 1.5; t += 1 / 30) rig.setMotor(1, 600 + t);
+    expect(tb.intersectsBox(boxOf(verts(mesh('sloop-outboard'))))).toBe(false);
+    expect(tb.min.z).toBeGreaterThan(deck.halfBeam(c.x, false) + 0.2); // hangs clear of the hull
+    for (let t = 0; t < 1.5; t += 1 / 30) rig.setMotor(0, 610 + t);
+    reset();
+  });
+
+  it('stows the rod in its holder on the stern rail, and hides it when in hand', () => {
+    reset();
+    const rodVerts = () => verts(mesh('sloop-woodwork')).filter((p) => p.y > 1.3 && p.z > 1.0 && p.x < -3.4);
+    const up = rodVerts();
+    expect(up.length).toBeGreaterThan(0);
+    expect(Math.max(...up.map((p) => p.y))).toBeGreaterThan(2.5);
+    rig.setRodStowed(false);
+    expect(rodVerts().length).toBe(0);
+    expect(rig.status().rodStowed).toBe(false);
+    reset();
+  });
+
+  it('keeps the budget with everything out', () => {
+    rig.setHatch(1);
+    rig.setGalleyLight(true);
+    rig.setBilge(1, 2);
+    rig.setAwning(1, true);
+    rig.setTrap(true);
+    rig.setRodStowed(true);
+    let tris = 0;
+    let n = 0;
+    boat.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      n++;
+      tris += (m.geometry.index as THREE.BufferAttribute).count / 3;
+      const p = m.geometry.getAttribute('position').array;
+      for (let i = 0; i < p.length; i++) if (!Number.isFinite(p[i])) throw new Error(`${m.name} has a bad vertex`);
+    });
+    expect(n).toBeLessThanOrEqual(15);
+    expect(tris).toBeLessThanOrEqual(50000);
+    expect(tris).toBe(boat.triangles);
+    reset();
   });
 });

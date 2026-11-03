@@ -1929,6 +1929,8 @@ void boot();
   sloop,
   input,
   terrain,
+  sloopPoints: sloop.points,
+  trunks,
   /** Screen position (CSS pixels) of a point in the world. */
   project: (x: number, y: number, z: number) => {
     const v = new THREE.Vector3(x, y, z).project(camera);

@@ -17,6 +17,14 @@ interface RigPose {
   lights: 'anchor' | 'underway';
   /** 0 = day, 1 = night (also darkens the preview's sky and light). */
   night: number;
+  hatch: number;
+  galley: boolean;
+  pump: number;
+  bilge: number;
+  awning: number;
+  awningBig: boolean;
+  trap: boolean;
+  rod: boolean;
 }
 
 interface View {
@@ -179,7 +187,26 @@ function setNight(on: boolean): void {
 let clock = 0;
 
 const STARBOARD_TACK: Partial<RigPose> = { sail: 1, boom: -0.7, jib: -0.45, fill: 1, time: 0, rudder: 0.08, anchored: false };
-const REST: RigPose = { sail: 0, boom: 0, jib: 0, fill: 1, time: 0, rudder: 0, anchored: true, motor: 0, lights: 'anchor', night: 0 };
+const REST: RigPose = {
+  sail: 0,
+  boom: 0,
+  jib: 0,
+  fill: 1,
+  time: 0,
+  rudder: 0,
+  anchored: true,
+  motor: 0,
+  lights: 'anchor',
+  night: 0,
+  hatch: 0,
+  galley: false,
+  pump: 0,
+  bilge: 0,
+  awning: 0,
+  awningBig: false,
+  trap: false,
+  rod: true,
+};
 
 const views: Record<string, View> = {
   far: { pos: [11.5, 1.6, 9.6], target: [0, 4.3, 0], fov: 50 },
@@ -222,6 +249,22 @@ const views: Record<string, View> = {
   'night-astern': { pos: [-30, 2.2, 4], target: [0, 3.0, 0], fov: 50, rig: { ...STARBOARD_TACK, lights: 'underway', night: 1, motor: 0.6 } },
   'night-far': { pos: [52, 2.5, 30], target: [0, 4.0, 0], fov: 50, rig: { lights: 'anchor', night: 1 } },
   'day-lights': { pos: [6.0, 1.9, 1.9], target: [4.0, 1.3, 0], fov: 45, rig: { lights: 'underway', night: 0 } },
+  galley: { pos: [-2.9, 2.02, 0.25], target: [-1.45, 1.15, 0], fov: 65, rig: { hatch: 1 } },
+  'galley-night': { pos: [-2.9, 2.02, 0.25], target: [-1.45, 1.15, 0], fov: 65, rig: { hatch: 0.6, galley: true, night: 1 } },
+  'galley-night-far': { pos: [-12, 2.2, 5], target: [-1.5, 1.4, 0], fov: 50, rig: { hatch: 0.6, galley: true, night: 1 } },
+  workbench: { pos: [-3.38, 2.02, -0.28], target: [-3.9, 1.1, -0.66], fov: 65, rig: { trap: true } },
+  'workbench-out': { pos: [-2.4, 2.7, 1.5], target: [-3.85, 1.1, -0.6], fov: 55, rig: {} },
+  pump: { pos: [-2.55, 2.02, 0.25], target: [-2.55, 1.05, 0.95], fov: 65, rig: { pump: 0.8 } },
+  bilge: { pos: [-1.85, 2.3, 0.85], target: [-2.75, 0.4, -0.05], fov: 60, rig: { bilge: 0.95, time: 2.3 } },
+  awning: { pos: [4.0, 3.4, 6.2], target: [-1.0, 1.95, 0], fov: 50, rig: { awning: 1 } },
+  'awning-big': { pos: [4.0, 3.4, 6.2], target: [-1.0, 1.95, 0], fov: 50, rig: { awning: 1, awningBig: true } },
+  'awning-half': { pos: [4.0, 3.4, 6.2], target: [-1.0, 1.95, 0], fov: 50, rig: { awning: 0.5 } },
+  'awning-cockpit': { pos: [-2.75, 2.02, 0], target: [0.5, 1.95, 0], fov: 70, rig: { awning: 1, awningBig: true } },
+  'awning-far': { pos: [11.5, 1.6, 9.6], target: [0, 4.3, 0], fov: 50, rig: { awning: 1, awningBig: true, trap: true } },
+  trap: { pos: [-1.6, -0.35, 4.2], target: [-3.6, -0.7, 1.5], fov: 60, rig: { trap: true } },
+  'trap-above': { pos: [-1.6, 1.5, 4.6], target: [-3.6, -0.4, 1.5], fov: 55, rig: { trap: true } },
+  rod: { pos: [-5.6, 2.3, 3.6], target: [-3.9, 1.8, 1.2], fov: 55, rig: {} },
+  'stern-living': { pos: [-7.5, 2.6, -1.4], target: [-3.4, 1.0, 0], fov: 50, rig: { trap: true, awning: 1 } },
   'sail-helm': { pos: [-2.2, 2.4, 1.9], target: [-3.6, 0.8, 0], fov: 60, rig: { ...STARBOARD_TACK, rudder: 0.45 } },
 };
 
@@ -243,6 +286,13 @@ function view(name: string): string {
   boat.rig.setAnchored(pose.anchored);
   for (let k = 0; k < 26; k++) boat.rig.setMotor(pose.motor, (clock += 0.05));
   boat.rig.setLights(pose.lights, pose.night);
+  boat.rig.setHatch(pose.hatch);
+  boat.rig.setGalleyLight(pose.galley);
+  boat.rig.setPump(pose.pump);
+  boat.rig.setBilge(pose.bilge, pose.time);
+  boat.rig.setAwning(pose.awning, pose.awningBig);
+  boat.rig.setTrap(pose.trap);
+  boat.rig.setRodStowed(pose.rod);
   setNight(pose.night > 0.5);
   renderer.render(scene, camera);
   return 'ok';

@@ -50,12 +50,18 @@ export interface SloopPoints {
   potShelf: THREE.Vector3[];
   /** Where the player starts: standing on the cockpit sole, facing forward (+x). */
   spawn: THREE.Vector3;
+  /** Where you stand to go below to the galley: on the cockpit sole just aft of the companionway washboards. */
+  galley: THREE.Vector3;
+  /** Where you stand to use the workbench: on the cockpit sole, aft and to port, facing the teak bench box on the stern deck. */
+  workbench: THREE.Vector3;
+  /** Where you stand to work the bilge pump: on the cockpit sole beside the starboard coaming, where the pump handle is. */
+  pump: THREE.Vector3;
 }
 
 export interface DeckSurface {
   /** Standing height (boat-local y, where the feet go) at boat-local x,z, or null if that spot is not walkable boat surface. Includes the cockpit sole, side decks, foredeck, cabin top (a 0.3–0.4 m step up is fine), transom step. */
   heightAt(lx: number, lz: number): number | null;
-  /** True if a person of radius r at lx,lz would overlap a solid obstacle: the mast, or the cabin trunk's side walls (you step up onto the cabin top from its rounded front, off the foredeck, or from its back, off the bridge deck). Small and thin things (winches, cleats, dorade vents, tiller, stanchions, shrouds, lines) are ignored. Side-deck walkways stay open for r up to 0.3. */
+  /** True if a person of radius r at lx,lz would overlap a solid obstacle: the mast, the workbench box on the stern deck, or the cabin trunk's side walls (you step up onto the cabin top from its rounded front, off the foredeck, or from its back, off the bridge deck). Small and thin things (winches, cleats, dorade vents, tiller, stanchions, shrouds, lines, pump handle, rod) are ignored. Side-deck walkways stay open for r up to 0.3. */
   blocked(lx: number, lz: number, r: number): boolean;
   /** True if lx,lz is inside the lifelines (the safe area). Outside = over the side. The stern opening by the ladder is the one gap: there the safe area runs right to the transom edge (see sternGap). */
   insideLifelines(lx: number, lz: number): boolean;
@@ -120,6 +126,13 @@ const NONSKID_M = 0.26; // metres per repeat of the non-skid texture
 const LADDER_Z = 0.58;
 const GAP_Z0 = 0.24;
 const GAP_Z1 = 0.92;
+const HATCH_SLIDE = 0.4; // how far the sliding hatch runs forward when open
+const WB_X0 = -4.02; // workbench: a teak box on the stern deck, port side, clear of the tiller's swing
+const WB_X1 = -3.7;
+const WB_Z0 = -0.92;
+const WB_Z1 = -0.5; // clear of the tiller swung hard to port
+const WB_H = 0.3;
+const PUMP_X = -2.55; // bilge pump socket on the starboard coaming
 const WINCH_X = -1.95;
 const WINCH_Z = 1.01;
 const RAIL_H = 0.62;
@@ -316,6 +329,15 @@ function cabinTop(x: number, z: number): number {
   return TRUNK_TOP + TRUNK_CAMBER * (1 - q);
 }
 
+/** The companionway washboards: height, and a matrix placing something on their face (dx aft, dy up from their middle). */
+const WB_LEAN = Math.atan2(WALL_LEAN, cabinTop(TRUNK_AFT, 0) - 0.012 - BENCH_Y);
+const WB_HEIGHT = cabinTop(TRUNK_AFT, 0) - 0.012 - BENCH_Y - 0.01;
+function washboardM(dx: number, dy: number): THREE.Matrix4 {
+  const c = V(TRUNK_AFT + 0.004 + dx, BENCH_Y + 0.005 + WB_HEIGHT / 2 + dy, 0);
+  c.x += Math.tan(WB_LEAN) * (WB_HEIGHT / 2 + dy);
+  return M(c.x, c.y, c.z, 0, 0, -WB_LEAN);
+}
+
 /**
  * Outline points of the trunk (unit superellipse) spaced evenly along the base outline, with extra
  * points where it turns (the corners). The superellipse angle parameter bunches up badly, so the
@@ -416,6 +438,10 @@ function heightAt(x: number, z: number): number | null {
 
 function blocked(x: number, z: number, r: number): boolean {
   if (Math.hypot(x - MAST_X, z) < r + MAST_R) return true;
+  // the workbench box on the stern deck
+  const bx = Math.max(WB_X0 - x, 0, x - WB_X1);
+  const bz = Math.max(WB_Z0 - z, 0, z - WB_Z1);
+  if (bx * bx + bz * bz < r * r) return true;
   const az = Math.abs(z);
   if (x > TRUNK_AFT - r && x < TRUNK_FWD) {
     for (let i = 0; i < TRUNK_SIDE.length - 1; i++) {
@@ -966,6 +992,14 @@ const COL = {
   cowlBand: rgb(0xe8664c),
   motorGrey: rgb(0xbfc3bf),
   prop: rgb(0x3b4046),
+  vise: rgb(0x3e5f7a),
+  net: rgb(0x5f8c7c),
+  rodBlank: [0.16, 0.24, 0.17] as RGB,
+  reel: rgb(0xc9a24a),
+  canvas: rgb(0xe2d3ad),
+  canvasHem: rgb(0x2a8f8c),
+  funnel: rgb(0xf0ede4),
+  hose: rgb(0x8fc4c0),
   flagA: rgb(0xef6a48),
   flagB: rgb(0xf7efd9),
   flagC: rgb(0x2fb5b0),
@@ -1443,24 +1477,14 @@ function buildTrunk(gel: Part, nonskid: Part, varnish: Part, metal: Part): void 
     }
   }
 
-  // Companionway: washboards in the aft face, and the sliding hatch on top.
-  const wallTop = cabinTop(TRUNK_AFT, 0) - 0.012;
-  const lean = Math.atan2(WALL_LEAN, wallTop - BENCH_Y);
-  const wbH = wallTop - BENCH_Y - 0.01;
-  const wbM = (dx: number, dy: number) => {
-    const c = V(TRUNK_AFT + 0.004 + dx, BENCH_Y + 0.005 + wbH / 2 + dy, 0);
-    c.x += Math.tan(lean) * (wbH / 2 + dy);
-    return M(c.x, c.y, c.z, 0, 0, -lean);
-  };
-  varnish.add(roundedBox(0.03, wbH, 0.56, 0.008), WHITE, wbM(-0.012, 0));
-  for (const sz of [-1, 1]) varnish.add(roundedBox(0.04, wbH + 0.01, 0.035, 0.008), WHITE, wbM(-0.01, 0).multiply(M(0, 0, sz * 0.3)));
-  for (const fy of [-wbH / 6, wbH / 6]) metal.add(roundedBox(0.004, 0.008, 0.54, 0.002), COL.black, wbM(-0.028, fy));
-  const hcx = (HATCH_AFT + HATCH_FWD) / 2;
-  const hy = cabinTop(hcx, 0);
-  varnish.add(roundedBox(HATCH_FWD - HATCH_AFT, HATCH_H + 0.015, HATCH_HW * 2, 0.025, 3), WHITE, M(hcx, hy + HATCH_H / 2 - 0.0075, 0));
-  for (const k of [-1, 0, 1]) metal.add(roundedBox(HATCH_FWD - HATCH_AFT - 0.05, 0.003, 0.006, 0.001), COL.black, M(hcx, hy + HATCH_H + 0.0075, k * 0.11));
-  for (const s of [-1, 1]) gel.add(roundedBox(HATCH_FWD - HATCH_AFT + 0.12, 0.05, 0.04, 0.015), COL.cream, M(hcx + 0.04, hy + 0.014, s * (HATCH_HW + 0.024)));
-  metal.add(roundedBox(0.03, 0.03, 0.3, 0.012), COL.steel, M(HATCH_AFT + 0.07, hy + HATCH_H + 0.02, 0));
+  // Companionway: washboards in the aft face (their seams glow when the galley light is on, see NavLights),
+  // and runners for the sliding hatch (the hatch itself slides, so it is in the woodwork mesh).
+  varnish.add(roundedBox(0.03, WB_HEIGHT, 0.56, 0.008), WHITE, washboardM(-0.012, 0));
+  for (const sz of [-1, 1]) varnish.add(roundedBox(0.04, WB_HEIGHT + 0.01, 0.035, 0.008), WHITE, washboardM(-0.01, 0).multiply(M(0, 0, sz * 0.3)));
+  const hy = cabinTop((HATCH_AFT + HATCH_FWD) / 2, 0);
+  const rx0 = HATCH_AFT - 0.02;
+  const rx1 = HATCH_FWD + HATCH_SLIDE + 0.03;
+  for (const s of [-1, 1]) gel.add(roundedBox(rx1 - rx0, 0.05, 0.04, 0.015), COL.cream, M((rx0 + rx1) / 2, hy + 0.014, s * (HATCH_HW + 0.024)));
 
   // Two little teak trays for deck pots, either side of the hatch.
   for (const s of [-1, 1]) {
@@ -1776,6 +1800,20 @@ export interface SloopRig {
   setMotor(throttle: number, time: number): void;
   /** 0 = day (lights look off), 1 = full night glow. 'anchor' lights the white masthead light only; 'underway' lights the red/green sidelights and the white sternlight. */
   setLights(mode: 'anchor' | 'underway', night: number): void;
+  /** Companionway hatch: 0 closed .. 1 slid forward, open (the opening below is dark; warm if the galley light is on). */
+  setHatch(open: number): void;
+  /** A warm galley light glowing through the washboard seams and the open hatch (most noticeable at night; uses setLights' night). */
+  setGalleyLight(on: boolean): void;
+  /** Bilge-pump handle position, 0..1 (animate it while pumping). */
+  setPump(stroke: number): void;
+  /** Water in the bilge, 0 (dry) .. 1 (full). Above 0.6 a little water slops about on the cockpit sole (animated by the time passed to setFill, or the optional time here). */
+  setBilge(level: number, time?: number): void;
+  /** Rain-catching awning slung under the boom (boom amidships, at anchor): shown 0 (stowed) .. 1 (spread out); big = the larger catcher made at the workbench, with a second funnel. */
+  setAwning(shown: number, big: boolean): void;
+  /** The fish trap hanging off the starboard stern cleat, about 1 m under water. */
+  setTrap(set: boolean): void;
+  /** The fishing rod in its holder on the starboard pushpit (hide it while it is in your hands). */
+  setRodStowed(shown: boolean): void;
   /** Current state and where the moving bits are (boat-local), for tests, debugging and game logic. */
   status(): SloopRigStatus;
 }
@@ -1803,6 +1841,14 @@ export interface SloopRigStatus {
   /** The propeller hub (boat-local), for bubbles and foam. */
   propTip: THREE.Vector3;
   lights: { mode: 'anchor' | 'underway'; night: number; anchorOn: boolean; sidelightsOn: boolean; sternOn: boolean };
+  hatchOpen: number;
+  galleyLight: boolean;
+  pumpStroke: number;
+  bilge: number;
+  /** The awning's spread and kind; clothBox is the boat-local box of its canvas and funnels (not the ties or hoses), or null when stowed. */
+  awning: { shown: number; big: boolean; clothBox: THREE.Box3 | null };
+  trapSet: boolean;
+  rodStowed: boolean;
 }
 
 interface RigState {
@@ -1817,6 +1863,13 @@ interface RigState {
   tilt: number; // 0 = up, 1 = down
   motorTime: number;
   propAngle: number;
+  hatch: number;
+  pump: number;
+  bilge: number;
+  awning: number;
+  awningBig: boolean;
+  trap: boolean;
+  rod: boolean;
 }
 
 const STEM_HEAD = V(4.25, 1.05, 0); // forestay foot
@@ -1836,9 +1889,9 @@ const JIB_DEPTH = 0.12;
 const JIB_FOOT = 2.72;
 const JIB_MAX = 1.1;
 const RUDDER_MAX = 0.6;
-const TRAVELLER_X = -0.76; // mainsheet traveller across the cabin top, just forward of the hatch
-const TRAVELLER_HW = 0.46;
-const MS_BOOM_X = -0.76; // where the mainsheet block hangs from the boom (boom amidships)
+const TRAVELLER_X = -0.42; // mainsheet traveller across the cabin top, forward of the open hatch
+const TRAVELLER_HW = 0.4;
+const MS_BOOM_X = -0.42; // where the mainsheet block hangs from the boom (boom amidships)
 const FORE_LEN = FORE_TOP.distanceTo(STEM_HEAD);
 const FORE_DIR = FORE_TOP.clone().sub(STEM_HEAD).normalize();
 const JIB_T0 = 0.2 / FORE_LEN; // jib tack just above the furling drum
@@ -1869,6 +1922,8 @@ function boomMatrix(b: number): THREE.Matrix4 {
 }
 const foreAt = (t: number) => STEM_HEAD.clone().addScaledVector(FORE_DIR, t * FORE_LEN);
 const sideOf = (a: number) => (a < -0.01 ? -1 : 1);
+
+const HIDE_AT = V(0, 1.0, 0); // inside the cabin trunk
 
 /**
  * A cloth-material mesh whose pieces move or are rebuilt when the rig changes. The vertex count and
@@ -1946,18 +2001,16 @@ class DynPart {
     N.set(tmp.nrm, sg.start * 3);
     this.touch();
   }
+  /** Hidden pieces collapse to one point inside the cabin trunk, where nothing can see them. */
   hide(i: number): void {
     const sg = this.segs[i];
     if (!this.posAttr) return;
     const P = this.posAttr.array as Float32Array;
     const o = sg.start * 3;
-    const hx = sg.rest ? sg.rest[0] : P[o];
-    const hy = sg.rest ? sg.rest[1] : P[o + 1];
-    const hz = sg.rest ? sg.rest[2] : P[o + 2];
     for (let k = 0; k < sg.count; k++) {
-      P[o + k * 3] = hx;
-      P[o + k * 3 + 1] = hy;
-      P[o + k * 3 + 2] = hz;
+      P[o + k * 3] = HIDE_AT.x;
+      P[o + k * 3 + 1] = HIDE_AT.y;
+      P[o + k * 3 + 2] = HIDE_AT.z;
     }
     this.touch();
   }
@@ -2315,12 +2368,17 @@ function rudderMaterial(tex: THREE.Texture): THREE.MeshStandardMaterial {
           '#include <color_fragment>',
           `#include <color_fragment>
   float hPainted = vColor.g > 1.5 ? 1.0 : 0.0;
+  float hGrain = (1.0 - hPainted) * (vColor.b > 1.5 ? 1.0 : 0.0);
 ${hullBandGlsl()}
+  // grain only (driftwood, cork): the wood texture's light and dark, tinted, without the varnish amber
+  vec3 hTint = vColor.rgb - vec3(0.0, 0.0, 2.0);
+  vec3 hGrey = vec3(dot(diffuseColor.rgb / max(vColor.rgb, vec3(0.001)), vec3(0.3, 0.59, 0.11)) / 0.22) * hTint;
+  diffuseColor.rgb = mix(diffuseColor.rgb, hGrey, hGrain);
   diffuseColor.rgb = mix(diffuseColor.rgb, hc, hPainted);`,
         )
         .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = mix(roughnessFactor, 0.75, hBottom * hPainted);');
   };
-  mat.customProgramCacheKey = () => 'sloop-rudder-v1';
+  mat.customProgramCacheKey = () => 'sloop-woodwork-v2';
   return mat;
 }
 
@@ -2330,10 +2388,30 @@ function buildMovingRig(
   clothMat: THREE.Material,
   gelMat: THREE.Material,
   varnishTex: THREE.Texture,
-  rudderPart: Part,
+  wood: DynPart,
+  segRudder: number,
   rudderInfo: RudderInfo,
 ): { objects: THREE.Object3D[]; rig: SloopRig; triangles: number } {
-  const st: RigState = { sail: 0, boom: 0, jib: 0, fill: 1, time: 0, rudder: 0, anchored: true, throttle: 0, tilt: 0, motorTime: NaN, propAngle: 0 };
+  const st: RigState = {
+    sail: 0,
+    boom: 0,
+    jib: 0,
+    fill: 1,
+    time: 0,
+    rudder: 0,
+    anchored: true,
+    throttle: 0,
+    tilt: 0,
+    motorTime: NaN,
+    propAngle: 0,
+    hatch: 0,
+    pump: 0,
+    bilge: 0,
+    awning: 0,
+    awningBig: false,
+    trap: false,
+    rod: true,
+  };
 
   // Boom: its own group, pivoting about the vertical axis through the gooseneck.
   const boomPart = new Part();
@@ -2382,6 +2460,17 @@ function buildMovingRig(
   });
   const segRode = dyn.rigid(anchorLine);
   const segAnchor = dyn.rigid(stowedAnchor);
+  // living aboard: pump handle, the trap's net and line, the rod's reel, and the two awnings
+  const pumpPivot = V(PUMP_X, COAM_TOP + 0.035, (COAM_IN + COAM_OUT) / 2);
+  const segPump = dyn.rigid((p) => {
+    tube(p, [pumpPivot, pumpPivot.clone().add(V(0, 0.42, 0))], 0.011, 8, COL.alu, true);
+    tube(p, [pumpPivot.clone().add(V(-0.065, 0.42, 0)), pumpPivot.clone().add(V(0.065, 0.42, 0))], 0.016, 8, COL.black, true);
+  });
+  const segTrapNet = dyn.rigid(trapNet);
+  const segReel = dyn.rigid(rodReel);
+  const awnBox = [new THREE.Box3(), new THREE.Box3()];
+  const awnBuild = (big: boolean) => (p: Part) => awning(p, st.awning, big, awnBox[big ? 1 : 0]);
+  const segAwning = [dyn.gen((p) => awning(p, 1, false, awnBox[0])), dyn.gen((p) => awning(p, 1, true, awnBox[1]))];
   const dynGeom = dyn.part.geometry();
   dyn.bind(dynGeom);
   dynGeom.boundingSphere = new THREE.Sphere(V(2.4, 3.8, 0), 10.5);
@@ -2394,10 +2483,17 @@ function buildMovingRig(
   const sailMesh = new THREE.Mesh(sails.geometry, sailMat);
   sailMesh.name = 'sloop-sails';
 
-  // Rudder and tiller: one mesh turned about the raked rudder stock.
-  const rudderMesh = new THREE.Mesh(rudderPart.geometry(), rudderMaterial(varnishTex));
-  rudderMesh.name = 'sloop-rudder';
-  rudderMesh.matrixAutoUpdate = false;
+  // Woodwork that moves or comes and goes: rudder and tiller (turned about the raked rudder stock), the sliding
+  // hatch, the fish trap's driftwood frame and the fishing rod. One mesh, varnished wood with the hull's paint where flagged.
+  const segHatch = wood.rigid(buildHatch);
+  const segTrapFrame = wood.rigid(trapFrame);
+  const segRodWood = wood.rigid(rodWood);
+  const woodGeom = wood.part.geometry();
+  wood.bind(woodGeom);
+  if (woodGeom.boundingSphere) woodGeom.boundingSphere.radius += 0.6; // room for the hatch and rudder to move
+  const woodMesh = new THREE.Mesh(woodGeom, rudderMaterial(varnishTex));
+  woodMesh.name = 'sloop-woodwork';
+  const bilge = new BilgeWater();
   const rudderMatrix = (a: number, sign: number) => {
     const p = rudderInfo.axisPoint;
     return new THREE.Matrix4()
@@ -2419,7 +2515,7 @@ function buildMovingRig(
   motorGroup.add(motorMesh);
   const lights = new NavLights();
 
-  for (const m of [boomMesh, dynMesh, sailMesh, rudderMesh, motorMesh]) {
+  for (const m of [boomMesh, dynMesh, sailMesh, woodMesh, motorMesh]) {
     m.castShadow = true;
     m.receiveShadow = true;
   }
@@ -2459,9 +2555,34 @@ function buildMovingRig(
     boomGroup.rotation.y = st.boom;
     boomGroup.updateMatrix();
   };
-  const applyRudder = () => {
-    rudderMesh.matrix.copy(rudderMatrix(st.rudder, rudderSign));
-    rudderMesh.matrixWorldNeedsUpdate = true;
+  const applyRudder = () => wood.place(segRudder, rudderMatrix(st.rudder, rudderSign));
+  const applyHatch = () => wood.place(segHatch, new THREE.Matrix4().makeTranslation(HATCH_SLIDE * smooth01(st.hatch), 0, 0));
+  const applyPump = () => {
+    const a = (st.pump - 0.5) * 1.1;
+    const P = pumpPivot;
+    dyn.place(
+      segPump,
+      new THREE.Matrix4()
+        .makeTranslation(P.x, P.y, P.z)
+        .multiply(new THREE.Matrix4().makeRotationZ(a))
+        .multiply(new THREE.Matrix4().makeRotationX(-0.61))
+        .multiply(new THREE.Matrix4().makeTranslation(-P.x, -P.y, -P.z)),
+    );
+  };
+  const applyTrap = () => {
+    const m = st.trap ? new THREE.Matrix4() : null;
+    wood.place(segTrapFrame, m);
+    dyn.place(segTrapNet, m);
+  };
+  const applyRod = () => {
+    const m = st.rod ? new THREE.Matrix4() : null;
+    wood.place(segRodWood, m);
+    dyn.place(segReel, m);
+  };
+  const applyAwning = () => {
+    const shown = st.awning > 0.02;
+    dyn.regen(segAwning[0], awnBuild(false), shown && !st.awningBig);
+    dyn.regen(segAwning[1], awnBuild(true), shown && st.awningBig);
   };
   applyFurl();
   applyMainsheet();
@@ -2470,6 +2591,11 @@ function buildMovingRig(
   applySails();
   applyBoom();
   applyRudder();
+  applyHatch();
+  applyPump();
+  applyTrap();
+  applyRod();
+  applyAwning();
   const applyMotor = () => {
     const e = smooth01(st.tilt);
     const running = Math.abs(st.throttle) > 0.01 && st.tilt > 0.98;
@@ -2522,6 +2648,7 @@ function buildMovingRig(
       st.fill = f;
       st.time = time;
       if (changed && st.sail > 0.005) applySails();
+      if (st.bilge > 0.6) bilge.update(st.bilge, time);
     },
     setRudder(angle) {
       const a = clamp(angle, -RUDDER_MAX, RUDDER_MAX);
@@ -2549,6 +2676,47 @@ function buildMovingRig(
       if (mode === lights.mode && same(n, lights.night)) return;
       lights.set(mode, n);
     },
+    setHatch(open) {
+      const a = clamp(open, 0, 1);
+      if (same(a, st.hatch)) return;
+      st.hatch = a;
+      applyHatch();
+    },
+    setGalleyLight(on) {
+      if (on === lights.galley) return;
+      lights.galley = on;
+      lights.set(lights.mode, lights.night);
+    },
+    setPump(stroke) {
+      const a = clamp(stroke, 0, 1);
+      if (same(a, st.pump)) return;
+      st.pump = a;
+      applyPump();
+    },
+    setBilge(level, time) {
+      const a = clamp(level, 0, 1);
+      if (time !== undefined) st.time = time;
+      if (same(a, st.bilge) && time === undefined) return;
+      st.bilge = a;
+      bilge.update(a, st.time);
+    },
+    setAwning(shown, big) {
+      const a = clamp(shown, 0, 1);
+      if (same(a, st.awning) && big === st.awningBig) return;
+      st.awning = a;
+      st.awningBig = big;
+      applyAwning();
+    },
+    setTrap(set) {
+      if (set === st.trap) return;
+      st.trap = set;
+      applyTrap();
+    },
+    setRodStowed(shown) {
+      if (shown === st.rod) return;
+      st.rod = shown;
+      applyRod();
+    },
     status() {
       const rm = rudderMatrix(st.rudder, rudderSign);
       return {
@@ -2572,11 +2740,327 @@ function buildMovingRig(
         motorDown: st.tilt,
         propTip: PROP_HUB.clone().applyMatrix4(motorGroup.matrix),
         lights: { mode: lights.mode, night: lights.night, anchorOn: lights.isOn('anchor'), sidelightsOn: lights.isOn('side'), sternOn: lights.isOn('stern') },
+        hatchOpen: st.hatch,
+        galleyLight: lights.galley,
+        pumpStroke: st.pump,
+        bilge: st.bilge,
+        awning: { shown: st.awning, big: st.awningBig, clothBox: st.awning > 0.02 ? awnBox[st.awningBig ? 1 : 0].clone() : null },
+        trapSet: st.trap,
+        rodStowed: st.rod,
       };
     },
   };
-  const triangles = (boomPart.idx.length + dyn.part.idx.length + rudderPart.idx.length + motor.part.idx.length) / 3 + sails.triangles + lights.triangles;
-  return { objects: [boomGroup, dynMesh, sailMesh, rudderMesh, motorGroup, lights.mesh], rig, triangles };
+  const triangles = (boomPart.idx.length + dyn.part.idx.length + wood.part.idx.length + motor.part.idx.length) / 3 + sails.triangles + lights.triangles + bilge.triangles;
+  return { objects: [boomGroup, dynMesh, sailMesh, woodMesh, motorGroup, lights.mesh, bilge.mesh], rig, triangles };
+}
+
+// ============================================================ living aboard: galley hatch, workbench, pump, awning, trap, rod
+
+/** Vertex colour for the woodwork material: grain without the varnish's amber, in this tint (blue channel carries a +2 flag). */
+const grain = (hex: number): RGB => {
+  const c = rgb(hex);
+  return [c[0], c[1], c[2] + 2];
+};
+const DRIFTWOOD = grain(0xa79a86); // sun-bleached, silvery
+const CORK = grain(0xc99d6c);
+const ROD_HOLDER_DIR = V(-0.32, 0.9, 0.3).normalize();
+const TRAP_C = V(-3.62, -1.0, 1.52); // the fish trap's centre, hanging off the starboard quarter about 1 m down
+const TRAP_SIZE = V(0.5, 0.3, 0.34);
+const STERN_CLEAT = V(-3.55, 0, 1.06); // starboard stern cleat (y filled in from the deck)
+const FILLER_X = -1.05; // deck fillers for the water tank, one on each side deck
+const FILLER_Z = 1.08;
+
+/** Boat-local box of the vertices added to a Part since vertex v0. */
+function partBox(p: Part, v0: number): THREE.Box3 {
+  const b = new THREE.Box3();
+  const v = new THREE.Vector3();
+  for (let i = v0; i < p.nv; i++) b.expandByPoint(v.set(p.pos[i * 3], p.pos[i * 3 + 1], p.pos[i * 3 + 2]));
+  return b;
+}
+
+function rodHolderBase(): THREE.Vector3 {
+  const x = -3.62;
+  return V(x, sheerY(x) + RAIL_H - 0.2, deckHalfBeam(x) - 0.06 + 0.035);
+}
+
+export interface SloopFittings {
+  /** The workbench box with its vise and tools (stern deck, port). */
+  workbench: THREE.Box3;
+  /** The bilge pump's socket and body on the starboard coaming (the handle swings above it). */
+  pump: THREE.Box3;
+  /** The rod holder on the starboard pushpit. */
+  rodHolder: THREE.Box3;
+  /** Water-tank deck fillers on the port and starboard side decks (the awning's hoses run to them). */
+  fillers: THREE.Box3[];
+}
+
+/** The fixed parts of living aboard: workbench, pump base, rod holder, deck fillers. */
+function buildLivingFixed(varnish: Part, metal: Part, cloth: Part): SloopFittings {
+  // --- Workbench: a teak box on the stern deck with a little vise and a few tools on top.
+  const wv0 = varnish.nv;
+  const mv0 = metal.nv;
+  const cv0 = cloth.nv;
+  const cx = (WB_X0 + WB_X1) / 2;
+  const cz = (WB_Z0 + WB_Z1) / 2;
+  const lx = WB_X1 - WB_X0;
+  const lz = WB_Z1 - WB_Z0;
+  const y0 = deckY(cx, cz) - 0.02;
+  varnish.add(roundedBox(lx, WB_H, lz, 0.02), WHITE, M(cx, y0 + WB_H / 2, cz));
+  const top = y0 + WB_H + 0.02;
+  varnish.add(roundedBox(lx + 0.03, 0.03, lz + 0.03, 0.01), WHITE, M(cx, top - 0.015, cz));
+  for (const e of [-1, 1]) metal.add(roundedBox(0.004, 0.006, lz - 0.06, 0.002), COL.black, M(cx + e * 0.06, y0 + WB_H * 0.55, cz).multiply(M(-e * lx / 2 + e * 0.058, 0, 0))); // board seams on the box ends
+  // vise on the forward edge, facing the cockpit
+  const vz = -0.76;
+  metal.add(roundedBox(0.1, 0.03, 0.12, 0.008), COL.vise, M(WB_X1 - 0.06, top + 0.015, vz));
+  metal.add(roundedBox(0.03, 0.075, 0.12, 0.008), COL.vise, M(WB_X1 - 0.085, top + 0.065, vz));
+  metal.add(roundedBox(0.03, 0.075, 0.12, 0.008), COL.vise, M(WB_X1 + 0.005, top + 0.065, vz));
+  for (const jx of [WB_X1 - 0.068, WB_X1 - 0.012]) metal.add(roundedBox(0.005, 0.03, 0.11, 0.001), COL.steel, M(jx, top + 0.085, vz));
+  rod(metal, V(WB_X1 - 0.07, top + 0.05, vz), V(WB_X1 + 0.09, top + 0.05, vz), 0.008, 8, COL.steel, true);
+  rod(metal, V(WB_X1 + 0.09, top + 0.05, vz - 0.07), V(WB_X1 + 0.09, top + 0.05, vz + 0.07), 0.006, 6, COL.steel, true);
+  for (const e of [-1, 1]) metal.add(new THREE.SphereGeometry(0.011, 8, 6), COL.steel, M(WB_X1 + 0.09, top + 0.05, vz + e * 0.07));
+  // mallet, saw and a coil of twine
+  varnish.add(roundedBox(0.07, 0.065, 0.13, 0.015), WHITE, M(cx - 0.06, top + 0.033, -0.57, 0, 0.25, 0));
+  tube(varnish, [V(cx - 0.04, top + 0.018, -0.57), V(cx + 0.11, top + 0.018, -0.61)], 0.012, 8, WHITE, true);
+  metal.add(roundedBox(0.26, 0.003, 0.075, 0.002), COL.steel, M(cx - 0.02, top + 0.003, -0.74, 0, -0.35, 0));
+  varnish.add(roundedBox(0.09, 0.025, 0.06, 0.012), WHITE, M(cx + 0.12, top + 0.013, -0.81, 0, -0.35, 0));
+  cloth.add(new THREE.TorusGeometry(0.05, 0.018, 6, 16), COL.rope, M(WB_X0 + 0.08, top + 0.018, -0.84, Math.PI / 2, 0, 0));
+  tube(cloth, curve([V(WB_X0 + 0.12, top + 0.03, -0.82), V(WB_X0 + 0.16, top + 0.012, -0.76), V(WB_X0 + 0.15, top + 0.006, -0.7)], 6), 0.005, 4, COL.rope);
+  const workbench = partBox(varnish, wv0).union(partBox(metal, mv0)).union(partBox(cloth, cv0));
+  // --- Bilge pump: a socket in the starboard coaming top and the pump body on the coaming's cockpit face.
+  const pm0 = metal.nv;
+  const pz = (COAM_IN + COAM_OUT) / 2;
+  metal.add(new THREE.CylinderGeometry(0.045, 0.048, 0.008, 18), COL.steel, M(PUMP_X, COAM_TOP + 0.004, pz));
+  metal.add(new THREE.CylinderGeometry(0.02, 0.024, 0.03, 12), COL.dark, M(PUMP_X, COAM_TOP + 0.02, pz));
+  metal.add(roundedBox(0.14, 0.1, 0.05, 0.018), COL.motorGrey, M(PUMP_X, BENCH_Y + 0.09, COAM_IN - 0.025));
+  metal.add(new THREE.CylinderGeometry(0.035, 0.035, 0.03, 14), COL.dark, M(PUMP_X, BENCH_Y + 0.09, COAM_IN - 0.055, Math.PI / 2, 0, 0));
+  const pump = partBox(metal, pm0);
+  // --- Rod holder: a stainless tube clamped to the starboard pushpit, leaning aft and outboard.
+  const rh0 = metal.nv;
+  const hb = rodHolderBase();
+  const ht = hb.clone().addScaledVector(ROD_HOLDER_DIR, 0.24);
+  rod(metal, hb, ht, 0.022, 10, COL.steel, true);
+  const railP = V(hb.x, sheerY(hb.x) + RAIL_H, deckHalfBeam(hb.x) - 0.06);
+  metal.add(roundedBox(0.05, 0.05, 0.05, 0.012), COL.steel, M(railP.x, railP.y - 0.06, railP.z + 0.02));
+  rod(metal, hb.clone().addScaledVector(ROD_HOLDER_DIR, 0.12), V(railP.x, railP.y - 0.06, railP.z + 0.02), 0.012, 6, COL.steel);
+  const rodHolder = partBox(metal, rh0);
+  // --- Water-tank deck fillers on both side decks, where the awning's hoses go.
+  const fillers: THREE.Box3[] = [];
+  for (const s of [-1, 1]) {
+    const f0 = metal.nv;
+    const z = s * FILLER_Z;
+    const y = deckY(FILLER_X, z);
+    metal.add(new THREE.CylinderGeometry(0.045, 0.05, 0.012, 18), COL.steel, M(FILLER_X, y + 0.004, z));
+    metal.add(new THREE.CylinderGeometry(0.03, 0.03, 0.01, 14), COL.dark, M(FILLER_X, y + 0.012, z));
+    fillers.push(partBox(metal, f0));
+  }
+  return { workbench, pump, rodHolder, fillers };
+}
+
+/** The sliding companionway hatch (varnished teak with a teak grab handle), closed. */
+function buildHatch(p: Part): void {
+  const hcx = (HATCH_AFT + HATCH_FWD) / 2;
+  const hy = cabinTop(hcx, 0);
+  p.add(roundedBox(HATCH_FWD - HATCH_AFT, HATCH_H + 0.015, HATCH_HW * 2, 0.025, 3), WHITE, M(hcx, hy + HATCH_H / 2 - 0.0075, 0));
+  const seam: RGB = [0.06, 0.05, 0.04];
+  for (const k of [-1, 0, 1]) p.add(roundedBox(HATCH_FWD - HATCH_AFT - 0.05, 0.003, 0.006, 0.001), seam, M(hcx, hy + HATCH_H + 0.0075, k * 0.11));
+  p.add(roundedBox(0.035, 0.035, 0.3, 0.012), WHITE, M(HATCH_AFT + 0.07, hy + HATCH_H + 0.02, 0));
+}
+
+/** The fish trap's driftwood frame (woodwork mesh). */
+function trapFrame(p: Part): void {
+  const rnd = mulberry32(42);
+  const h = TRAP_SIZE.clone().multiplyScalar(0.5);
+  const bar = (a: THREE.Vector3, b: THREE.Vector3) => {
+    const j = () => (rnd() - 0.5) * 0.012;
+    const a2 = a.clone().add(V(j(), j(), j()));
+    const b2 = b.clone().add(V(j(), j(), j()));
+    const len = a2.distanceTo(b2) + 0.03;
+    const m = between(a2, b2).multiply(M(0, 0, 0, 0, rnd() * 3, 0));
+    p.add(roundedBox(0.03, len, 0.026, 0.008), DRIFTWOOD, m);
+  };
+  const c = TRAP_C;
+  for (const sy of [-1, 1]) {
+    for (const sz of [-1, 1]) bar(V(c.x - h.x, c.y + sy * h.y, c.z + sz * h.z), V(c.x + h.x, c.y + sy * h.y, c.z + sz * h.z));
+    for (const sx of [-1, 1]) bar(V(c.x + sx * h.x, c.y + sy * h.y, c.z - h.z), V(c.x + sx * h.x, c.y + sy * h.y, c.z + h.z));
+  }
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) bar(V(c.x + sx * h.x, c.y - h.y, c.z + sz * h.z), V(c.x + sx * h.x, c.y + h.y, c.z + sz * h.z));
+}
+
+/** The fish trap's net, bridle and line up to the starboard stern cleat (soft-parts mesh). */
+function trapNet(p: Part): void {
+  const c = TRAP_C;
+  const h = TRAP_SIZE.clone().multiplyScalar(0.5);
+  const strand = (a: THREE.Vector3, b: THREE.Vector3) => rod(p, a, b, 0.0035, 3, COL.net);
+  const n = [3, 3, 3]; // strands across each face
+  for (let i = 1; i <= n[0]; i++) {
+    const x = c.x - h.x + (2 * h.x * i) / (n[0] + 1);
+    for (const sz of [-1, 1]) strand(V(x, c.y - h.y, c.z + sz * h.z), V(x, c.y + h.y, c.z + sz * h.z));
+    for (const sy of [-1, 1]) strand(V(x, c.y + sy * h.y, c.z - h.z), V(x, c.y + sy * h.y, c.z + h.z));
+  }
+  for (let i = 1; i <= n[1]; i++) {
+    const y = c.y - h.y + (2 * h.y * i) / (n[1] + 1);
+    for (const sz of [-1, 1]) strand(V(c.x - h.x, y, c.z + sz * h.z), V(c.x + h.x, y, c.z + sz * h.z));
+    for (const sx of [-1, 1]) strand(V(c.x + sx * h.x, y, c.z - h.z), V(c.x + sx * h.x, y, c.z + h.z));
+  }
+  for (let i = 1; i <= n[2]; i++) {
+    const z = c.z - h.z + (2 * h.z * i) / (n[2] + 1);
+    for (const sy of [-1, 1]) strand(V(c.x - h.x, c.y + sy * h.y, z), V(c.x + h.x, c.y + sy * h.y, z));
+    for (const sx of [-1, 1]) strand(V(c.x + sx * h.x, c.y - h.y, z), V(c.x + sx * h.x, c.y + h.y, z));
+  }
+  const ring = V(c.x, c.y + h.y + 0.2, c.z);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) rod(p, ring, V(c.x + sx * h.x, c.y + h.y, c.z + sz * h.z), 0.004, 3, COL.rope);
+  const cleat = V(STERN_CLEAT.x, deckY(STERN_CLEAT.x, STERN_CLEAT.z) + 0.05, STERN_CLEAT.z);
+  const rail = V(STERN_CLEAT.x - 0.03, sheerY(STERN_CLEAT.x) + 0.06, deckHalfBeam(STERN_CLEAT.x) - 0.005);
+  tube(p, curve([ring, V(c.x + 0.02, 0.1, c.z - 0.08), rail, cleat], 18), 0.006, 4, COL.rope);
+}
+
+/** The fishing rod stowed in its holder: cork handle and blank (woodwork mesh). */
+function rodWood(p: Part): void {
+  const butt = rodHolderBase().addScaledVector(ROD_HOLDER_DIR, 0.03);
+  const d = ROD_HOLDER_DIR;
+  tube(p, [butt, butt.clone().addScaledVector(d, 0.5)], 0.016, 10, CORK, true);
+  const blank0 = butt.clone().addScaledVector(d, 0.5);
+  const tip = butt.clone().addScaledVector(d, 1.9);
+  tube(p, [blank0, blank0.clone().lerp(tip, 0.5), tip], (t) => 0.009 - 0.0065 * t, 6, COL.rodBlank, true);
+  for (const t of [0.15, 0.4, 0.62, 0.8, 0.95]) {
+    const g = blank0.clone().lerp(tip, t);
+    p.add(new THREE.TorusGeometry(0.012 - 0.006 * t, 0.002, 4, 8), grain(0xb9bec2), between(g, g.clone().addScaledVector(d, 0.001)).multiply(M(0, 0, 0, Math.PI / 2, 0, 0)).multiply(M(0, 0, -0.016 + 0.006 * t)));
+  }
+}
+
+/** The rod's reel, line and a lure clipped to the hook keeper (soft-parts mesh). */
+function rodReel(p: Part): void {
+  const butt = rodHolderBase().addScaledVector(ROD_HOLDER_DIR, 0.03);
+  const d = ROD_HOLDER_DIR;
+  const out = V(0, 0, 1).sub(d.clone().multiplyScalar(d.z)).normalize(); // reel hangs outboard of the rod
+  const seat = butt.clone().addScaledVector(d, 0.42);
+  const body = seat.clone().addScaledVector(out, 0.06);
+  rod(p, seat, body, 0.006, 6, COL.dark);
+  p.add(new THREE.CylinderGeometry(0.03, 0.03, 0.035, 14), COL.dark, between(body.clone().addScaledVector(d, -0.018), body.clone().addScaledVector(d, 0.018)));
+  p.add(new THREE.CylinderGeometry(0.024, 0.026, 0.028, 14), COL.reel, between(body.clone().addScaledVector(d, 0.018), body.clone().addScaledVector(d, 0.046)));
+  const tip = butt.clone().addScaledVector(d, 1.9);
+  rod(p, body.clone().addScaledVector(d, 0.046), tip.clone().addScaledVector(out, 0.008), 0.0015, 3, COL.line);
+  const keeper = butt.clone().addScaledVector(d, 0.56).addScaledVector(out, 0.015);
+  p.add(new THREE.CapsuleGeometry(0.009, 0.04, 2, 6), COL.flagA, between(keeper, keeper.clone().addScaledVector(d, -0.05)));
+}
+
+/**
+ * The rain-catching awning, slung under the boom (boom amidships, at anchor): a canvas dish whose low points drain through
+ * funnels and hoses to the deck fillers. shown 0..1 spreads it out from under the boom; big = the upgraded catcher (wider,
+ * two funnels). Writes the cloth's box (no ties or hoses) to clothBox.
+ */
+function awning(p: Part, shown: number, big: boolean, clothBox: THREE.Box3): void {
+  const s = clamp(shown, 0.02, 1);
+  const x0 = big ? -1.52 : -1.45;
+  const x1 = big ? -0.6 : -0.66;
+  const hw = (big ? 1.0 : 0.62) * s;
+  const yEdge = 2.1;
+  const funnels = big ? [V(-1.06, 0, -0.62 * s), V(-1.06, 0, 0.62 * s)] : [V(-1.04, 0, 0.3 * s)];
+  const NX = 7;
+  const NZ = big ? 12 : 8;
+  const yAt = (x: number, z: number) => {
+    const u = (2 * (x - x0)) / (x1 - x0) - 1;
+    const w = hw > 1e-4 ? z / hw : 0;
+    let y = yEdge - s * 0.1 * (1 - u * u) * (1 - w * w);
+    for (const f of funnels) y -= s * 0.11 * Math.exp(-((x - f.x) ** 2 + (z - f.z) ** 2) / 0.035);
+    return y;
+  };
+  clothBox.makeEmpty();
+  for (const face of [1, -1]) {
+    const v0 = p.nv;
+    const i0 = p.idx.length;
+    const rows: number[][] = [];
+    for (let i = 0; i <= NX; i++) {
+      const x = x0 + ((x1 - x0) * i) / NX;
+      const row: number[] = [];
+      for (let k = 0; k <= NZ; k++) {
+        const z = -hw + (2 * hw * k) / NZ;
+        const hem = i === 0 || i === NX || k === 0 || k === NZ;
+        const y = yAt(x, z) + face * 0.002;
+        row.push(p.v(x, y, z, null, 0, 0, hem ? COL.canvasHem : COL.canvas));
+        clothBox.expandByPoint(V(x, y, z));
+      }
+      rows.push(row);
+    }
+    for (let i = 0; i < NX; i++) p.stitch(rows[i], rows[i + 1], false, V(0, face, 0));
+    p.smoothNormals(v0, i0);
+  }
+  // funnels and hoses down to the deck fillers; ties up to the boom
+  for (const f of funnels) {
+    const low = yAt(f.x, f.z);
+    const fc = V(f.x, low - 0.04, f.z);
+    p.add(new THREE.CylinderGeometry(0.05, 0.014, 0.08, 10), COL.funnel, M(fc.x, fc.y, fc.z));
+    clothBox.expandByPoint(fc.clone().add(V(0, -0.04, 0)));
+    const side = f.z < 0 ? -1 : 1;
+    const filler = V(FILLER_X, deckY(FILLER_X, side * FILLER_Z) + 0.02, side * FILLER_Z);
+    const over = V(FILLER_X + 0.02, 1.36, side * Math.max(Math.abs(f.z) + 0.05, trunkHalfWidth(FILLER_X) + 0.02));
+    tube(p, curve([V(f.x, low - 0.085, f.z), V(f.x + 0.01, 1.62, f.z + side * 0.12), over, filler], 14), 0.011, 6, COL.hose);
+  }
+  const ties: THREE.Vector3[] = [V(x0, yEdge, -hw), V(x0, yEdge, hw), V(x1, yEdge, -hw), V(x1, yEdge, hw)];
+  if (big) ties.push(V((x0 + x1) / 2, yEdge, -hw), V((x0 + x1) / 2, yEdge, hw));
+  for (const t of ties) rod(p, t, V(t.x, boomY(t.x) - 0.05, 0), 0.003, 3, COL.line);
+}
+
+/** Water slopping about on the cockpit sole when the bilge is badly flooded (its own small translucent mesh). */
+class BilgeWater {
+  readonly mesh: THREE.Mesh;
+  readonly triangles: number;
+  private rings: [number, number][][] = [];
+  private pos: Float32Array;
+  constructor() {
+    const ring = (k: number) => rrLoop(FW_AFT + 0.012, FW_FWD - 0.012, FW_HW - 0.012, FW_R - 0.01, 3).map(([x, z]): [number, number] => [(FW_AFT + FW_FWD) / 2 + (x - (FW_AFT + FW_FWD) / 2) * k, z * k]);
+    for (const k of [1, 0.75, 0.5, 0.25]) this.rings.push(ring(k));
+    const n = this.rings[0].length;
+    const count = this.rings.length * n + 1;
+    this.pos = new Float32Array(count * 3);
+    const idx: number[] = [];
+    for (let r = 0; r < this.rings.length - 1; r++) {
+      for (let i = 0; i < n; i++) {
+        const a = r * n + i;
+        const b = r * n + ((i + 1) % n);
+        idx.push(a, b + n, b, a, a + n, b + n);
+      }
+    }
+    const c = count - 1;
+    const last = (this.rings.length - 1) * n;
+    for (let i = 0; i < n; i++) idx.push(last + i, c, last + ((i + 1) % n));
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(count * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    g.setIndex(idx);
+    g.boundingSphere = new THREE.Sphere(V((FW_AFT + FW_FWD) / 2, SOLE_Y + 0.05, 0), 1.2);
+    this.triangles = idx.length / 3;
+    const mat = new THREE.MeshStandardMaterial({ color: 0x3f8f98, transparent: true, opacity: 0.58, roughness: 0.06, metalness: 0, depthWrite: false });
+    this.mesh = new THREE.Mesh(g, mat);
+    this.mesh.name = 'sloop-bilge';
+    this.mesh.receiveShadow = true;
+    this.mesh.castShadow = false;
+    this.mesh.renderOrder = 1;
+    this.update(0, 0);
+  }
+  /** level 0..1; water shows only above 0.6. */
+  update(level: number, time: number): void {
+    const k = clamp((level - 0.6) / 0.4, 0, 1);
+    this.mesh.visible = level > 0.6;
+    const xc = (FW_AFT + FW_FWD) / 2;
+    const a = 0.006 + 0.012 * k;
+    const yAt = (x: number, z: number) =>
+      SOLE_Y + 0.008 + 0.05 * k + a * (((x - xc) / 0.9) * Math.sin(time * 1.6) + (z / FW_HW) * 0.6 * Math.sin(time * 2.1 + 1)) + 0.003 * Math.sin(10 * x + 3.1 * time) * Math.cos(8 * z - 2.3 * time);
+    let o = 0;
+    for (const r of this.rings) {
+      for (const [x, z] of r) {
+        this.pos[o++] = x;
+        this.pos[o++] = yAt(x, z);
+        this.pos[o++] = z;
+      }
+    }
+    this.pos[o++] = xc;
+    this.pos[o++] = yAt(xc, 0);
+    this.pos[o++] = 0;
+    const g = this.mesh.geometry;
+    g.getAttribute('position').needsUpdate = true;
+    g.computeVertexNormals();
+  }
 }
 
 // ============================================================ the outboard and navigation lights
@@ -2657,7 +3141,7 @@ function buildOutboard(dyn: DynPart): number {
   });
 }
 
-type LampKind = 'anchor' | 'side' | 'stern';
+type LampKind = 'anchor' | 'side' | 'stern' | 'galley';
 interface Lamp {
   kind: LampKind;
   day: RGB; // unlit lens colour
@@ -2679,6 +3163,7 @@ class NavLights {
   private col: THREE.BufferAttribute;
   private halo: THREE.BufferAttribute;
   mode: 'anchor' | 'underway' = 'anchor';
+  galley = false;
   night = 0;
   constructor() {
     const pos: number[] = [];
@@ -2699,8 +3184,9 @@ class NavLights {
       for (const i of p.idx) idx.push(start + i);
       return [start, p.nv];
     };
-    const addLamp = (kind: LampKind, centre: THREE.Vector3, facing: THREE.Vector3, cosHalf: number, lens: THREE.BufferGeometry, lensM: THREE.Matrix4, day: RGB, lit: RGB, radius: number) => {
+    const addLamp = (kind: LampKind, centre: THREE.Vector3, facing: THREE.Vector3, cosHalf: number, lens: THREE.BufferGeometry, lensM: THREE.Matrix4, day: RGB, lit: RGB, radius: number, more: [THREE.BufferGeometry, THREE.Matrix4][] = []) => {
       const range = lensOf(lens, lensM, day);
+      for (const [g, m] of more) range[1] += lensOf(g, m, day)[1];
       const h = pos.length / 3;
       for (const [cx, cy] of [
         [-1, -1],
@@ -2732,6 +3218,24 @@ class NavLights {
     // Sternlight: white, shining aft.
     const st = sternlightPos();
     addLamp('stern', st, V(-1, 0, 0), Math.cos(1.18), roundedBox(0.03, 0.04, 0.06, 0.01), M(st.x, st.y, st.z), frosted, white, 0.24);
+    // Galley light: warm light through the washboard seams and up through the companionway when the hatch is open.
+    const ox0 = TRUNK_AFT + 0.1;
+    const ox1 = HATCH_AFT + HATCH_SLIDE - 0.03;
+    addLamp(
+      'galley',
+      V(TRUNK_AFT - 0.03, BENCH_Y + 0.3, 0),
+      V(-1, 0, 0),
+      -0.25,
+      roundedBox(0.004, 0.008, 0.54, 0.002),
+      washboardM(-0.028, -WB_HEIGHT / 6),
+      [0.035, 0.028, 0.022],
+      [1, 0.5, 0.17],
+      0.2,
+      [
+        [roundedBox(0.004, 0.008, 0.54, 0.002), washboardM(-0.028, WB_HEIGHT / 6)],
+        [roundedBox(ox1 - ox0, 0.004, 0.54, 0.001), M((ox0 + ox1) / 2, cabinTop((ox0 + ox1) / 2, 0) + 0.004, 0)],
+      ],
+    );
     for (const l of this.lamps) idx.push(l.halo, l.halo + 1, l.halo + 2, l.halo, l.halo + 2, l.halo + 3);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -2775,6 +3279,7 @@ class NavLights {
     this.set('anchor', 0);
   }
   isOn(kind: LampKind): boolean {
+    if (kind === 'galley') return this.galley;
     return this.night > 0.001 && (this.mode === 'anchor' ? kind === 'anchor' : kind !== 'anchor');
   }
   set(mode: 'anchor' | 'underway', night: number): void {
@@ -2786,8 +3291,9 @@ class NavLights {
     for (const l of this.lamps) {
       const on = this.isOn(l.kind);
       const dim = 1 - 0.8 * n; // an unlit lens darkens with the night (the material is unlit)
-      const k = on ? n : 0;
-      const glow = 1 + 3 * n;
+      const isGalley = l.kind === 'galley';
+      const k = on ? (isGalley ? 0.35 + 0.65 * n : n) : 0;
+      const glow = isGalley ? 0.7 + 0.5 * n : 1 + 3 * n;
       for (let i = l.lens[0]; i < l.lens[0] + l.lens[1]; i++) {
         for (let c = 0; c < 3; c++) C[i * 4 + c] = l.day[c] * dim * (1 - k) + l.lit[c] * glow * k;
       }
@@ -2798,7 +3304,7 @@ class NavLights {
   }
   /** Brightest lens colour channel of each kind of lamp (for tests and debugging). */
   brightness(): Record<LampKind, number> {
-    const out: Record<LampKind, number> = { anchor: 0, side: 0, stern: 0 };
+    const out: Record<LampKind, number> = { anchor: 0, side: 0, stern: 0, galley: 0 };
     const C = this.col.array as Float32Array;
     for (const l of this.lamps) {
       for (let i = l.lens[0]; i < l.lens[0] + l.lens[1]; i++) out[l.kind] = Math.max(out[l.kind], C[i * 4], C[i * 4 + 1], C[i * 4 + 2]);
@@ -2865,13 +3371,15 @@ export interface Sloop {
   beam: number;
   draft: number;
   triangles: number;
-  /** Sail, boom, jib, rudder and anchor controls. */
+  /** Sail, boom, jib, rudder, anchor, motor, lights and living-aboard controls. */
   rig: SloopRig;
+  /** Where the fixed living-aboard fittings are (boat-local boxes), for prompts and placing things. */
+  fittings: SloopFittings;
 }
 
 export function createSloop(): Sloop {
   const hull = new Part();
-  const rudder = new Part();
+  const wood = new DynPart();
   const gel = new Part();
   const teak = new Part();
   const varnish = new Part();
@@ -2880,7 +3388,11 @@ export function createSloop(): Sloop {
   const nonskid = new Part();
 
   buildHull(hull);
-  const rudderInfo = buildKeelAndRudder(hull, rudder, metal);
+  const made: { rudder?: RudderInfo } = {};
+  const segRudder = wood.rigid((p) => {
+    made.rudder = buildKeelAndRudder(hull, p, metal);
+  });
+  const rudderInfo = made.rudder as RudderInfo;
   buildDeck(teak);
   buildRails(varnish);
   buildCockpit(gel, teak, varnish, metal);
@@ -2889,6 +3401,7 @@ export function createSloop(): Sloop {
   buildLifelines(metal, cloth);
   buildFittings(metal, cloth, varnish);
   buildMotorBracket(metal, varnish);
+  const fittings = buildLivingFixed(varnish, metal, cloth);
 
   textures ??= { teak: paintTeak(), varnish: paintVarnish(), nonskid: paintNonSkid() };
   const teakTex = textures.teak;
@@ -2916,7 +3429,7 @@ export function createSloop(): Sloop {
   const metalMat = mats.find((m) => m[2] === 'sloop-metal')?.[1] as THREE.Material;
   const clothMat = mats.find((m) => m[2] === 'sloop-cloth')?.[1] as THREE.Material;
   const gelMat = mats.find((m) => m[2] === 'sloop-gelcoat')?.[1] as THREE.Material;
-  const moving = buildMovingRig(metalMat, clothMat, gelMat, varnishTex, rudder, rudderInfo);
+  const moving = buildMovingRig(metalMat, clothMat, gelMat, varnishTex, wood, segRudder, rudderInfo);
   for (const o of moving.objects) group.add(o);
   triangles += moving.triangles;
 
@@ -2938,6 +3451,9 @@ export function createSloop(): Sloop {
     mastBase: V(MAST_X, cabinTop(MAST_X, 0), 0),
     potShelf: [V(-1.45, potY(-1.45, -pz), -pz), V(-1.21, potY(-1.21, -pz), -pz), V(-1.45, potY(-1.45, pz), pz), V(-1.21, potY(-1.21, pz), pz)],
     spawn: V(-2.75, SOLE_Y, 0),
+    galley: V(-1.95, SOLE_Y, 0),
+    workbench: V(-3.38, SOLE_Y, -0.28),
+    pump: V(PUMP_X, SOLE_Y, 0.25),
   };
-  return { group, deck, points, length: LOA, beam: HALF_BEAM * 2, draft: DRAFT, triangles, rig: moving.rig };
+  return { group, deck, points, length: LOA, beam: HALF_BEAM * 2, draft: DRAFT, triangles, rig: moving.rig, fittings };
 }
