@@ -16,8 +16,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { FindKind } from '../content/finds';
 
-type V3 = [number, number, number];
-type C3 = [number, number, number];
+export type V3 = [number, number, number];
+export type C3 = [number, number, number];
 interface Part {
   geo: THREE.BufferGeometry;
   mat: THREE.Material;
@@ -27,36 +27,36 @@ interface Part {
 // Small maths and colour helpers
 // ---------------------------------------------------------------------------
 
-const TAU = Math.PI * 2;
-const clamp = (x: number, a: number, b: number): number => (x < a ? a : x > b ? b : x);
-const mix = (a: number, b: number, t: number): number => a + (b - a) * t;
-const fract = (x: number): number => x - Math.floor(x);
+export const TAU = Math.PI * 2;
+export const clamp = (x: number, a: number, b: number): number => (x < a ? a : x > b ? b : x);
+export const mix = (a: number, b: number, t: number): number => a + (b - a) * t;
+export const fract = (x: number): number => x - Math.floor(x);
 /** Smoothstep from e0 to e1 (e0 may be larger than e1 for a falling edge). */
-function smooth(e0: number, e1: number, x: number): number {
+export function smooth(e0: number, e1: number, x: number): number {
   const t = clamp((x - e0) / (e1 - e0), 0, 1);
   return t * t * (3 - 2 * t);
 }
-const steps = (n: number): number[] => Array.from({ length: n + 1 }, (_, i) => i / n);
+export const steps = (n: number): number[] => Array.from({ length: n + 1 }, (_, i) => i / n);
 
-const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-const add = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-const scl = (a: V3, k: number): V3 => [a[0] * k, a[1] * k, a[2] * k];
-const dot = (a: V3, b: V3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const len = (a: V3): number => Math.sqrt(dot(a, a));
-const norm = (a: V3): V3 => {
+export const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+export const add = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+export const scl = (a: V3, k: number): V3 => [a[0] * k, a[1] * k, a[2] * k];
+export const dot = (a: V3, b: V3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+export const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+export const len = (a: V3): number => Math.sqrt(dot(a, a));
+export const norm = (a: V3): V3 => {
   const l = len(a);
   return l > 0 ? scl(a, 1 / l) : [0, 1, 0];
 };
 
-function hash(i: number, j: number, seed: number): number {
+export function hash(i: number, j: number, seed: number): number {
   let h = Math.imul(i | 0, 374761393) ^ Math.imul(j | 0, 668265263) ^ Math.imul(seed | 0, 1442695041);
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   h ^= h >>> 16;
   return (h >>> 0) / 4294967296;
 }
 /** Smooth value noise in [0, 1]. With px / py > 0 it repeats every px / py units. */
-function noise(x: number, y: number, seed: number, px = 0, py = 0): number {
+export function noise(x: number, y: number, seed: number, px = 0, py = 0): number {
   const xi = Math.floor(x);
   const yi = Math.floor(y);
   const fx = x - xi;
@@ -67,7 +67,7 @@ function noise(x: number, y: number, seed: number, px = 0, py = 0): number {
     hash(px > 0 ? ((i % px) + px) % px : i, py > 0 ? ((j % py) + py) % py : j, seed);
   return mix(mix(w(xi, yi), w(xi + 1, yi), sx), mix(w(xi, yi + 1), w(xi + 1, yi + 1), sx), sy);
 }
-function fbm(x: number, y: number, seed: number, oct = 3, px = 0, py = 0): number {
+export function fbm(x: number, y: number, seed: number, oct = 3, px = 0, py = 0): number {
   let s = 0;
   let amp = 0.5;
   let tot = 0;
@@ -123,18 +123,18 @@ function cells3(x: number, y: number, z: number, seed: number): [number, number]
 
 const _c = new THREE.Color();
 /** sRGB hex to linear RGB (vertex colours are linear). */
-function lin(hex: number): C3 {
+export function lin(hex: number): C3 {
   _c.setHex(hex);
   return [_c.r, _c.g, _c.b];
 }
 /** sRGB hex to sRGB 0..1 (painted textures are stored as sRGB). */
-function srgb(hex: number): C3 {
+export function srgb(hex: number): C3 {
   return [((hex >> 16) & 255) / 255, ((hex >> 8) & 255) / 255, (hex & 255) / 255];
 }
-const mixC = (a: C3, b: C3, t: number): C3 => [mix(a[0], b[0], t), mix(a[1], b[1], t), mix(a[2], b[2], t)];
-const mulC = (a: C3, k: number): C3 => [a[0] * k, a[1] * k, a[2] * k];
+export const mixC = (a: C3, b: C3, t: number): C3 => [mix(a[0], b[0], t), mix(a[1], b[1], t), mix(a[2], b[2], t)];
+export const mulC = (a: C3, k: number): C3 => [a[0] * k, a[1] * k, a[2] * k];
 /** Mix through a list of colours, t in [0, 1]. */
-function ramp(cols: C3[], t: number): C3 {
+export function ramp(cols: C3[], t: number): C3 {
   const x = clamp(t, 0, 1) * (cols.length - 1);
   const i = Math.min(Math.floor(x), cols.length - 2);
   return mixC(cols[i], cols[i + 1], x - i);
@@ -144,7 +144,7 @@ function ramp(cols: C3[], t: number): C3 {
 // Geometry builders: parametric grids with smooth, exact normals
 // ---------------------------------------------------------------------------
 
-interface GridSpec {
+export interface GridSpec {
   /** Sample positions across (u) and along (v), each in [0, 1]. */
   us: number[];
   vs: number[];
@@ -180,7 +180,7 @@ function gridNormal(s: GridSpec, u: number, v: number, nested = false): V3 {
   return scl(n, (s.flip ? -1 : 1) / ln);
 }
 
-function grid(s: GridSpec): THREE.BufferGeometry {
+export function grid(s: GridSpec): THREE.BufferGeometry {
   const nu = s.us.length;
   const nv = s.vs.length;
   const P = new Float32Array(nu * nv * 3);
@@ -222,7 +222,7 @@ function grid(s: GridSpec): THREE.BufferGeometry {
   return g;
 }
 
-interface TubeSpec {
+export interface TubeSpec {
   /** Centreline, t in [0, 1]. */
   path: (t: number) => V3;
   /** Radius at t, at angle a around the centreline (a = 0 is the side, a = -pi/2 the top). */
@@ -241,7 +241,7 @@ interface TubeSpec {
   uv?: (t: number, a: number, p: V3) => [number, number];
 }
 
-function tube(s: TubeSpec): THREE.BufferGeometry {
+export function tube(s: TubeSpec): THREE.BufferGeometry {
   const [c0, c1] = s.caps ?? [0, 0];
   const CAP = 0.08;
   const v0 = c0 ? CAP : 0;
@@ -290,7 +290,7 @@ function tube(s: TubeSpec): THREE.BufferGeometry {
 }
 
 /** Adds a flat vertex colour (and a uv set if missing) to a three.js primitive so it can merge with grids. */
-function prim(g: THREE.BufferGeometry, col: C3): THREE.BufferGeometry {
+export function prim(g: THREE.BufferGeometry, col: C3): THREE.BufferGeometry {
   const n = g.getAttribute('position').count;
   const c = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) c.set(col, i * 3);
@@ -343,24 +343,80 @@ function place(parts: Part[], rot?: { x?: number; y?: number; z?: number }): Par
 const texCache = new Map<string, THREE.DataTexture>();
 const matCache = new Map<string, THREE.Material>();
 
-interface PaintOpts {
+export interface PaintOpts {
   wrapU?: boolean;
   wrapV?: boolean;
+  /**
+   * Build the smaller mipmap levels by hand, keeping the share of see-through
+   * texels the same as at full size. For alpha-tested lace (a net), whose thin
+   * strands would otherwise fade away when seen from afar.
+   */
+  keepCoverage?: boolean;
+  /** 1 = one sample per texel; the default 2 takes 2 x 2 samples, so painted edges come out smooth. */
+  samples?: number;
 }
 
-/** Paints a w x h RGBA texture; fn gets (u, v) in [0, 1] and returns sRGB colour 0..1 (and optional alpha). */
-function paint(key: string, w: number, h: number, fn: (u: number, v: number) => number[], opts: PaintOpts = {}): THREE.DataTexture {
-  const hit = texCache.get(key);
-  if (hit) return hit;
+/** Hand-built mipmaps whose alpha-tested coverage (alpha > 0.5) matches level 0's. */
+function coverageMips(data: Uint8Array, w: number, h: number): { data: Uint8Array; width: number; height: number }[] {
+  const above = (d: Uint8Array, scale: number): number => {
+    let n = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] * scale > 127.5) n++;
+    return n / (d.length / 4);
+  };
+  const want = above(data, 1);
+  const levels = [{ data, width: w, height: h }];
+  let src = data;
+  let sw = w;
+  let sh = h;
+  while (sw > 1 || sh > 1) {
+    const dw = Math.max(1, sw >> 1);
+    const dh = Math.max(1, sh >> 1);
+    const box = new Float32Array(dw * dh * 4);
+    for (let y = 0; y < dh; y++) {
+      for (let x = 0; x < dw; x++) {
+        for (let k = 0; k < 4; k++) {
+          let s = 0;
+          for (let j = 0; j < 2; j++) for (let i = 0; i < 2; i++) s += src[((Math.min(sh - 1, y * 2 + j) * sw + Math.min(sw - 1, x * 2 + i)) * 4) + k];
+          box[(y * dw + x) * 4 + k] = s / 4;
+        }
+      }
+    }
+    // Scale alpha so the same share of texels passes the alpha test as at full size.
+    const round = new Uint8Array(box.length);
+    for (let i = 0; i < box.length; i++) round[i] = clamp(Math.round(box[i]), 0, 255);
+    let lo = 0;
+    let hi = 8;
+    for (let it = 0; it < 18; it++) {
+      const mid = (lo + hi) / 2;
+      if (above(round, mid) < want) lo = mid;
+      else hi = mid;
+    }
+    const dst = new Uint8Array(box.length);
+    for (let i = 0; i < box.length; i++) dst[i] = clamp(Math.round(i % 4 === 3 ? box[i] * hi : box[i]), 0, 255);
+    levels.push({ data: dst, width: dw, height: dh });
+    src = dst;
+    sw = dw;
+    sh = dh;
+  }
+  return levels;
+}
+
+/**
+ * Paints a w x h RGBA texture (not cached); fn gets (u, v) in [0, 1] and
+ * returns sRGB colour 0..1 (and optional alpha). Also used by the fish and
+ * the fishing gear.
+ */
+export function paintTexture(name: string, w: number, h: number, fn: (u: number, v: number) => number[], opts: PaintOpts = {}): THREE.DataTexture {
   const data = new Uint8Array(w * h * 4);
   const acc = [0, 0, 0, 0];
+  const ns = opts.samples ?? 2;
+  const wgt = 255 / (ns * ns);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      // 2 x 2 samples per texel, so painted edges come out smooth
       acc.fill(0);
-      for (let sy = 0; sy < 2; sy++) {
-        for (let sx = 0; sx < 2; sx++) {
-          const c = fn((x + 0.25 + 0.5 * sx) / w, (y + 0.25 + 0.5 * sy) / h);
+      for (let sy = 0; sy < ns; sy++) {
+        for (let sx = 0; sx < ns; sx++) {
+          const c = fn((x + (sx + 0.5) / ns) / w, (y + (sy + 0.5) / ns) / h);
           acc[0] += c[0];
           acc[1] += c[1];
           acc[2] += c[2];
@@ -368,19 +424,32 @@ function paint(key: string, w: number, h: number, fn: (u: number, v: number) => 
         }
       }
       const o = (y * w + x) * 4;
-      for (let k = 0; k < 4; k++) data[o + k] = clamp(Math.round(acc[k] * 63.75), 0, 255);
+      for (let k = 0; k < 4; k++) data[o + k] = clamp(Math.round(acc[k] * wgt), 0, 255);
     }
   }
   const t = new THREE.DataTexture(data, w, h, THREE.RGBAFormat, THREE.UnsignedByteType);
-  t.name = `finds:${key}`;
+  t.name = name;
   t.colorSpace = THREE.SRGBColorSpace;
   t.wrapS = opts.wrapU ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
   t.wrapT = opts.wrapV ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
   t.magFilter = THREE.LinearFilter;
   t.minFilter = THREE.LinearMipmapLinearFilter;
-  t.generateMipmaps = true;
   t.anisotropy = 4;
+  if (opts.keepCoverage) {
+    t.mipmaps = coverageMips(data, w, h) as unknown as typeof t.mipmaps;
+    t.generateMipmaps = false;
+  } else {
+    t.generateMipmaps = true;
+  }
   t.needsUpdate = true;
+  return t;
+}
+
+/** Paints a w x h RGBA texture once and caches it; fn gets (u, v) in [0, 1] and returns sRGB colour 0..1 (and optional alpha). */
+function paint(key: string, w: number, h: number, fn: (u: number, v: number) => number[], opts: PaintOpts = {}): THREE.DataTexture {
+  const hit = texCache.get(key);
+  if (hit) return hit;
+  const t = paintTexture(`finds:${key}`, w, h, fn, opts);
   texCache.set(key, t);
   return t;
 }
@@ -1513,6 +1582,322 @@ function pumice(): Part[] {
 }
 
 // ---------------------------------------------------------------------------
+// Repair stuff: sailcloth, net, a bottle
+// ---------------------------------------------------------------------------
+
+/**
+ * The torn-off corner of an old Dacron sail: two hemmed edges meeting at a
+ * brass ring (the cringle) in a patch of reinforcing layers, the other edges
+ * ripped and fraying. Lying in soft folds, one torn corner curling up.
+ */
+function sailcloth(): Part[] {
+  const SW = 0.37;
+  const SD = 0.28;
+  // fold height over the scrap (u across, v up from the hem); never below the sand
+  const lift = (u: number, v: number): number => {
+    const ridge = Math.exp(-(((u * 0.8 + v * 0.55 - 0.72) / 0.08) ** 2)) * 0.024;
+    const ridge2 = Math.exp(-(((u * 0.35 - v * 0.9 + 0.38) / 0.06) ** 2)) * 0.014;
+    const ridge3 = Math.exp(-(((u - 0.22 * v - 0.3) / 0.05) ** 2)) * 0.008 * smooth(0.2, 0.6, v);
+    const curl = 0.045 * smooth(0.62, 1.0, u) * smooth(0.55, 1.0, v) ** 1.5;
+    const lump = 0.006 * fbm(u * 3, v * 3, 301, 2);
+    return 0.0015 + ridge + ridge2 + ridge3 + curl + lump;
+  };
+  const geo = grid({
+    us: steps(16),
+    vs: steps(12),
+    pos: (u, v) => {
+      // the curled corner tucks in a little as it lifts
+      const tuck = 0.03 * smooth(0.62, 1.0, u) * smooth(0.55, 1.0, v) ** 1.5;
+      return [(u - 0.5) * SW - tuck, lift(u, v), (v - 0.5) * SD - tuck * 0.6];
+    },
+    uv: (u, v) => [u, v],
+  });
+  // how far inside the torn edges a point is (in metres-ish), with a ragged line
+  const tornEdge = (u: number, v: number): number => {
+    const r1 = 0.93 - 0.17 * v + 0.09 * (fbm(v * 5, 0.5, 311, 3) - 0.5) + 0.035 * (noise(v * 34, 2.5, 315) - 0.5);
+    const r2 = 0.91 - 0.12 * u + 0.09 * (fbm(u * 5, 1.5, 313, 3) - 0.5) + 0.035 * (noise(u * 34, 4.5, 317) - 0.5);
+    return Math.min((r1 - u) * SW, (r2 - v) * SD);
+  };
+  const RING_U = 0.1;
+  const RING_V = 0.12;
+  const thread = srgb(0xa59a82);
+  const tex = paint('sailcloth', 128, 96, (u, v) => {
+    const xm = u * SW;
+    const zm = v * SD;
+    // the weave: tight and fine, with slightly uneven yarns
+    const weave = 0.97 + 0.03 * Math.sin(xm * 2400) * Math.sin(zm * 2400) + 0.02 * (noise(u * 64, v * 48, 321) - 0.5);
+    let c = mulC(srgb(0xe8e0cc), weave);
+    // weathering: sun-yellowed, a little grime and sand worked into it, more near the torn side
+    c = mixC(c, srgb(0xd4c6a4), smooth(0.4, 0.75, fbm(u * 4, v * 3, 323, 3)) * 0.7);
+    c = mixC(c, srgb(0xb9a986), smooth(0.6, 0.85, fbm(u * 9 + 3, v * 7, 327, 2)) * 0.35);
+    c = mixC(c, srgb(0xbfae8a), smooth(0.05, 0.0, tornEdge(u, v)) * 0.5);
+    // the hems along the two finished edges: folded-over cloth, a shadow line, two rows of zigzag stitching
+    const hemW = 0.028;
+    for (const [d, along] of [
+      [zm, xm],
+      [xm, zm],
+    ]) {
+      if (d < hemW + 0.004) {
+        c = mulC(c, 0.96);
+        c = mulC(c, 1 - 0.12 * smooth(0.004, 0.0, Math.abs(d - hemW)));
+        for (const row of [0.009, 0.019]) {
+          const zz = row + 0.0025 * (Math.abs(fract(along / 0.007) - 0.5) * 4 - 1);
+          c = mixC(c, thread, smooth(0.0012, 0.0004, Math.abs(d - zz)) * 0.9);
+        }
+      }
+    }
+    // the panel seam across the cloth: an overlap with two straight stitch lines
+    const seam = Math.abs(zm - (0.17 + 0.03 * u));
+    c = mulC(c, 1 - 0.07 * smooth(0.012, 0.009, seam) - 0.06 * smooth(0.0016, 0.0, Math.abs(seam - 0.011)));
+    for (const off of [-0.006, 0.006]) c = mixC(c, thread, smooth(0.001, 0.0003, Math.abs(zm - (0.17 + 0.03 * u) - off)) * smooth(0.45, 0.55, 0.5 + 0.5 * Math.sin(xm * 900)) * 0.8);
+    // the corner patch: extra layers round the ring, with stitching radiating out from it
+    const dx = xm - RING_U * SW;
+    const dz = zm - RING_V * SD;
+    const rr = Math.hypot(dx, dz);
+    const patch = xm + zm < 0.15 + 0.006 * Math.sin(Math.atan2(dz, dx) * 7) ? 1 : 0;
+    c = mulC(c, 1 - 0.06 * patch);
+    c = mixC(c, thread, patch * smooth(0.25, 0.1, Math.abs(fract(Math.atan2(dz, dx) * 4) - 0.5)) * smooth(0.02, 0.026, rr) * smooth(0.06, 0.05, rr) * 0.5);
+    c = mulC(c, 1 - 0.25 * smooth(0.022, 0.016, rr) * smooth(0.008, 0.013, rr)); // shadow under the ring
+    // torn edges: ragged, with loose threads
+    const e = tornEdge(u, v);
+    let alpha = smooth(-0.001, 0.002, e);
+    const fray = smooth(0.0, -0.008, e) * smooth(-0.014, -0.006, e) * smooth(0.85, 0.95, 0.5 + 0.5 * Math.sin((u + v) * 400 + 3 * noise(u * 30, v * 30, 331)));
+    alpha = Math.max(alpha, fray);
+    // the hole in the middle of the ring
+    if (rr < 0.008) alpha = 0;
+    return [...c, alpha];
+  });
+  const cloth = material('sailcloth', () => new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.82, metalness: 0 }));
+  // the brass ring, set flat into the cloth at the corner
+  const ry = lift(RING_U, RING_V) + 0.002;
+  const ring = new THREE.TorusGeometry(0.0115, 0.0034, 6, 14);
+  ring.rotateX(-Math.PI / 2);
+  ring.scale(1, 0.75, 1);
+  ring.translate((RING_U - 0.5) * SW, ry, (RING_V - 0.5) * SD);
+  {
+    const p = ring.getAttribute('position');
+    const c = new Float32Array(p.count * 3);
+    for (let i = 0; i < p.count; i++) {
+      const k = noise(p.getX(i) * 900, p.getZ(i) * 900, 341);
+      c.set(mixC(lin(0xd2aa58), lin(0x8a7a48), smooth(0.55, 0.8, k)), i * 3);
+    }
+    ring.setAttribute('color', new THREE.BufferAttribute(c, 3));
+  }
+  const brass = material('brass', () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.38, metalness: 0.9 }));
+  return place([
+    { geo, mat: cloth },
+    { geo: ring, mat: brass },
+  ]);
+}
+
+/**
+ * A bunched-up piece of green nylon fishing net: see-through diamond mesh
+ * with knots, heaped in folds over itself, and a length of its float line
+ * along one edge with a cork float threaded on it.
+ */
+function net(): Part[] {
+  const S = 0.3;
+  const CELLS = 9;
+  // a heap with crumpled folds; edges lying flat on the sand
+  const lumps: [number, number, number, number][] = [
+    // x, z, radius, height (in the piece's own 0..1 square)
+    [0.42, 0.5, 0.22, 0.06],
+    [0.66, 0.4, 0.14, 0.04],
+    [0.34, 0.28, 0.12, 0.025],
+  ];
+  const heap = (u: number, v: number): number => {
+    let h = 0;
+    for (const [lx, lz, lr, lh] of lumps) h += lh * Math.exp(-((Math.hypot(u - lx, v - lz) / lr) ** 2));
+    // crumpled folds: sharp creases running different ways
+    const w = 2 * fbm(u * 2, v * 2, 351, 2);
+    const folds = 0.5 * Math.abs(Math.sin(u * 17 + v * 6 + w)) ** 0.5 + 0.4 * Math.abs(Math.sin(v * 13 - u * 8 + 1 + w)) ** 0.5;
+    return 0.002 + h * (0.45 + folds) + 0.005 * fbm(u * 5, v * 5, 353, 2);
+  };
+  // gathered in toward the heaps
+  const squeeze = (u: number, v: number): [number, number] => {
+    let x = u - 0.5;
+    let z = v - 0.5;
+    const k = 1 - 0.3 * Math.exp(-((Math.hypot(u - 0.45, v - 0.45) / 0.3) ** 2));
+    x += 0.03 * Math.sin(v * 7 + 1);
+    z += 0.025 * Math.sin(u * 6);
+    return [x * S * k, z * S * 0.85 * k];
+  };
+  const green = lin(0x2c7a48);
+  const faded = lin(0x6aa47a);
+  const geo = grid({
+    us: steps(13),
+    vs: steps(13),
+    pos: (u, v) => {
+      const [x, z] = squeeze(u, v);
+      return [x, heap(u, v), z];
+    },
+    col: (u, v) => mixC(green, faded, smooth(0.45, 0.8, fbm(u * 3, v * 3, 357, 2)) * 0.7),
+    uv: (u, v) => [u * CELLS, v * CELLS],
+  });
+  // twine and knots, one diamond mesh per tile; the edge of the piece is cut ragged
+  const tex = paint(
+    'net',
+    64,
+    64,
+    (u, v) => {
+      const d1 = Math.abs(fract(u + v) - 0.5);
+      const d2 = Math.abs(fract(u - v) - 0.5);
+      const w = 0.075;
+      const t1 = smooth(w, w * 0.6, 0.5 - d1);
+      const t2 = smooth(w, w * 0.6, 0.5 - d2);
+      // knots where the twines cross (the tile's corners and middle)
+      const kx = Math.min(Math.hypot(u - 0.5, v - 0.5), Math.hypot(Math.min(u, 1 - u), Math.min(v, 1 - v)));
+      const knot = smooth(0.11, 0.08, kx);
+      const a = Math.max(t1, t2, knot);
+      // twisted twine: a light stripe along each strand
+      const twist = 0.75 + 0.25 * Math.sin((u * 2 + (t1 > t2 ? v : -v)) * TAU * 6);
+      const g = (knot > 0.5 ? 0.85 : twist) * (0.8 + 0.2 * Math.max(t1, t2));
+      return [g, g, g, a];
+    },
+    { wrapU: true, wrapV: true, keepCoverage: true },
+  );
+  const netMat = material('net', () => new THREE.MeshStandardMaterial({ map: tex, vertexColors: true, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.7, metalness: 0 }));
+  // the float line along one edge, and a cork on it
+  const rr = 0.0055;
+  // the float line runs along one edge, then up over a fold
+  const linePath = (t: number): V3 => {
+    const u = 0.06 + 0.8 * t;
+    const v = 0.07 + 0.05 * Math.sin(t * 4) + 0.22 * smooth(0.55, 1, t);
+    const [x, z] = squeeze(u, v);
+    return [x, heap(u, v) + rr, z];
+  };
+  const floatT = 0.36;
+  const fc = linePath(floatT);
+  const fd = norm(sub(linePath(floatT + 0.02), linePath(floatT - 0.02)));
+  const CR = 0.024;
+  const CL = 0.046;
+  const ropeGeo = tube({
+    path: linePath,
+    radius: () => rr,
+    nu: 5,
+    ts: steps(15),
+    caps: [1, 1],
+    capLen: 0.5,
+    col: (t, _a, _p, n) => mulC(lin(0x3f7f6a), 0.85 + 0.15 * smooth(-0.6, 0.6, n[1]) + 0.1 * noise(t * 9, 0, 361)),
+    uv: (t, a) => [(t * 0.26) / 0.03, a / TAU],
+  });
+  const cork = tube({
+    path: (t) => add(fc, add(scl(fd, (t - 0.5) * CL), [0, CR - rr, 0])),
+    radius: (t) => CR * (0.92 + 0.08 * Math.sin(Math.PI * t)),
+    nu: 9,
+    ts: steps(3),
+    caps: [2, 2],
+    capLen: 0.3,
+    col: (t, a) => mulC(mixC(lin(0xb68a58), lin(0x8a5e38), noise(t * 6, a * 3, 363)), 0.8 + 0.35 * noise(t * 30, a * 9, 365)),
+    // the rope texture's palest stripe, so the cork just takes its own colours
+    uv: () => [0.5, 0],
+  });
+  return place([
+    { geo, mat: netMat },
+    { geo: ropeGeo, mat: ropeMat() },
+    { geo: cork, mat: ropeMat() },
+  ]);
+}
+
+/** An empty green glass bottle lying on its side, corked, with a little sand inside. */
+function bottle(): Part[] {
+  // profile along the bottle (x from the base), radius r; the last points turn back inside the neck
+  const prof: [number, number][] = [
+    [0.019, 0.0],
+    [0.012, 0.018],
+    [0.003, 0.03],
+    [0.0, 0.0345],
+    [0.005, 0.0372],
+    [0.09, 0.0375],
+    [0.165, 0.0366],
+    [0.188, 0.0305],
+    [0.205, 0.021],
+    [0.222, 0.0155],
+    [0.262, 0.0138],
+    [0.273, 0.0146],
+    [0.276, 0.0163],
+    [0.286, 0.0162],
+    [0.2885, 0.0122],
+    [0.27, 0.0106],
+  ];
+  const cum = [0];
+  for (let i = 1; i < prof.length; i++) cum.push(cum[i - 1] + Math.hypot(prof[i][0] - prof[i - 1][0], prof[i][1] - prof[i - 1][1]));
+  const total = cum[cum.length - 1];
+  const at = (v: number): [number, number] => {
+    const s = clamp(v, 0, 1) * total;
+    let i = 1;
+    while (i < prof.length - 1 && cum[i] < s) i++;
+    const t = (s - cum[i - 1]) / (cum[i] - cum[i - 1] || 1);
+    return [mix(prof[i - 1][0], prof[i][0], t), mix(prof[i - 1][1], prof[i][1], t)];
+  };
+  const glassCol = lin(0xeaf6ea);
+  const glass = grid({
+    us: steps(18),
+    vs: cum.map((c) => c / total),
+    wrapU: true,
+    flip: true,
+    pos: (u, v) => {
+      const [x, r] = at(v);
+      const a = TAU * u;
+      return [x, r * Math.cos(a), r * Math.sin(a)];
+    },
+    // thicker glass looks deeper at the base and the lip
+    col: (_u, v) => {
+      const [x] = at(v);
+      return mulC(glassCol, x < 0.01 || x > 0.27 ? 0.7 : 1);
+    },
+  });
+  const glassMat = material(
+    'bottle-glass',
+    () =>
+      new THREE.MeshPhysicalMaterial({
+        vertexColors: true,
+        color: 0x1d7434,
+        transparent: true,
+        opacity: 0.74,
+        roughness: 0.1,
+        metalness: 0,
+        clearcoat: 0.5,
+        clearcoatRoughness: 0.06,
+        side: THREE.DoubleSide,
+        emissive: new THREE.Color(0x0a3416),
+        emissiveIntensity: 0.7,
+        envMapIntensity: 0.8,
+      }),
+  );
+  // the cork, pushed into the neck with a little standing proud
+  const cork = tube({
+    path: (t) => [mix(0.268, 0.3, t), 0, 0],
+    radius: (t) => 0.0104 * (t > 0.6 ? 1.04 : 1),
+    nu: 7,
+    ts: [0, 0.4, 0.7, 1],
+    caps: [0, 2],
+    capLen: 0.25,
+    col: (t, a) => mulC(mixC(lin(0xb88a58), lin(0x9a6e44), noise(t * 8, a * 2, 371)), 0.88 + 0.22 * noise(t * 40, a * 7, 373)),
+  });
+  // a little sand that got in, lying along the bottom inside
+  const sand = grid({
+    us: steps(6),
+    vs: steps(3),
+    pos: (u, v) => {
+      // a level surface, as wide as the glass is at that height, thinning out at both ends
+      const y = -0.0368 + 0.0065 * Math.pow(Math.sin(Math.PI * u), 0.6);
+      const half = Math.sqrt(Math.max(0, 0.0368 * 0.0368 - y * y)) * 0.94;
+      return [mix(0.025, 0.165, u), y + 0.0006 * Math.sin(Math.PI * v), (v - 0.5) * 2 * half];
+    },
+    col: (u, v) => mulC(lin(0xe2cc9c), 0.9 + 0.15 * noise(u * 9, v * 4, 375)),
+  });
+  return place(
+    [
+      { geo: glass, mat: glassMat },
+      { geo: cork, mat: matteVC() },
+      { geo: sand, mat: matteVC() },
+    ],
+    { y: 0.5 },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -1537,6 +1922,9 @@ const BUILDERS: Record<FindKind, () => Part[]> = {
   'netted-olive': olive,
   'flamingo-tongue': flamingoTongue,
   pumice,
+  sailcloth,
+  net,
+  bottle,
 };
 
 const partCache = new Map<FindKind, Part[]>();

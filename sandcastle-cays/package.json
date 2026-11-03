@@ -1,6 +1,6 @@
 {
   "name": "sandcastle-cays",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "A calm sandcastle-building game on small Caribbean islands. Runs in the browser.",

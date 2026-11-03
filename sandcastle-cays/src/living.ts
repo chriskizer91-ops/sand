@@ -91,6 +91,8 @@ export interface LivingCtx {
   line: LineView | null;
   /** Where the rod's tip is in the world. */
   tipWorld(out: THREE.Vector3): THREE.Vector3;
+  /** Get the fish models ready (so the first catch doesn't stutter). */
+  prepare?(): void;
   palms: { x: number; z: number }[];
   /** The game day now, with the hour as a fraction (day 3, noon = 3.5). */
   dayNow(): number;
@@ -141,6 +143,7 @@ export class Living {
   private notes = { leak: -999, rain: -999, full: -999, torn: false, worn: false, hungryCard: false, thirstyCard: false };
   private clock = 0;
   private hatch = 0;
+  private prepared = false;
 
   constructor(private ctx: LivingCtx) {
     this.galley = new Galley({
@@ -522,6 +525,10 @@ export class Living {
     else if (this.canFish()) {
       this.rodHeld = true;
       this.ctx.held.setHolding?.('rod');
+      if (!this.prepared) {
+        this.prepared = true;
+        this.ctx.prepare?.();
+      }
       this.ctx.audio.click();
       this.ctx.toast(this.ctx.isTouch ? 'Face the water and tap “Cast”.' : 'Face the water and press E to cast.', 2600);
     } else this.ctx.toast(this.ctx.player.mode === 'swim' ? 'You can’t fish while swimming.' : 'Not from here: fish from the deck (not at the helm) or from the shore.', 2600);
@@ -622,10 +629,11 @@ export class Living {
     ctx.held.reelTurn?.(reel ? 1 : 0);
     // The panel.
     const t = ctx.isTouch;
-    if (s.phase === 'idle') ctx.hud.setFishing({ text: t ? 'Face the water and tap <b>Cast</b>' : 'Face the water and press <b>E</b> to cast', tension: null, progress: null });
+    // (The prompt under the dot says which key; this says what's happening.)
+    if (s.phase === 'idle') ctx.hud.setFishing({ text: 'Face the water to cast', tension: null, progress: null });
     else if (s.phase === 'waiting') ctx.hud.setFishing({ text: 'Waiting for a bite…', tension: null, progress: null });
-    else if (s.phase === 'bite') ctx.hud.setFishing({ text: `<b>A bite! Strike!</b> ${t ? '(tap)' : '(E)'}`, tension: null, progress: null });
-    else ctx.hud.setFishing({ text: s.tension > 0.7 ? '<b>Ease off!</b> The line’s tight' : s.running ? 'It’s running: careful…' : `Reel in: ${t ? 'hold the button' : 'hold E'}`, tension: s.tension, progress: s.progress });
+    else if (s.phase === 'bite') ctx.hud.setFishing({ text: `<b>A bite!</b> ${t ? 'Tap quick!' : 'Quick!'}`, tension: null, progress: null });
+    else ctx.hud.setFishing({ text: s.tension > 0.7 ? '<b>Ease off!</b> The line’s tight' : s.running ? 'It’s running: careful…' : 'Reeling it in…', tension: s.tension, progress: s.progress });
   }
 
   private onFishEvent(ev: FishingEvent): void {

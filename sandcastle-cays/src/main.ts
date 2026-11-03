@@ -43,7 +43,9 @@ import { Hud, cap } from './ui/hud';
 import { SailHud } from './ui/sailHud';
 import { Chart } from './ui/chart';
 import { DevTools } from './ui/devTools';
-import { Living, type LivingAction, type LivingRig, type RodView, type LineView } from './living';
+import { Living, type LivingAction, type LivingRig, type RodView } from './living';
+import { FishingLine } from './render/fishingGear';
+import { prepareFish } from './render/fish';
 import { Ui } from './ui/ui';
 import type { CheckResult } from './checks/sandChecks';
 
@@ -1490,7 +1492,12 @@ function pickUp(id: number): void {
 
 // ---------- living aboard ----------
 
-const tipTmp = new THREE.Vector3();
+// The fishing line and float, in the world (skipped by the under-the-water picture).
+const fishingLine = new FishingLine();
+scene.add(fishingLine.group);
+staticSkip.push(...fishingLine.overWater);
+rebuildRefractSkip();
+fishingLine.waterAt = (x, z) => seaHeight(x, z, time);
 const living = new Living({
   boat: () => boat,
   player,
@@ -1508,14 +1515,9 @@ const living = new Living({
   openness,
   camera,
   held: held as unknown as RodView,
-  line: null as LineView | null,
-  // Until the rod model reports its own tip: a point ahead of you, a little low and to the right.
-  tipWorld: (out) => {
-    camera.getWorldDirection(tipTmp);
-    out.copy(camera.position).addScaledVector(tipTmp, 1.6);
-    out.y -= 0.15;
-    return out;
-  },
+  line: fishingLine,
+  tipWorld: (out) => held.rodTipWorld(camera, out),
+  prepare: () => prepareFish(),
   palms: trunks,
   dayNow: () => clock.day + clock.hour / 24,
   atHelm: () => atHelm,
@@ -1771,6 +1773,7 @@ function frame(now: number): void {
 
   // Light, sky and water.
   const light = daylight.update(dt, time, clock);
+  fishingLine.setDaylight(light.daylight);
   weatherFx.setLocalRain(rainNow);
   weatherFx.update(
     squalls,

@@ -5,7 +5,8 @@
  * and coral heads in the lagoon. Merged into 32 m patches, so the graphics
  * chip skips the ones out of view.
  *
- * Also returns what you can bump into: palm trunks and rocks.
+ * Also returns what you can bump into: palm trunks (with each palm's crown,
+ * where its coconuts hang) and rocks.
  */
 import * as THREE from 'three';
 import { boulder, bush, grassTuft, mergeWithSway, palm, paint, rgb, swayMaterial, type RockBlob } from './scenery';
@@ -17,6 +18,18 @@ export interface Trunk {
   x: number;
   z: number;
   r: number;
+  /**
+   * Palms only: the top of the trunk, where the fronds spread. The coconuts
+   * hang in a bunch 0.15-0.35 m below it and up to 0.2 m out to the sides.
+   */
+  crown?: { x: number; y: number; z: number };
+}
+
+/** Where a palm's crown ends up when `palm(height, lean)` is turned by `yaw` (rotateY) and moved to (x, y, z). */
+export function palmCrown(height: number, lean: number, yaw: number, x: number, y: number, z: number): { x: number; y: number; z: number } {
+  // palm() curves up from the origin to (lean * height, height, 0); rotateY(yaw) takes (a, h, 0) to (a cos, h, -a sin).
+  const a = lean * height;
+  return { x: x + a * Math.cos(yaw), y: y + height, z: z - a * Math.sin(yaw) };
 }
 
 const PATCH = 32;
@@ -60,21 +73,28 @@ export function createIslandLife(
     if (nearCove(x, z, 3)) continue;
     if (terrain.groundAt(x, z) === 'rock') continue;
     const h = 4.5 + rand() * 3;
-    const g = palm(h, 0.2 + rand() * 0.3, rand);
+    const lean = 0.2 + rand() * 0.3;
+    const g = palm(h, lean, rand);
     // Lean toward the sea.
-    g.rotateY(-Math.atan2(p.nz, p.nx) + (rand() - 0.5) * 0.8);
-    g.translate(x, terrain.heightAt(x, z) - 0.05, z);
+    const yaw = -Math.atan2(p.nz, p.nx) + (rand() - 0.5) * 0.8;
+    g.rotateY(yaw);
+    const y = terrain.heightAt(x, z) - 0.05;
+    g.translate(x, y, z);
     add(plants, x, z, g);
-    trunks.push({ x, z, r: 0.2 });
+    trunks.push({ x, z, r: 0.2, crown: palmCrown(h, lean, yaw, x, y, z) });
     // Sometimes a second palm close by.
     if (rand() < 0.35) {
       const x2 = x + (rand() - 0.5) * 3;
       const z2 = z + (rand() - 0.5) * 3;
-      const g2 = palm(h * (0.7 + rand() * 0.3), 0.3 + rand() * 0.3, rand);
-      g2.rotateY(rand() * Math.PI * 2);
-      g2.translate(x2, terrain.heightAt(x2, z2) - 0.05, z2);
+      const h2 = h * (0.7 + rand() * 0.3);
+      const lean2 = 0.3 + rand() * 0.3;
+      const g2 = palm(h2, lean2, rand);
+      const yaw2 = rand() * Math.PI * 2;
+      g2.rotateY(yaw2);
+      const y2 = terrain.heightAt(x2, z2) - 0.05;
+      g2.translate(x2, y2, z2);
       add(plants, x2, z2, g2);
-      trunks.push({ x: x2, z: z2, r: 0.2 });
+      trunks.push({ x: x2, z: z2, r: 0.2, crown: palmCrown(h2, lean2, yaw2, x2, y2, z2) });
     }
   }
 
@@ -95,12 +115,15 @@ export function createIslandLife(
     // A few palms scattered inland too.
     if (rand() < 0.06) {
       const h = 5 + rand() * 3;
-      const gp = palm(h, 0.12 + rand() * 0.2, rand);
-      gp.rotateY(rand() * Math.PI * 2);
+      const lean = 0.12 + rand() * 0.2;
+      const gp = palm(h, lean, rand);
+      const yaw = rand() * Math.PI * 2;
+      gp.rotateY(yaw);
       const px = x + 1.5;
-      gp.translate(px, terrain.heightAt(px, z) - 0.05, z);
+      const py = terrain.heightAt(px, z) - 0.05;
+      gp.translate(px, py, z);
       add(plants, px, z, gp);
-      trunks.push({ x: px, z, r: 0.2 });
+      trunks.push({ x: px, z, r: 0.2, crown: palmCrown(h, lean, yaw, px, py, z) });
     }
   }
   // Beach grass along the edge of the vegetation.

@@ -28,7 +28,10 @@ export type FindKind =
   | 'feather'
   | 'netted-olive'
   | 'flamingo-tongue'
-  | 'pumice';
+  | 'pumice'
+  | 'sailcloth'
+  | 'net'
+  | 'bottle';
 
 /** Islands where finds wash up: Home Cay and Pink Sand Cay. */
 export type IslandId = 'home' | 'pink';
@@ -271,6 +274,39 @@ export const FINDS: Record<FindKind, FindInfo> = {
     fact:
       'Pumice is volcanic rock so full of tiny bubbles that it floats. Pieces can drift on the sea for a very long time before they wash ashore.',
     firstLine: 'A lump of pumice: a stone so light it floats!',
+  },
+  sailcloth: {
+    kind: 'sailcloth',
+    name: 'scrap of sailcloth',
+    plural: 'scraps of sailcloth',
+    group: 'drift',
+    rarity: 3,
+    size: 0.4,
+    fact:
+      'Most cruising sails are sewn from Dacron, a strong, tightly woven polyester cloth. A ring set into the corner of a sail, where a rope pulls on it, is called a cringle.',
+    firstLine: 'The torn-off corner of an old sail, brass ring and all. Good for patching.',
+  },
+  net: {
+    kind: 'net',
+    name: 'piece of fishing net',
+    plural: 'pieces of fishing net',
+    group: 'drift',
+    rarity: 3.5,
+    size: 0.32,
+    fact:
+      'Most fishing nets today are made of nylon, which does not rot the way old cotton nets did. Lost nets, called ghost nets, can drift for years and keep catching fish and turtles.',
+    firstLine: 'A bunch of green fishing net, with a cork float still on it.',
+  },
+  bottle: {
+    kind: 'bottle',
+    name: 'glass bottle',
+    plural: 'glass bottles',
+    group: 'drift',
+    rarity: 4,
+    size: 0.29,
+    fact:
+      'Glass is made mostly of sand, melted in a furnace hotter than lava. A broken bottle, tumbled by the waves for years, turns into sea glass.',
+    firstLine: 'An empty green bottle, still corked.',
   },
 };
 

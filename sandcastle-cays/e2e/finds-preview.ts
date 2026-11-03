@@ -122,6 +122,10 @@ const layout: [FindKind, number, number, number][] = [
   ['netted-olive', -0.22, 1.08, 0.3],
   ['flamingo-tongue', 0.0, 1.08, -0.4],
   ['pumice', 0.24, 1.08, 0.2],
+  // beach debris for repairs, along the back
+  ['sailcloth', -0.6, -1.0, 0.35],
+  ['net', 0.05, -1.02, -0.2],
+  ['bottle', 0.62, -0.98, 0.9],
 ];
 const PINK_Y = 0.001;
 const pinkSand = new THREE.Mesh(
@@ -169,12 +173,13 @@ held.rotation.set(0.55, 0.35, 0.1);
 
 // ---------- views ----------
 const views: Record<string, { pos: [number, number, number]; look: [number, number, number]; fov?: number; held?: boolean }> = {
-  overview: { pos: [0.1, 1.6, 2.15], look: [0.1, 0, 0.15] },
+  overview: { pos: [0.1, 1.8, 2.3], look: [0.1, 0, 0.0] },
   pink: { pos: [0.02, 0.34, 1.44], look: [0.02, 0, 1.08], fov: 45 },
   shellsL: { pos: [-0.36, 0.32, 1.05], look: [-0.36, 0, 0.72], fov: 45 },
   shellsR: { pos: [0.34, 0.32, 1.05], look: [0.34, 0, 0.72], fov: 45 },
   glass: { pos: [-0.12, 0.3, 0.7], look: [-0.12, 0, 0.36], fov: 50 },
   drift: { pos: [0.05, 0.95, 0.9], look: [0.0, 0, -0.25], fov: 55 },
+  repair: { pos: [0.02, 0.75, -0.2], look: [0.02, 0, -1.0], fov: 55 },
   basket: { pos: [1.25, 0.62, 0.88], look: [1.05, 0.06, 0.45], fov: 50 },
   held: { pos: [0.1, 1.6, 2.3], look: [0.1, 0.0, 0.0], fov: 65, held: true },
 };

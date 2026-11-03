@@ -41,18 +41,29 @@ const HOME_KINDS = [
   'feather',
 ];
 const PINK_KINDS = ['netted-olive', 'flamingo-tongue', 'pumice'];
+/** Beach debris for repairs (fishing and repairs update), washing up on every island. */
+const REPAIR_KINDS = ['sailcloth', 'net', 'bottle'];
 
 describe('beachcombing catalogue', () => {
-  it('lists all 20 kinds once each, with the Pink Sand Cay ones added at the end', () => {
-    expect(FIND_KINDS.length).toBe(20);
+  it('lists all 23 kinds once each: Home Cay, then Pink Sand Cay, then the repair debris', () => {
+    expect(FIND_KINDS.length).toBe(23);
     expect(new Set(FIND_KINDS).size).toBe(FIND_KINDS.length);
-    expect(FIND_KINDS).toEqual([...HOME_KINDS, ...PINK_KINDS]);
+    expect(FIND_KINDS).toEqual([...HOME_KINDS, ...PINK_KINDS, ...REPAIR_KINDS]);
+  });
+  it('the repair debris is drift, washes up everywhere, and is fairly uncommon', () => {
+    for (const kind of REPAIR_KINDS) {
+      const info = FINDS[kind as keyof typeof FINDS];
+      expect(info.group).toBe('drift');
+      expect(info.islands).toBeUndefined();
+      expect(info.rarity).toBeGreaterThanOrEqual(2.5);
+      expect(info.rarity).toBeLessThanOrEqual(4.5);
+    }
   });
   it('says where island-only finds wash up', () => {
     expect(FINDS['netted-olive'].islands).toEqual(['pink']);
     expect(FINDS['flamingo-tongue'].islands).toEqual(['pink']);
     expect(FINDS.pumice.islands).toBeUndefined();
-    for (const kind of HOME_KINDS) expect(FINDS[kind as keyof typeof FINDS].islands).toBeUndefined();
+    for (const kind of [...HOME_KINDS, ...REPAIR_KINDS]) expect(FINDS[kind as keyof typeof FINDS].islands).toBeUndefined();
     for (const kind of FIND_KINDS) {
       const islands = FINDS[kind].islands;
       if (islands === undefined) continue;

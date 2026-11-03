@@ -344,13 +344,33 @@ export function palm(height: number, lean: number, rand: () => number): THREE.Bu
     withSway(g, (x, _y, z) => Math.min(1.4, Math.hypot(x - top.x, z - top.z) * 0.55));
     parts.push(g);
   }
-  // Coconuts.
-  for (let c = 0; c < 4; c++) {
-    const g = new THREE.SphereGeometry(0.13, 7, 5);
+  // Coconuts: a bunch of 3-5 green, olive and brown nuts hanging under the crown, among the
+  // frond bases. Their sizes and colours come from the palm's own size, not from `rand`, so
+  // the islands' plants and rocks stay exactly where they were.
+  const seed = Math.floor(height * 997 + lean * 7919);
+  const pick = (k: number): number => {
+    const s = Math.sin(seed * 12.9898 + k * 78.233) * 43758.5453;
+    return s - Math.floor(s);
+  };
+  const nuts = 3 + Math.floor(pick(1) * 2.999);
+  const nutCols = [rgb(0x6f8a2e), rgb(0x85862f), rgb(PALETTE.coconut)];
+  for (let c = 0; c < nuts; c++) {
+    const r = 0.1 + 0.03 * pick(10 + c);
+    const g = new THREE.SphereGeometry(r, 7, 5);
     g.deleteAttribute('uv');
-    const a = (c / 4) * Math.PI * 2;
-    g.translate(top.x + Math.cos(a) * 0.17, top.y - 0.18, top.z + Math.sin(a) * 0.17);
-    paint(g, () => rgb(PALETTE.coconut));
+    g.scale(1, 1.15, 1); // a little egg-shaped, hanging stem-up
+    const a = (c / nuts) * Math.PI * 2 + pick(20 + c) * 0.9;
+    const out = 0.12 + 0.06 * pick(30 + c);
+    const drop = 0.17 + 0.08 * pick(40 + c) + (c % 2) * 0.07;
+    const cy = top.y - drop;
+    g.translate(top.x + Math.cos(a) * out, cy, top.z + Math.sin(a) * out);
+    const t = pick(50 + c);
+    const col = nutCols[t < 0.45 ? 0 : t < 0.8 ? 1 : 2];
+    // lighter on top where the sun catches it, darker underneath
+    paint(g, (_x, y) => {
+      const k = 0.72 + 0.32 * Math.min(1, Math.max(0, (y - cy) / (2.3 * r) + 0.5));
+      return [col[0] * k, col[1] * k, col[2] * k];
+    });
     withSway(g, () => 0.4);
     parts.push(g);
   }
