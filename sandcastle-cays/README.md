@@ -2,7 +2,7 @@
 
 A calm game about living aboard a small sailboat in the Caribbean: comb the beaches for what the sea washes up, build sandcastles, sail between islands, and (coming) keep your boat in repair and grow food. Everything (sand, water, sky, boat, finds, sounds) is made in code. See [`docs/PLAN.md`](docs/PLAN.md) for the agreed plan.
 
-**Current version: 0.4.1**: you can no longer get stuck aground ("Push off"), plus a dev tools window. 0.4, "Blue water", brought the open sea beyond the reefs (stronger wind, a long swell, whitecaps, spray, surfing down waves), squalls you can sail into, the sea buoy with your best time out round it and home, faster sailing and a stronger outboard. 0.3.1 brought the outboard and navigation lights; 0.3 ("First passage") brought sailing with real wind, the chart and "sail there for me", anchoring, the reef and its gap, and a second island, Pink Sand Cay. Before that, 0.2 brought:
+**Current version: 0.5, "Living aboard"**: food and water stores, fishing, the galley, rain water, coconuts, and mending the boat at a workbench with what the sea washes up. 0.4.1 brought "Push off" and the dev tools; 0.4, "Blue water", brought the open sea beyond the reefs (stronger wind, a long swell, whitecaps, spray, surfing down waves), squalls you can sail into, the sea buoy with your best time out round it and home, faster sailing and a stronger outboard. 0.3.1 brought the outboard and navigation lights; 0.3 ("First passage") brought sailing with real wind, the chart and "sail there for me", anchoring, the reef and its gap, and a second island, Pink Sand Cay. Before that, 0.2 brought:
 - your boat at anchor off Home Cay, seen through your own eyes;
 - the new sea and sky from the raft game, with day and night;
 - swimming ashore and walking the island;
@@ -12,7 +12,7 @@ A calm game about living aboard a small sailboat in the Caribbean: comb the beac
 ## Playing it
 **Easiest:** open the game's private link, https://claude.ai/artifact/3F64yxNHrsCbRvwY9mdk3f, which always has the latest version. (For Claude sessions: it's the claude.ai artifact with slug `1229d053-31f1-46e8-be80-cc430658ecc6`; republish `builds/` files to it with each new version.)
 
-Or download the file: `builds/sandcastle-cays-v0.4.1.html`.
+Or download the file: `builds/sandcastle-cays-v0.5.html`.
 - **Laptop:** download the file and double-click it (opens in Chrome or Edge).
 - **Pixel phone:** download the file, then open it from Files > Downloads with Chrome.
 

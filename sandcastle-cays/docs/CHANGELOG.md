@@ -1,5 +1,49 @@
 # What changed, version by version (plain language)
 
+## v0.5, Living aboard
+Your boat is now a home to look after. You have food and water to keep topped up, fish to catch, rain to collect, and a boat to mend with what the sea washes up. (The garden comes next, in v0.6.)
+
+**What's new**
+- **Stores.** The bowl and the drop at the top of the screen show how many days of food and water you have.
+  - You use one day of each every game day (about 24 real minutes).
+  - Full, the larder holds 30 days and the tank 20.
+  - A new game starts with 10 days of food and 8 of water, so you'll need to top up before long.
+  - You're warned at 3 days. If one runs out, you're slower and can't run until you top up. Nothing worse happens.
+- **Fishing.** Tap the rod button (G on a laptop) on deck or on the shore, face the water and cast.
+  - When the float dips, strike quickly.
+  - Then hold to reel. When the fish runs and the line goes red, ease off or it snaps.
+  - Five real Caribbean fish, each with a true fact in the logbook: blue-striped grunts, yellowtail snappers and bar jacks in the lagoon; bonefish on the shallow sand flats (you let those go); and mahi-mahi only out on the open sea.
+  - You hold up each catch to look at it.
+- **The galley**, down the companionway at the front of the cockpit (the hatch slides open).
+  - Cook your fish to fill the larder. Fresh fish keeps a day and a half in the cool box.
+  - Open coconuts for a little food and water.
+- **Rain water.** At anchor an awning goes up under the boom and rain runs into the tank. So sail to meet a squall and anchor under it! Under sail a little runs off the mainsail too.
+- **Coconuts.** The palms have coconuts now. Shake a palm and one or two fall; each palm has ripe ones again in two days.
+- **Upkeep.**
+  - A badly scraped hull (below 60%) leaks. Water fills the bilge and slows her, so pump it out with the pump in the cockpit.
+  - Sailing hard while overpowered, or letting the sails flog in a strong wind, wears the sails, and worn sails drive her less.
+- **The workbench**, on the stern deck. It makes things from finds in the locker, and recipes appear once you've found everything they need:
+  - patch the hull;
+  - caulk the seams;
+  - patch the sails;
+  - a bigger rain catcher;
+  - water jugs (a bigger tank);
+  - a feather lure (quicker bites);
+  - a fish trap (a fish or two by morning, at anchor).
+- **New finds** to make them with: scraps of sailcloth, pieces of fishing net and glass bottles.
+- **The logbook** now has a Fish section, and your boat's sails, bilge and stores.
+- **No rain sound** any more (you said it sounded like static).
+- **Dev tools** have new buttons: fill the stores, stores nearly out, 3 of every find, a fish bites now, scrape the hull.
+
+**Checks before sending**
+CHECKS_PLACEHOLDER
+
+**Not tested, or known**
+- How the stores feel over a long game: too easy, too hard? Tell me.
+- How fishing feels with your thumb on the phone (hold the round button to reel).
+- Speed on your Pixel.
+- The first fish you catch of each kind may cause a tiny pause while its model is built.
+
 ## v0.4.1, Never stuck aground (and dev tools)
 **What changed**
 - **You can't get stuck aground any more.** Before, if the boat ended up in water shallower than her keel (for example by turning while touching bottom, or swinging at anchor onto a shallow patch), she couldn't move in any direction. Now:
