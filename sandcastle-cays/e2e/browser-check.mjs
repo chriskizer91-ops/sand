@@ -440,7 +440,8 @@ async function standBy(page, f) {
     g.aboard(-Math.PI / 2, -0.05);
     g.takeHelm();
   });
-  await waitFrames(page, 3);
+  // (The helm buttons' labels refresh every few frames.)
+  await waitFrames(page, 8);
   const pushLabel = await page.evaluate(() => [...document.querySelectorAll('#helmbar button span')].map((e) => e.textContent).find((t) => /Push off/.test(t)) ?? null);
   await page.keyboard.press('KeyX');
   await waitFrames(page, 2);
@@ -543,7 +544,7 @@ async function standBy(page, f) {
   await page.keyboard.press('Escape');
   step('Laptop: at the workbench, "Patch the hull" uses a plank and rope and mends the hull', /workbench/.test(benchPrompt ?? '') && hullAfter >= 64, `prompt "${benchPrompt}", hull 30% → ${Math.round(hullAfter)}%`);
   // A badly scraped hull leaks; pump it out.
-  await G(page, () => { const g = window.__game; g.boat.hull = 10; g.living.aboard.bilge = 0; g.sail(60); });
+  await G(page, () => { const g = window.__game; g.boat.hull = 10; g.living.aboard.bilge = 0; g.sail(120); });
   const bilge0 = await G(page, () => window.__game.living.aboard.bilge);
   await standAt('pump');
   await waitFrames(page, 3);
@@ -554,7 +555,7 @@ async function standBy(page, f) {
   }
   const bilge1 = await G(page, () => window.__game.living.aboard.bilge);
   await G(page, () => { const g = window.__game; g.boat.hull = 100; g.living.aboard.bilge = 0; });
-  step('Laptop: a badly scraped hull leaks into the bilge; E at the pump pumps it out', bilge0 > 0.05 && /Pump/.test(pumpPrompt ?? '') && bilge1 < bilge0 - 0.15, `bilge ${Math.round(bilge0 * 100)}% → ${Math.round(bilge1 * 100)}% after 4 strokes`);
+  step('Laptop: a badly scraped hull leaks into the bilge; E at the pump pumps it out', bilge0 > 0.2 && /Pump/.test(pumpPrompt ?? '') && bilge1 < bilge0 - 0.15, `bilge ${Math.round(bilge0 * 100)}% → ${Math.round(bilge1 * 100)}% after 4 strokes`);
   // Rain fills the tank at anchor.
   const rain = await G(page, () => {
     const g = window.__game;

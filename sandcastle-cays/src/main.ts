@@ -2056,6 +2056,8 @@ void boot();
       boatMotion.update(time, 1 / 30, boat);
       bowSpray(1 / 30);
       buoyRun();
+      // Living aboard goes on too: rain into the tank, leaks, sail wear.
+      living.update(1 / 30, 1 / 30, time, wind.rain, ev.over, false, daylight.info.night);
       player.update(1 / 30, { x: 0, y: 0 }, false, false);
     }
     return { x: boat.x, z: boat.z, speed: boat.speed, anchored: boat.anchored, aground: boat.aground, hull: boat.hull, course: course ? course.name : null, maxSurf, maxSpeed, maxOver, wind: wind.speed, open: wind.open, rain: wind.rain, heading: boat.heading };

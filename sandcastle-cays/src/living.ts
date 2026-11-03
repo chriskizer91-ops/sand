@@ -364,7 +364,8 @@ export class Living {
     if (ctx.player.mode !== 'deck' || ctx.atHelm() || this.rodHeld) return [];
     const opts: [number, LivingAction][] = [];
     const a = this.aboard;
-    if (a.bilge > 0.03) opts.push([this.distTo(ctx.points.pump), { kind: 'pump', label: `Pump the bilge (${Math.round(a.bilge * 100)}% full)` }]);
+    // Still offered for a moment after it's dry, so an extra press doesn't open the galley next to it.
+    if (a.bilge > 0.03 || this.clock - this.lastStroke < 2.5) opts.push([this.distTo(ctx.points.pump), { kind: 'pump', label: a.bilge > 0.005 ? `Pump the bilge (${Math.round(a.bilge * 100)}% full)` : 'The bilge is dry' }]);
     opts.push([this.distTo(ctx.points.galley), { kind: 'galley', label: 'Go below to the galley' }]);
     opts.push([this.distTo(ctx.points.workbench), { kind: 'workbench', label: 'Use the workbench' }]);
     return opts;
@@ -471,8 +472,14 @@ export class Living {
     this.renderBench();
   }
 
+  private lastStroke = -99;
+
   private pump(): void {
-    if (this.aboard.bilge <= 0) return;
+    this.lastStroke = this.clock;
+    if (this.aboard.bilge <= 0) {
+      this.ctx.toast('The bilge is dry.', 1500);
+      return;
+    }
     pumpStroke(this.aboard);
     this.pumpAnim = 1;
     this.pumpHoldT = 0.35;
