@@ -373,14 +373,16 @@ async function standBy(page, f) {
   // Bear away to port (toward open water inside the reef), then sail on.
   await G(page, () => window.__game.sail(12, -1));
   const h1 = await G(page, () => window.__game.boat.heading);
-  const run = await G(page, () => window.__game.sail(16, 0));
+  // (The catamaran is quick: 8 s takes her well across the lagoon, short of the reef.)
+  const run = await G(page, () => window.__game.sail(8, 0));
   step('Laptop: she turns when you steer and picks up speed under sail', Math.abs(h1 - h0) > 0.3 && run.speed > 1.2, `turned ${(h1 - h0).toFixed(2)} rad, ${(run.speed * 1.944).toFixed(1)} knots`);
   await waitFrames(page, 3);
   await shot(page, '12a-at-the-helm-under-sail.png');
   await G(page, () => window.__game.player.yaw = window.__game.player.yaw + Math.PI);
   await waitFrames(page, 3);
   await shot(page, '12b-looking-aft-wake.png');
-  // The little outboard: sails down, motor ahead, then astern.
+  // The motors: sails down, motor ahead (west along the lagoon, clear of the reef), then astern.
+  await G(page, () => { const g = window.__game; g.placeBoat(2, -45, Math.PI); g.boat.speed = 0; });
   await page.keyboard.press('KeyS');
   await waitFrames(page, 2);
   await page.keyboard.press('KeyS');
