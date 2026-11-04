@@ -193,8 +193,19 @@ async function standBy(page, f) {
   // Jump over the side: you land clear of the hull and can swim away (owner found you could get stuck).
   await G(page, () => {
     const g = window.__game;
-    g.player.placeAboard(g.vec(0, 0.8, 1.15), 0);
-    const out = g.sloop.group.localToWorld(g.vec(0, 0.8, 4)).sub(g.player.feet);
+    const d = g.sloop.deck;
+    // The starboard side deck beside the saloon: the outermost spot inside the rails at main-deck height.
+    let z0 = 3;
+    let h0 = 1.5;
+    for (let z = 2.5; z < 4; z += 0.05) {
+      const h = d.heightAt(0.5, z, 1.6);
+      if (h !== null && Math.abs(h - 1.5) < 0.2 && d.insideLifelines(0.5, z, 1.5) && !d.blocked(0.5, z, 0.25, 1.5)) {
+        z0 = z;
+        h0 = h;
+      }
+    }
+    g.player.placeAboard(g.vec(0.5, h0, z0), 0);
+    const out = g.sloop.group.localToWorld(g.vec(0.5, h0, z0 + 4)).sub(g.player.feet);
     g.player.yaw = Math.atan2(-out.x, -out.z);
     g.player.pitch = -0.1;
   });
@@ -344,12 +355,13 @@ async function standBy(page, f) {
   await shot(page, '10-inland.png');
 
   // ---- Sailing ----
-  await G(page, () => window.__game.aboard(-Math.PI / 2, -0.05));
+  // Up on the flybridge, behind the wheel.
+  await G(page, () => { const g = window.__game; g.aboard(-Math.PI / 2, -0.05); g.player.placeAboard(g.sloopPoints.helm.clone(), g.player.yaw); });
   await waitFrames(page, 3);
   const helmPrompt = await G(page, () => window.__game.action());
   await page.keyboard.press('KeyE');
   await waitFrames(page, 3);
-  step('Laptop: in the cockpit, E takes the helm', await G(page, () => window.__game.atHelm), `prompt: "${helmPrompt?.label}"`);
+  step('Laptop: on the flybridge, E takes the helm', await G(page, () => window.__game.atHelm), `prompt: "${helmPrompt?.label}"`);
   await page.keyboard.press('KeyW');
   await waitFrames(page, 2);
   await page.keyboard.press('KeyW');
@@ -580,7 +592,15 @@ async function standBy(page, f) {
 
   // ---- The garden (v0.6) ----
   // A pot on the cabin top: plant callaloo, water it (from the tank), ripen it (dev tools), harvest it.
-  await G(page, () => { const g = window.__game; g.aboard(); const p = g.sloopPoints.potShelf[0]; g.player.placeAboard(p.clone().setX(p.x - 0.5), Math.PI / 2); g.player.pitch = -0.6; });
+  await G(page, () => {
+    const g = window.__game;
+    g.aboard();
+    // In front of the planter shelf (on the foredeck side), looking at the first pot.
+    const p = g.sloopPoints.potShelf[0];
+    g.player.placeAboard(g.vec(p.x + 0.6, 1.5, p.z), 0);
+    const w = g.sloop.group.localToWorld(p.clone());
+    g.lookAt(w.x, w.y + 0.2, w.z);
+  });
   await waitFrames(page, 3);
   const potPrompt = await G(page, () => window.__game.action()?.label);
   await page.keyboard.press('KeyE');
@@ -865,7 +885,7 @@ async function standBy(page, f) {
   step('Phone: by the ladder, the round button climbs you aboard', climbBtn && (await G(page, () => window.__game.playerMode)) === 'deck');
   await shot(page, '17-phone-back-aboard.png');
   // At the helm on the phone: the round button takes it, the thumb steers, buttons work the sails.
-  await G(page, () => window.__game.aboard(-Math.PI / 2, -0.05));
+  await G(page, () => { const g = window.__game; g.aboard(-Math.PI / 2, -0.05); g.player.placeAboard(g.sloopPoints.helm.clone(), g.player.yaw); });
   await waitFrames(page, 3);
   const helmBtn = await page.isVisible('#actionbtn');
   if (helmBtn) await page.tap('#actionbtn');
