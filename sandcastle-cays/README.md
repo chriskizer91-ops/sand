@@ -24,7 +24,8 @@ Or download the file: `builds/sandcastle-cays-v0.6.html`.
 | Jump / climb | the arrow button | Space |
 | Kneel to build (on the cove's sand) | the round button | B |
 | Logbook | book button | L or the book button |
-| Take the helm (in the cockpit) | the round button | E |
+| Take the helm (on the flybridge, up the steps from the cockpit) | the round button | E |
+| Sleep until morning (your bunk, at anchor, after sunset) | the round button | E |
 | Steer / sails up and down (take in sail when she's overpowered) | left thumb / "More sail", "Less sail" | A D / W S |
 | Outboard motor (ahead / astern) | "Motor" buttons | R / F |
 | Anchor (when aground it becomes "Push off") | "Drop anchor" / "Push off" button | X |
@@ -50,7 +51,7 @@ npm run browser-check   # headless Chromium as laptop + Pixel: plays aboard, swi
 npm run release         # build + copy to builds/sandcastle-cays-v<version>.html
 ```
 - `node e2e/look.mjs <name>` builds a sample castle and screenshots it.
-- `node e2e/sloop-look.mjs`, `node e2e/finds-look.mjs`, `node e2e/weather-look.mjs`, `node e2e/fish-look.mjs` and `node e2e/garden-look.mjs` screenshot the boat, the finds, the weather, the fish and fishing gear, and the garden on their own.
+- `node e2e/cat-look.mjs`, `node e2e/sloop-look.mjs`, `node e2e/finds-look.mjs`, `node e2e/weather-look.mjs`, `node e2e/fish-look.mjs` and `node e2e/garden-look.mjs` screenshot the boat, the finds, the weather, the fish and fishing gear, and the garden on their own.
 - Add `#debug` to the URL for a performance readout (frame rate, draw calls, triangles), or `#noworker` to force the sand engine onto the page (backup mode).
 
 ### Layout
@@ -66,7 +67,7 @@ npm run release         # build + copy to builds/sandcastle-cays-v<version>.html
 - `src/render/`:
   - `ocean.ts`, `sky.ts`, `daylight.ts`, `pipeline.ts`, `paint.ts`: the water, the sky, the light and how each frame is drawn (from the raft game);
   - `island.ts` and `islandLife.ts`: the island's ground, plants and rocks;
-  - `sloop.ts`, `boatMotion.ts` and `wake.ts`: the boat (with sails, boom and rudder that move), how it rides the waves, and its wake;
+  - `catamaran.ts` (with `boatKit.ts`), `boatMotion.ts` and `wake.ts`: your 45 ft catamaran (inside and out, several levels to walk, sails, wheel, rudders and engines that move), how it rides the waves, and its wakes. `sloop.ts` is the old boat, kept for reference;
   - `weatherFx.ts` (with `squallFx.ts`, `rainFx.ts`, `sprayFx.ts`, `weatherCommon.ts`): squall clouds and rain curtains, rain around you, spray over the bow;
   - `buoy.ts`: the sea buoy;
   - `finds.ts`: the find and basket models;

@@ -57,7 +57,7 @@ export interface GardeningCtx {
   groundAt(x: number, z: number): number;
   views: GardenViews | null;
   /** The player: mode, and position (on the boat's grid when on deck). */
-  player(): { mode: string; x: number; z: number };
+  player(): { mode: string; x: number; y: number; z: number };
   dayNow(): number;
   /** Draw from the boat's tank (days of water); false if there isn't enough. */
   useTankWater(days: number): boolean;
@@ -225,6 +225,7 @@ export class Gardening {
     POT_IDS.slice(0, n).forEach((id, i) => {
       const at = this.ctx.potSpots[i];
       if (!at) return;
+      if (Math.abs(pl.y - at.y) > 0.8) return;
       out.push([Math.hypot(pl.x - at.x, pl.z - at.z), { kind: 'garden', id, label: plotLabel(this.state, id, now).label }]);
     });
     return out;

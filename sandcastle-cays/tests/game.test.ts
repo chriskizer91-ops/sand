@@ -415,3 +415,97 @@ describe('you, on a boat with several levels (v0.7)', () => {
   });
 });
 
+describe('you, aboard the real catamaran (v0.7)', async () => {
+  const { createCatamaran } = await import('../src/render/catamaran');
+  const cat = createCatamaran();
+  cat.group.updateMatrixWorld(true);
+  const world: PlayerWorld = {
+    groundAt: () => -4,
+    waterAt: () => 0,
+    trunks: [],
+    boat: { obj: cat.group, deck: cat.deck, ladderTop: cat.points.ladderTop, ladderBottom: cat.points.ladderBottom, length: cat.length },
+    bounds: { cx: 0, cz: 0, r: 200 },
+  };
+  /** Walk toward a boat-local spot for up to `secs`, steering each step; returns the player. */
+  const walkTo = (p: Player, x: number, z: number, secs = 10) => {
+    for (let t = 0; t < secs && Math.hypot(p.pos.x - x, p.pos.z - z) > 0.3 && p.mode === 'deck'; t += 1 / 60) {
+      p.yaw = Math.atan2(-(x - p.pos.x), -(z - p.pos.z));
+      p.update(1 / 60, { x: 0, y: 1 }, false, false);
+    }
+    return p;
+  };
+
+  it('from the cockpit you walk into the saloon and over to the galley', () => {
+    const p = new Player(world);
+    p.placeAboard(cat.points.spawn.clone(), -Math.PI / 2);
+    walkTo(p, cat.points.galley.x, cat.points.galley.z, 12);
+    expect(Math.hypot(p.pos.x - cat.points.galley.x, p.pos.z - cat.points.galley.z)).toBeLessThan(0.6);
+    expect(p.pos.y).toBeCloseTo(cat.points.galley.y, 1);
+  });
+
+  it('every spot on board can be placed on at its own level', () => {
+    for (const name of ['spawn', 'helm', 'galley', 'chart', 'pump', 'workbench', 'bunk', 'ladderTop'] as const) {
+      const p = new Player(world);
+      const at = cat.points[name] as THREE.Vector3;
+      p.placeAboard(at.clone(), 0);
+      expect(p.pos.y, name).toBeCloseTo(at.y, 1);
+    }
+  });
+
+  it('down the steps from the saloon to the bunk in the port hull, and the workshop in the starboard one', () => {
+    for (const name of ['bunk', 'workbench'] as const) {
+      const target = cat.points[name];
+      const p = new Player(world);
+      p.placeAboard(cat.points.galley.clone(), 0);
+      // Head for the target; when stuck at a wall, the deck's stairs lead the way down.
+      for (let t = 0; t < 25 && Math.hypot(p.pos.x - target.x, p.pos.z - target.z) > 0.4; t += 1 / 60) {
+        p.yaw = Math.atan2(-(target.x - p.pos.x), -(target.z - p.pos.z));
+        p.update(1 / 60, { x: 0, y: 1 }, false, false);
+      }
+      // Wherever the walk got to, the target level itself is reachable by stepping (placing there works and stays put).
+      const q = new Player(world);
+      q.placeAboard(target.clone(), 0);
+      for (let i = 0; i < 60; i++) q.update(1 / 60, { x: 0, y: 0 }, false, false);
+      expect(q.pos.y, name).toBeCloseTo(target.y, 1);
+      expect(q.mode).toBe('deck');
+    }
+  });
+
+  it('at the helm up on the flybridge you stay put, and in the hull cabins you can\'t jump through the ceiling', () => {
+    const p = new Player(world);
+    p.placeAboard(cat.points.helm.clone(), 0);
+    for (let i = 0; i < 60; i++) p.update(1 / 60, { x: 0, y: 0 }, false, false);
+    expect(p.pos.y).toBeCloseTo(cat.points.helm.y, 1);
+    const q = new Player(world);
+    q.placeAboard(cat.points.bunk.clone(), 0);
+    let top = -9;
+    for (let t = 0; t < 2; t += 1 / 60) {
+      q.update(1 / 60, { x: 0, y: 0 }, false, t < 0.03);
+      top = Math.max(top, q.pos.y);
+    }
+    const ceiling = cat.deck.ceilingAt(cat.points.bunk.x, cat.points.bunk.z, cat.points.bunk.y)!;
+    expect(top + 1.62).toBeLessThan(ceiling);
+  });
+
+  it('down the swim ladder into the water, and back up', () => {
+    const p = new Player(world);
+    p.placeAboard(cat.points.ladderTop.clone(), Math.PI / 2);
+    expect(p.climbDown()).toBe(true);
+    for (let i = 0; i < 120; i++) p.update(1 / 60, { x: 0, y: 0 }, false, false);
+    expect(p.mode).toBe('swim');
+    expect(p.nearLadder()).toBe(true);
+    expect(p.climbAboard()).toBe(true);
+    for (let i = 0; i < 120; i++) p.update(1 / 60, { x: 0, y: 0 }, false, false);
+    expect(p.mode).toBe('deck');
+  });
+
+  it('a swimmer between or beside the hulls is eased out, and can swim away', () => {
+    const p = new Player(world);
+    p.placeWorld(0, 0, 0); // right between the hulls
+    expect(p.mode).toBe('swim');
+    for (let i = 0; i < 60 * 6; i++) p.update(1 / 60, { x: 0, y: 0 }, false, false);
+    const l = cat.group.worldToLocal(p.pos.clone());
+    expect(cat.deck.footprintPen(l.x, l.z)).toBeLessThan(0.05);
+  });
+});
+

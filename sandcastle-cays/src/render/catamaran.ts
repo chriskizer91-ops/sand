@@ -247,8 +247,8 @@ const HLIN_X1 = 5.05;
 const LINING = 0.06;
 const FST_X0 = -4.1; // flybridge stairs (cockpit, port side)
 const FST_X1 = -2.4;
-const FST_Z0 = -2.55;
-const FST_Z1 = -2.0;
+const FST_Z0 = -2.45; // inboard of the flybridge's port rail (z -2.6), so the landing at the top is roomy
+const FST_Z1 = -1.85;
 const FST_N = 7;
 const BENCH_Y = 1.93;
 const ABENCH_X0 = -5.15; // aft cockpit bench (locker)
@@ -515,6 +515,8 @@ interface Obstacle {
   y1: number;
   /** Only while this returns true (the saloon door). */
   when?: () => boolean;
+  /** Only for people whose feet are at least this high (rails round a stairwell don't stop you on the stairs). */
+  minFeet?: number;
 }
 
 function hitShape(s: Shape, x: number, z: number, r: number): boolean {
@@ -551,10 +553,10 @@ const OBSTACLES: Obstacle[] = (() => {
   o.push(box(2.6, 3.1, -1.05, 1.05, S0, S0 + 0.95));
   for (const k of [-1, 1]) o.push(box(1.45, 3.1, k < 0 ? -1.05 : 0.62, k < 0 ? -0.62 : 1.05, S0, S0 + 0.5));
   o.push(box(2.72, 3.25, 1.6, SAL_Z, S0, S0 + 0.8));
-  // guard rails round the hull stairwells (saloon level only)
+  // guard rails round the hull stairwells (for people up on the saloon floor or the top step only)
   for (const k of [-1, 1]) {
-    o.push(seg(-0.55, k * HST_Z0, HST_X1, k * HST_Z0, S0, S0 + 0.95, 0.03));
-    o.push(seg(HST_X1, k * HST_Z0, HST_X1, k * SAL_Z, S0, S0 + 0.95, 0.03));
+    o.push({ ...seg(-0.55, k * HST_Z0, HST_X1, k * HST_Z0, S0, S0 + 0.95, 0.03), minFeet: DECK_Y - 0.4 });
+    o.push({ ...seg(HST_X1, k * HST_Z0, HST_X1, k * SAL_Z, S0, S0 + 0.95, 0.03), minFeet: DECK_Y - 0.4 });
   }
   // cockpit table, windlass, mast
   o.push(box(-3.9, -2.9, -0.55, 0.55, S0, S0 + 0.75));
@@ -599,10 +601,13 @@ function blocked(x: number, z: number, r: number, y?: number): boolean {
   for (const ob of OBSTACLES) {
     if (ob.y1 < lo || ob.y0 > hi) continue;
     if (ob.when && !ob.when()) continue;
+    if (ob.minFeet !== undefined && feet < ob.minFeet) continue;
     if (hitShape(ob.shape, x, z, r)) return true;
   }
-  // below the saloon floor you're inside a hull: its sides are walls
-  if (feet < DECK_Y - 0.6 && inHullRoom(x, z) && hullWallHit(x, z, r)) return true;
+  // below the saloon floor, near a hull, you're inside it: its sides and ends are walls
+  if (feet < DECK_Y - 0.6 && feet > HFLOOR_Y - 0.3 && x > HLIN_X0 - 0.6 && x < HLIN_X1 + 0.6 && Math.abs(Math.abs(z) - HZ) < 1.3) {
+    if (!inHullRoom(x, z) || hullWallHit(x, z, r)) return true;
+  }
   return false;
 }
 
@@ -1954,7 +1959,7 @@ function stackPack(p: Part, main: RGB, edge: RGB): void {
     let w = 0.42 - 0.12 * s;
     h *= 1 + 0.02 * Math.sin(s * 53 + 1);
     w *= 1 + 0.04 * Math.sin(s * 53) + 0.015 * Math.sin(s * 131);
-    const endR = s > 0.97 ? Math.sqrt(Math.max(0, 1 - ((s - 0.97) / 0.03) ** 2)) : 1;
+    const endR = s > 0.97 ? Math.max(0.15, Math.sqrt(Math.max(0, 1 - ((s - 0.97) / 0.03) ** 2))) : 1;
     const ring: number[] = [];
     for (let k = 0; k < K; k++) {
       const a = (k / K) * Math.PI * 2;
@@ -2121,8 +2126,8 @@ function canvasCatcher(p: Part, shown: number, clothBox: THREE.Box3): void {
   const yAt = (x: number, z: number) => {
     const u = (x - x0) / Math.max(0.01, x1 - x0);
     const w = (z - z0) / (z1 - z0);
-    let y = 3.5 + 0.06 * u - 0.12 * Math.sin(Math.PI * u) * Math.sin(Math.PI * w) * s;
-    y -= 0.1 * s * Math.exp(-((x - funnel.x) ** 2 + (z - funnel.z) ** 2) / 0.05);
+    let y = 3.66 + 0.02 * u - 0.08 * Math.sin(Math.PI * u) * Math.sin(Math.PI * w) * s;
+    y -= 0.06 * s * Math.exp(-((x - funnel.x) ** 2 + (z - funnel.z) ** 2) / 0.05);
     return y;
   };
   clothBox.makeEmpty();
@@ -2148,10 +2153,10 @@ function canvasCatcher(p: Part, shown: number, clothBox: THREE.Box3): void {
     p.smoothNormals(v0, i0);
   }
   const low = yAt(funnel.x, funnel.z);
-  p.add(new THREE.CylinderGeometry(0.06, 0.016, 0.09, 10), COL.funnel, M(funnel.x, low - 0.045, funnel.z));
-  clothBox.expandByPoint(V(funnel.x, low - 0.09, funnel.z));
+  p.add(new THREE.CylinderGeometry(0.06, 0.016, 0.08, 10), COL.funnel, M(funnel.x, low - 0.04, funnel.z));
+  clothBox.expandByPoint(V(funnel.x, low - 0.08, funnel.z));
   const f = FILLER(1);
-  tube(p, curve([V(funnel.x, low - 0.09, funnel.z), V(funnel.x + 0.2, 2.9, 2.0), V(f.x - 0.1, 2.2, f.z - 0.05), V(f.x, DECK_Y + 0.03, f.z)], 14), 0.012, 6, COL.hose);
+  tube(p, curve([V(funnel.x, low - 0.08, funnel.z), V(funnel.x + 0.2, 2.9, 2.0), V(f.x - 0.1, 2.2, f.z - 0.05), V(f.x, DECK_Y + 0.03, f.z)], 14), 0.012, 6, COL.hose);
   for (const [x, z, tx, tz] of [
     [x0, z0, X_AFTBEAM + 0.05, -(HZ + 0.62)],
     [x0, z1, X_AFTBEAM + 0.05, HZ + 0.62],

@@ -27,7 +27,7 @@ import { createSandMaterial } from './render/sandMaterial';
 import { SandTiles } from './render/sandTiles';
 import { createDistantIslands, createRocks, createVegetation, rockTop, type RegionBounds } from './render/scenery';
 import { SKY, createSky } from './render/sky';
-import { createSloop } from './render/sloop';
+import { createCatamaran } from './render/catamaran';
 import { FINDS } from './content/finds';
 import { Beach, BeachView } from './game/beach';
 import { Player, type PlayerMode } from './player/player';
@@ -117,9 +117,9 @@ ocean.mesh.name = 'ocean';
 scene.add(ocean.mesh);
 const seaHeight = (x: number, z: number, t: number) => ocean.heightAt(x, z, t);
 
-// Your boat.
-const BOAT_IS_CAT = false;
-const sloop = createSloop();
+// Your boat: a 45 ft catamaran (v0.7; the old sloop is in render/sloop.ts). Still called "sloop" in this file.
+const BOAT_IS_CAT = true;
+const sloop = createCatamaran();
 scene.add(sloop.group);
 sloop.group.traverse((o) => {
   if ((o as THREE.Mesh).isMesh) {
@@ -579,7 +579,7 @@ function renderChart(): void {
 
 function nearHelm(): boolean {
   const h = sloop.points.helm;
-  return player.mode === 'deck' && Math.hypot(player.pos.x - h.x, player.pos.z - h.z) < 1.2;
+  return player.mode === 'deck' && Math.abs(player.pos.y - h.y) < 0.6 && Math.hypot(player.pos.x - h.x, player.pos.z - h.z) < 1.2;
 }
 
 function takeHelm(): void {
@@ -1473,8 +1473,10 @@ function currentAction(): Action {
     // The locker and the tiller are side by side in the cockpit: offer whichever you're nearer.
     const lk = sloop.points.locker;
     const hm = sloop.points.helm;
-    const dLocker = beach.state.basket.length ? Math.hypot(player.pos.x - lk.x, player.pos.z - lk.z) : Infinity;
-    const dHelm = Math.hypot(player.pos.x - hm.x, player.pos.z - hm.z);
+    // (Only spots on your own level: the helm is up on the flybridge.)
+    const level = (p: THREE.Vector3) => Math.abs(player.pos.y - p.y) < 0.7;
+    const dLocker = beach.state.basket.length && level(lk) ? Math.hypot(player.pos.x - lk.x, player.pos.z - lk.z) : Infinity;
+    const dHelm = level(hm) ? Math.hypot(player.pos.x - hm.x, player.pos.z - hm.z) : Infinity;
     // The galley, the workbench and the pump too: whichever spot you're nearest.
     const opts: [number, number, Action][] = [
       [dLocker, 1.4, { kind: 'locker', label: 'Empty your basket into the locker' }],
@@ -1584,6 +1586,9 @@ function pickUp(id: number): void {
 
 // ---------- living aboard ----------
 
+/** The boat's fittings for living aboard. On the catamaran the "hatch" is the saloon door: it stays open. */
+const livingRig: LivingRig | null = rig ? (BOAT_IS_CAT ? Object.assign(Object.create(rig), { setHatch: undefined }) : (rig as unknown as LivingRig)) : null;
+
 // The fishing line and float, in the world (skipped by the under-the-water picture).
 const fishingLine = new FishingLine();
 scene.add(fishingLine.group);
@@ -1601,7 +1606,7 @@ const living = new Living({
   input,
   isTouch,
   points: sloop.points as unknown as { galley?: THREE.Vector3; workbench?: THREE.Vector3; pump?: THREE.Vector3; locker: THREE.Vector3 },
-  rig: () => rig as unknown as LivingRig | null,
+  rig: () => livingRig,
   floorAt: (x, z) => seaBed.floorAt(x, z),
   seaHeight: (x, z) => seaHeight(x, z, time),
   openness,
@@ -1633,18 +1638,19 @@ const living = new Living({
 
 // ---------- the garden ----------
 
-/** The garden's models (the pots on deck are a little smaller, to fit the cabin-top trays). */
+/** The garden's models (the old sloop's trays needed smaller pots; the catamaran's planter shelf takes full-size ones). */
+const POT_SCALE = BOAT_IS_CAT ? 1 : DECK_POT_SCALE;
 const gardenViews: GardenViews = {
   plant: (size) => {
     const p = new PlantView(size);
-    if (size === 'pot') p.group.scale.setScalar(DECK_POT_SCALE);
+    if (size === 'pot') p.group.scale.setScalar(POT_SCALE);
     return p;
   },
-  pot: () => potModel(DECK_POT_SCALE),
+  pot: () => potModel(POT_SCALE),
   bed: () => bedModel(),
   barrel: () => barrelModel(),
   sign: (text) => signModel(text),
-  soil: { pot: GARDEN_SOIL.pot * DECK_POT_SCALE, bed: GARDEN_SOIL.bed },
+  soil: { pot: GARDEN_SOIL.pot * POT_SCALE, bed: GARDEN_SOIL.bed },
 };
 const gardenRain = newWeather();
 const gardening = new Gardening({
@@ -1656,7 +1662,7 @@ const gardening = new Gardening({
   signAt: HOME_GARDEN.sign,
   groundAt: (x, z) => ground.heightAt(x, z),
   views: gardenViews,
-  player: () => ({ mode: player.mode, x: player.pos.x, z: player.pos.z }),
+  player: () => ({ mode: player.mode, x: player.pos.x, y: player.pos.y, z: player.pos.z }),
   dayNow: () => clock.day + clock.hour / 24,
   useTankWater: (d) => {
     if (living.aboard.water < d) return false;

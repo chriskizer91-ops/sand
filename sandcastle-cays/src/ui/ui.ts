@@ -263,7 +263,7 @@ export class Ui {
       </ul>
       <h3>Sailing</h3>
       <ul>
-        <li><b>Take the helm</b> in the cockpit (E, or the round button). Steer with A and D (phone: your left thumb). W and S raise and lower the sails (phone: “More sail” and “Less sail”). X drops or raises the anchor. E lets go.</li>
+        <li><b>Take the helm</b> up on the flybridge (the steps go up from the cockpit): E, or the round button. Steer with A and D (phone: your left thumb). W and S raise and lower the sails (phone: “More sail” and “Less sail”). X drops or raises the anchor. E lets go.</li>
         <li><b>The outboard</b>: R for more motor, F for less (and on into reverse). It does about 5 knots, much slower than sailing. Use it to get out of irons, through the gap in the reef, up to an anchorage, or backwards off a sandbank. It goes off when you let go of the tiller.</li>
         <li>You can’t sail straight into the wind. If the sails flap and you slow down (“in irons”), turn away from the wind. To go upwind, zig-zag. The little dial shows where the wind comes from; the red wedge is where you can’t sail.</li>
         <li>You’re fastest with the wind from the side. The reef around Home Cay has one gap, to the south-west: hitting the reef scrapes the hull.</li>
@@ -273,18 +273,23 @@ export class Ui {
         <li><b>Squalls</b> are the dark clouds with rain hanging under them, drifting west. Sail into one for a burst of wind and rain (take in sail first!). They pass in a minute or two.</li>
         <li><b>The sea buoy</b> is the red-and-white buoy out to the south-east. Sail out round it and back to anchor at Home Cay, and your time goes in the logbook.</li>
       </ul>
+      <h3>Your catamaran</h3>
+      <ul>
+        <li>The cockpit is at the back. Through the sliding door is the saloon, with the galley, the table and the chart table. Steps lead down into each hull: your cabin to port (left), the workshop to starboard (right). The flybridge with the wheel is up the steps from the cockpit.</li>
+        <li><b>Sleep</b>: at anchor after sunset, go to your bunk and press E (or tap) to sleep until morning.</li>
+      </ul>
       <h3>Living aboard</h3>
       <ul>
         <li><b>Stores</b>: the bowl and the drop at the top show how many days of food and water you have. You use a day of each every day. Run out and you’re slower until you top up. Tap them (or go below to the galley) for more.</li>
         <li><b>Fishing</b>: tap the rod button (G on a laptop) on deck or on the shore, face the water and cast. When the float dips, strike quickly! Then hold to reel in, and ease off when the line goes red or it snaps. Different fish bite in different places: try the shallow flats, the lagoon, and out on the open sea.</li>
-        <li><b>The galley</b> is down the companionway, at the front of the cockpit. Cook your fish there (fresh fish keeps a day and a half), and open coconuts from the locker.</li>
+        <li><b>The galley</b> is in the saloon. Cook your fish there (fresh fish keeps a day and a half), and open coconuts from the locker.</li>
         <li><b>Water</b>: rain runs off the awning into the tank at anchor (and off the mainsail when sailing). Sail to meet a squall and anchor under it!</li>
         <li><b>Coconuts</b>: shake a palm on the beach and one or two fall. Pick them up like any find.</li>
-        <li><b>Upkeep</b>: a badly scraped hull leaks, so pump the bilge (the pump is in the cockpit). Sailing hard when she’s overpowered wears the sails. Mend both at the <b>workbench</b> on the stern, with finds from the locker. New finds give you new ideas there: a bigger rain catcher, water jugs, a lure, a fish trap.</li>
+        <li><b>Upkeep</b>: a badly scraped hull leaks, so pump the bilge (the pump is in the cockpit). Sailing hard when she’s overpowered wears the sails. Mend both at the <b>workbench</b> in the starboard hull, with finds from the locker. New finds give you new ideas there: a bigger rain catcher, water jugs, a lure, a fish trap.</li>
       </ul>
       <h3>The garden</h3>
       <ul>
-        <li><b>Pots</b> on the cabin top, and <b>beds</b> in the Home Cay garden (just up the grass from the sandcastle cove). Walk up to one and press E (or tap) to plant from your seed tin.</li>
+        <li><b>Pots</b> on the shelf in front of the saloon windows, and <b>beds</b> in the Home Cay garden (just up the grass from the sandcastle cove). Walk up to one and press E (or tap) to plant from your seed tin.</li>
         <li>Water every day: pots from the boat’s tank, beds from the rain barrel. Rain waters them too. A plant only grows on days it has water, and withers after three dry days.</li>
         <li>Harvest when ripe: food for the larder and seeds back. Callaloo grows back after you cut it. Make more pots at the workbench.</li>
       </ul>

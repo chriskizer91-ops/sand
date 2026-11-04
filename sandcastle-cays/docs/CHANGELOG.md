@@ -1,5 +1,35 @@
 # What changed, version by version (plain language)
 
+## v0.7, A bigger boat
+Your boat is now a 45 ft (13.7 m) catamaran: a floating home you can walk around inside.
+
+**What's new**
+- **The catamaran:** two white hulls with a teal stripe, teak decks and blue sail covers, as before, but much bigger.
+  - **The cockpit** at the back, with the locker and the bilge pump.
+  - **The saloon** through the sliding door: the galley, a table with blue cushions, and a chart table (press E there to see the chart). Windows all round.
+  - **Steps down into each hull:** your cabin with a double bunk to port, and a workshop with the workbench to starboard.
+  - **The flybridge** on the saloon roof, up steps from the cockpit: a big wooden wheel with a compass and a view all round. That's where you steer now.
+  - **The trampoline** between the bows (you can walk on it), and swim steps at the back of each hull, with the ladder on the right-hand one.
+  - **A planter shelf** in front of the saloon windows for your four pots, full-size now.
+- **Sleep:** at anchor after sunset, go to your bunk and press E to sleep until morning. The stores and the garden carry on while you sleep.
+- **Sailing a catamaran:**
+  - she's faster on a reach (about 9 knots, surfing to 12);
+  - she can't point quite as close to the wind (about 44°);
+  - she turns more slowly, being bigger;
+  - she hardly leans, but she still tells you when she's overpowered;
+  - two engines, about 5½ knots;
+  - two wakes, and spray from whichever bow meets a wave.
+- **Aground:** with two wide hulls, back off with the motors before you turn away (or "Push off").
+- An older save loads with you standing in the new cockpit.
+
+**Checks before sending**
+CHECKS_PLACEHOLDER
+
+**Not tested, or known**
+- How the bigger boat feels to walk around and sail: is anything hard to find? Tell me.
+- Speed on your Pixel: the catamaran has an inside to draw (about 80,000 triangles, against about 50,000 for the old boat).
+- The saloon is fairly dim at night (lamps glow, but they don't really light the room).
+
 ## v0.6, The garden
 Grow your own food: pots on the boat's cabin top, and a little garden on Home Cay.
 

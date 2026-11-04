@@ -322,9 +322,11 @@ export class Living {
     return i.isDown('KeyE') || i.isDown('Use') || i.isDown('Action');
   }
 
+  /** How far a spot on the boat is (Infinity if it's on another level: the hull cabins, the saloon, the flybridge). */
   private distTo(p: THREE.Vector3 | undefined): number {
     if (!p) return Infinity;
     const pl = this.ctx.player;
+    if (Math.abs(pl.pos.y - p.y) > 0.7) return Infinity;
     return Math.hypot(pl.pos.x - p.x, pl.pos.z - p.z);
   }
 
@@ -368,7 +370,7 @@ export class Living {
     const a = this.aboard;
     // Still offered for a moment after it's dry, so an extra press doesn't open the galley next to it.
     if (a.bilge > 0.03 || this.clock - this.lastStroke < 2.5) opts.push([this.distTo(ctx.points.pump), { kind: 'pump', label: a.bilge > 0.005 ? `Pump the bilge (${Math.round(a.bilge * 100)}% full)` : 'The bilge is dry' }]);
-    opts.push([this.distTo(ctx.points.galley), { kind: 'galley', label: 'Go below to the galley' }]);
+    opts.push([this.distTo(ctx.points.galley), { kind: 'galley', label: 'Use the galley' }]);
     opts.push([this.distTo(ctx.points.workbench), { kind: 'workbench', label: 'Use the workbench' }]);
     return opts;
   }
