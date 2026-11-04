@@ -9,11 +9,25 @@ import * as THREE from 'three';
 import { PLAYER } from '../config';
 import type { Trunk } from '../render/islandLife';
 
+/**
+ * The boat's walkable surfaces, in boat-local metres. A boat can have several
+ * levels (a catamaran's hull cabins, saloon and flybridge): `y` is the height
+ * of your feet, so each question is asked at your own level. A one-level boat
+ * can ignore it.
+ */
 export interface Deck {
-  heightAt(lx: number, lz: number): number | null;
-  blocked(lx: number, lz: number, r: number): boolean;
-  insideLifelines(lx: number, lz: number): boolean;
+  /** Standing height at lx, lz for feet at y: the highest surface no higher than a stair step above y; null if there's nothing to stand on. */
+  heightAt(lx: number, lz: number, y?: number): number | null;
+  /** A wall or solid fitting in the way at your level. */
+  blocked(lx: number, lz: number, r: number, y?: number): boolean;
+  /** Inside the rails (false = over the side). */
+  insideLifelines(lx: number, lz: number, y?: number): boolean;
+  /** Overall half-width at lx (at deck level or the waterline). */
   halfBeam(lx: number, atDeck: boolean): number;
+  /** For swimmers: how far lx, lz is inside the boat's footprint (plus a little room); 0 when clear. */
+  footprintPen?(lx: number, lz: number): number;
+  /** The ceiling above feet at y (null in the open air). */
+  ceilingAt?(lx: number, lz: number, y: number): number | null;
 }
 
 export interface BoatRef {
@@ -77,7 +91,8 @@ export class Player {
   placeAboard(local: THREE.Vector3, yaw: number): void {
     this.mode = 'deck';
     this.pos.copy(local);
-    const h = this.world.boat.deck.heightAt(local.x, local.z);
+    // The spot's own height says which level it's on.
+    const h = this.world.boat.deck.heightAt(local.x, local.z, local.y);
     if (h !== null) this.pos.y = h;
     this.yaw = yaw;
     this.vy = 0;
@@ -155,7 +170,7 @@ export class Player {
         if (c.dir === 'up') {
           this.mode = 'deck';
           this.pos.copy(c.to);
-          const h = w.boat.deck.heightAt(c.to.x, c.to.z);
+          const h = w.boat.deck.heightAt(c.to.x, c.to.z, c.to.y);
           if (h !== null) this.pos.y = h;
           ev.climbed = 'up';
         } else {
@@ -193,9 +208,10 @@ export class Player {
       const tryMove = (dx: number, dz: number): boolean => {
         const nx = this.pos.x + dx;
         const nz = this.pos.z + dz;
-        const h = deck.heightAt(nx, nz);
-        const high = this.airborne && this.pos.y - (deck.heightAt(this.pos.x, this.pos.z) ?? this.pos.y) > 0.4;
-        const outside = h === null || !deck.insideLifelines(nx, nz);
+        const y = this.pos.y;
+        const h = deck.heightAt(nx, nz, y);
+        const high = this.airborne && y - (deck.heightAt(this.pos.x, this.pos.z, y) ?? y) > 0.4;
+        const outside = h === null || !deck.insideLifelines(nx, nz, y);
         if (outside) {
           // The gap in the lifelines is at the ladder: step through it and climb down.
           const lt = w.boat.ladderTop;
@@ -204,7 +220,7 @@ export class Player {
             return true;
           }
           // Already standing outside the lifelines (on the edge of the deck)? Step off into the sea.
-          const onEdge = !deck.insideLifelines(this.pos.x, this.pos.z);
+          const onEdge = !deck.insideLifelines(this.pos.x, this.pos.z, y);
           if (h === null && (high || onEdge)) {
             this.leaveBoat(nx, nz, ev);
             return true;
@@ -213,8 +229,8 @@ export class Player {
           if (!high) return false;
         }
         if (h === null) return false;
-        if (deck.blocked(nx, nz, PLAYER.radius * 0.8)) return false;
-        if (!this.airborne && h - this.pos.y > PLAYER.step) return false;
+        if (deck.blocked(nx, nz, PLAYER.radius * 0.8, y)) return false;
+        if (!this.airborne && h - y > PLAYER.step) return false;
         this.pos.x = nx;
         this.pos.z = nz;
         return true;
@@ -226,8 +242,8 @@ export class Player {
         this.refresh();
         return ev;
       }
-      const floor = deck.heightAt(this.pos.x, this.pos.z) ?? this.pos.y;
-      this.verticalStep(dt, floor, jump);
+      const floor = deck.heightAt(this.pos.x, this.pos.z, this.pos.y) ?? this.pos.y;
+      this.verticalStep(dt, floor, jump, deck.ceilingAt?.(this.pos.x, this.pos.z, floor) ?? null);
       this.walkBob(dt, speed, ev, 'deck');
       this.refresh();
       return ev;
@@ -332,7 +348,7 @@ export class Player {
     return ev;
   }
 
-  private verticalStep(dt: number, floor: number, jump: boolean): void {
+  private verticalStep(dt: number, floor: number, jump: boolean, ceiling: number | null = null): void {
     if (jump && !this.airborne) {
       this.vy = PLAYER.jump;
       this.airborne = true;
@@ -341,6 +357,11 @@ export class Player {
       this.vy -= PLAYER.gravity * dt;
       this.pos.y += this.vy * dt;
       this.airborne = true;
+      // Indoors you bump your head on the ceiling rather than jumping through it.
+      if (ceiling !== null && this.pos.y + PLAYER.eye + 0.15 > ceiling) {
+        this.pos.y = Math.max(floor, ceiling - PLAYER.eye - 0.15);
+        this.vy = Math.min(0, this.vy);
+      }
       if (this.pos.y <= floor) {
         this.pos.y = floor;
         this.vy = 0;
@@ -372,19 +393,32 @@ export class Player {
   private hullPen(x: number, z: number): number {
     const b = this.world.boat;
     b.obj.worldToLocal(tmp2.set(x, 0, z));
-    const hb = b.deck.halfBeam(tmp2.x, true);
-    if (hb <= 0) return 0;
-    return Math.max(0, hb + 0.3 - Math.abs(tmp2.z));
+    return this.localPen(tmp2.x, tmp2.z);
   }
 
-  /** If you're pressed into the hull, ease you out sideways (so you can never get stuck against it). */
+  private localPen(lx: number, lz: number): number {
+    const d = this.world.boat.deck;
+    if (d.footprintPen) return d.footprintPen(lx, lz);
+    const hb = d.halfBeam(lx, true);
+    if (hb <= 0) return 0;
+    return Math.max(0, hb + 0.3 - Math.abs(lz));
+  }
+
+  /** If you're pressed into the hull, ease you out the shortest way (so you can never get stuck against it). */
   private pushOutOfHull(dt: number): void {
     const pen = this.hullPen(this.pos.x, this.pos.z);
     if (pen <= 0) return;
     const b = this.world.boat;
     b.obj.worldToLocal(tmp2.set(this.pos.x, 0, this.pos.z));
-    const side = tmp2.z >= 0 ? 1 : -1;
-    tmp2.z += side * Math.min(pen, Math.max(0.02, 2.5 * dt));
+    // Whichever way (out to the side, or off the bow or stern) clears it soonest.
+    const step = Math.min(pen, Math.max(0.02, 2.5 * dt));
+    let best = { dx: 0, dz: tmp2.z >= 0 ? step : -step, pen: Infinity };
+    for (const [dx, dz] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+      const p = this.localPen(tmp2.x + dx * 0.6, tmp2.z + dz * 0.6);
+      if (p < best.pen) best = { dx: dx * step, dz: dz * step, pen: p };
+    }
+    tmp2.x += best.dx;
+    tmp2.z += best.dz;
     tmp2.y = 0;
     b.obj.localToWorld(tmp2);
     this.pos.x = tmp2.x;

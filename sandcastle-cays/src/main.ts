@@ -1229,7 +1229,8 @@ function restoreGame(raw: unknown): void {
   const p = g.player;
   if (p && Array.isArray(p.pos) && p.pos.length === 3 && p.pos.every(Number.isFinite)) {
     const v = new THREE.Vector3(p.pos[0], p.pos[1], p.pos[2]);
-    if (p.mode === 'deck') player.placeAboard(v, p.yaw ?? START_YAW);
+    // Aboard: back in the cockpit (a save from an older boat's deck may not fit this one).
+    if (p.mode === 'deck') player.placeAboard(g.version === GAME_VERSION ? v : sloop.points.spawn.clone(), p.yaw ?? START_YAW);
     else player.placeWorld(v.x, v.z, p.yaw ?? START_YAW);
     if (Number.isFinite(p.pitch)) player.pitch = p.pitch as number;
   }
@@ -1434,6 +1435,8 @@ type Action =
   | { kind: 'helm'; label: string }
   | { kind: 'living'; a: LivingAction; label: string }
   | { kind: 'garden'; a: GardenAction; label: string }
+  | { kind: 'sleep'; label: string }
+  | { kind: 'charttable'; label: string }
   | null;
 
 const center = new THREE.Vector2(0, 0);
@@ -1462,6 +1465,9 @@ function currentAction(): Action {
       [dHelm, 1.2, { kind: 'helm', label: 'Take the helm' }],
       ...living.deckOptions().map(([d, a]) => [d, 1.0, { kind: 'living', a, label: a.label }] as [number, number, Action]),
       ...(living.rodHeld ? [] : gardening.deckOptions().map(([d, a]) => [d, 0.9, { kind: 'garden', a, label: a.label }] as [number, number, Action])),
+      // Below decks: the bunk and the chart table (on boats that have them).
+      ...boatSpot('bunk', 1.0, { kind: 'sleep', label: canSleepNow() ? 'Sleep until morning' : 'Your bunk (sleep after sunset)' }),
+      ...boatSpot('chart', 1.0, { kind: 'charttable', label: 'Look at the chart' }),
     ];
     opts.sort((x, y) => x[0] - y[0]);
     for (const [d, r, a] of opts) if (d < r) return a;
@@ -1493,6 +1499,55 @@ function doAction(a: Action): void {
   else if (a.kind === 'helm') takeHelm();
   else if (a.kind === 'living') living.doAction(a.a);
   else if (a.kind === 'garden') gardening.doAction(a.a);
+  else if (a.kind === 'sleep') sleepUntilMorning();
+  else if (a.kind === 'charttable') toggleChart(true);
+}
+
+/** A named spot on the boat (boat-local), if the boat has it: [distance, reach, action]. Only on the same level as you. */
+function boatSpot(name: string, reach: number, a: Action): [number, number, Action][] {
+  const p = (sloop.points as unknown as Record<string, THREE.Vector3 | undefined>)[name];
+  if (!p || Math.abs(player.pos.y - p.y) > 0.6) return [];
+  return [[Math.hypot(player.pos.x - p.x, player.pos.z - p.z), reach, a]];
+}
+
+// ---------- sleeping ----------
+
+/** You can sleep from sunset (6 pm) until dawn, at anchor. */
+function canSleepNow(): boolean {
+  return clock.hour >= 18 || clock.hour < 5;
+}
+
+const fadeEl = document.createElement('div');
+fadeEl.id = 'sleepfade';
+document.body.appendChild(fadeEl);
+let sleeping = false;
+
+function sleepUntilMorning(): void {
+  if (sleeping) return;
+  if (!boat.anchored) {
+    ui.toast('Anchor first: you can’t sleep while she’s under way.', 3000);
+    return;
+  }
+  if (!canSleepNow()) {
+    ui.toast('It’s still daytime. You can sleep after sunset (6 pm).', 3000);
+    return;
+  }
+  sleeping = true;
+  fadeEl.classList.add('on');
+  input.unlock();
+  setTimeout(() => {
+    // To dawn: 6:30 tomorrow (or today, if it's already after midnight).
+    if (clock.hour >= 18) clock.day += 1;
+    clock.hour = 6.5;
+    daylight.refresh();
+    washIfDue();
+    changedSinceSave = true;
+    setTimeout(() => {
+      fadeEl.classList.remove('on');
+      sleeping = false;
+      hud.showCard('Good morning', 'You slept until dawn. The stores, the garden and the tide carried on while you slept.', 5000);
+    }, 900);
+  }, 900);
 }
 
 function pickUp(id: number): void {
@@ -1539,6 +1594,12 @@ const living = new Living({
   line: fishingLine,
   tipWorld: (out) => held.rodTipWorld(camera, out),
   prepare: () => prepareFish(),
+  clearOfBoat: (x, z) => {
+    const l = sloop.group.worldToLocal(new THREE.Vector3(x, 0, z));
+    const deck = sloop.deck as { footprintPen?(x: number, z: number): number };
+    const pen = deck.footprintPen ? deck.footprintPen(l.x, l.z) : Math.max(0, 3.5 - Math.hypot(l.x, l.z));
+    return pen <= 0 && Math.hypot(l.x, l.z) > sloop.length * 0.3;
+  },
   palms: trunks,
   dayNow: () => clock.day + clock.hour / 24,
   atHelm: () => atHelm,
@@ -2172,6 +2233,10 @@ void boot();
     return devTools.open;
   },
   living,
+  sleep: () => sleepUntilMorning(),
+  get sleeping() {
+    return sleeping;
+  },
   get weather() {
     return { wind: wind.speed, from: wind.from, open: wind.open, rain: wind.rain, squall: wind.squall, rainHere: rainNow, squalls: squalls.length };
   },

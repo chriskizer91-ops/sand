@@ -33,38 +33,45 @@ const DEG = Math.PI / 180;
 
 export const SAILING = {
   /**
-   * Speed through the water (m/s) on the best point of sail, full sail, in the
-   * usual trade wind: about 8.4 knots. A little quicker than a real boat this
-   * size, so sailing always beats the motor by a long way (the owner's choice).
-   * Stronger wind adds a little more; surfing down waves adds a lot.
+   * Your boat is a 45 ft (13.7 m) cruising catamaran (v0.7). Speed through the
+   * water (m/s) on the best point of sail, full sail, in the usual trade wind:
+   * about 9 knots, so sailing always beats the motors by a long way (the
+   * owner's choice). Stronger wind adds a little more; surfing adds a lot.
    */
-  topSpeed: 4.3,
+  topSpeed: 4.6,
   /** How quickly speed builds and fades (per second). */
   accel: 0.3,
   decel: 0.45,
   /** Most the rudder turns (radians) and the fastest turn at full speed (radians per second). */
   rudderMax: 0.55,
-  turnRate: 0.36,
+  turnRate: 0.3,
   /** Hoisting or lowering the sails takes about this many seconds end to end. */
   hoistTime: 3.2,
-  /** The keel's depth below the waterline (m). */
-  draft: 1.45,
-  /** Edge of the no-go zone, and where the sails are fully drawing. */
-  noGo: 38 * DEG,
-  closeHauled: 50 * DEG,
+  /** The keels' depth below the waterline (m): a little keel under each hull. */
+  draft: 1.3,
+  /** Where the two hulls' centrelines are (m to either side). */
+  hulls: [-2.75, 2.75],
+  /** A catamaran can't point as close to the wind as a monohull: the edge of the no-go zone, and where the sails are fully drawing. */
+  noGo: 44 * DEG,
+  closeHauled: 56 * DEG,
   /** Anchoring: only slowly, and in water no deeper than this (m). */
   anchorSpeed: 1.2,
   anchorDepth: 16,
   /** Usual trade-wind strength (m/s, about 13 knots). */
   windSpeed: 6.5,
-  /** The outboard (about 6 hp): full ahead about 5 knots, full astern about 2.5 knots (m/s). It gets her moving quickly. */
-  motorAhead: 2.6,
+  /** The two small engines: full ahead about 5.5 knots, full astern about 2.5 knots (m/s). They get her moving quickly. */
+  motorAhead: 2.8,
   motorAstern: 1.3,
   motorBite: 1.2,
-  /** Past this much heel (radians, about 24°) she's overpowered: she slows, and fights to turn up into the wind. */
+  /**
+   * How hard the wind is pressing on her (`heel` in BoatState: a monohull would
+   * lean this far, in radians). A catamaran hardly leans: she shows only
+   * `heelShown` of it. Past `overHeel` she's overpowered: she slows, and fights
+   * to turn up into the wind.
+   */
   overHeel: 0.42,
-  /** The most she leans (radians, about 40°). */
   maxHeel: 0.7,
+  heelShown: 0.18,
   /** Surfing: extra speed (m/s) for each unit of downhill slope of the sea under her, running or reaching fast. */
   surf: 32,
   surfMax: 2.6,
@@ -202,11 +209,28 @@ export function keelShortfall(sea: SeaBed, x: number, z: number, h: number): num
   const c = Math.cos(h);
   const s = Math.sin(h);
   let worst = -Infinity;
-  for (const along of [-1.6, 0, 1.4, 3.4]) {
-    const depth = Math.abs(along) < 1.7 ? SAILING.draft : along > 0 ? 0.65 : 0.9;
-    worst = Math.max(worst, sea.floorAt(x + c * along, z + s * along) + depth);
+  // Along each hull; starboard of the bow is (-sin h, cos h).
+  for (const off of SAILING.hulls) {
+    for (const along of [-6, -3.2, 0, 3.2, 6]) {
+      const depth = Math.abs(along) < 4 ? SAILING.draft : along > 0 ? 0.6 : 0.8;
+      worst = Math.max(worst, sea.floorAt(x + c * along - s * off, z + s * along + c * off) + depth);
+    }
   }
   return worst;
+}
+
+/** How much of her is on the bottom: the sum of how far each point along both keels is into it (0 = afloat). */
+export function keelContact(sea: SeaBed, x: number, z: number, h: number): number {
+  const c = Math.cos(h);
+  const s = Math.sin(h);
+  let sum = 0;
+  for (const off of SAILING.hulls) {
+    for (const along of [-6, -3.2, 0, 3.2, 6]) {
+      const depth = Math.abs(along) < 4 ? SAILING.draft : along > 0 ? 0.6 : 0.8;
+      sum += Math.max(0, sea.floorAt(x + c * along - s * off, z + s * along + c * off) + depth);
+    }
+  }
+  return sum;
 }
 
 /** Is the boat touching bottom at x, z, heading h? */
@@ -310,9 +334,9 @@ export function stepBoat(b: BoatState, w: WindState, helm: HelmInput, sea: SeaBe
     b.heading = wrap(b.heading + dir * (b.rudder / SAILING.rudderMax) * SAILING.turnRate * grip * (1 - 0.5 * Math.min(1, over * 3)) * dt);
     // Overpowered, she tries to turn up into the wind ("rounding up"); steer away, or take in sail.
     if (over > 0 && Math.abs(twa) > SAILING.noGo) b.heading = wrap(b.heading + Math.sign(twa) * 1.5 * over * dt);
-    // Turning can't swing her keel further into the bottom.
-    const before = keelShortfall(sea, b.x, b.z, h0);
-    if (keelShortfall(sea, b.x, b.z, b.heading) > Math.max(0, before) + 1e-4) b.heading = h0;
+    // Turning can't swing her keels further onto the bottom.
+    const before = keelContact(sea, b.x, b.z, h0);
+    if (keelContact(sea, b.x, b.z, b.heading) > before + 1e-4) b.heading = h0;
     // Leeway: she slips a little sideways, away from the wind, when sailing across or into it.
     const side = Math.abs(twa) < 120 * DEG ? 4 * DEG * drive(twa) * b.sail : 0;
     const leeSign = twa >= 0 ? -1 : 1; // wind from starboard pushes her to port
@@ -324,10 +348,9 @@ export function stepBoat(b: BoatState, w: WindState, helm: HelmInput, sea: SeaBe
     const nx = b.x + vx * dt;
     const nz = b.z + vz * dt;
     b.scrapeCool = Math.max(0, (b.scrapeCool ?? 0) - dt);
-    const shortNow = keelShortfall(sea, b.x, b.z, b.heading);
     const shortNext = keelShortfall(sea, nx, nz, b.heading);
-    if (shortNext > 0 && b.aground && shortNext <= Math.max(0, shortNow) + 1e-4) {
-      // Stuck, but heading for deeper water (or no shallower): she drags slowly over the bottom.
+    if (shortNext > 0 && b.aground && keelContact(sea, nx, nz, b.heading) < keelContact(sea, b.x, b.z, b.heading) - 1e-6) {
+      // Stuck, but working her way off (less of her on the bottom each time): she drags slowly over it.
       b.speed = Math.max(-0.5, Math.min(0.5, b.speed));
       b.agroundTime = (b.agroundTime ?? 0) + dt;
       b.x = b.x + (nx - b.x) * Math.min(1, 0.5 / Math.max(0.5, Math.hypot(vx, vz)));
@@ -425,7 +448,7 @@ export function autopilot(b: BoatState, w: WindState, c: Course): { steer: numbe
   }
   let want = bearing;
   const off = wrap(bearing - w.from);
-  const tackAngle = 52 * DEG;
+  const tackAngle = 60 * DEG;
   if (Math.abs(off) < tackAngle) {
     // The mark is upwind. A short way: just motor there with the sails down.
     if (dist < 160) return { steer: steerTo(bearing), sailSet: 0, throttle: 0.85, arrived: false };

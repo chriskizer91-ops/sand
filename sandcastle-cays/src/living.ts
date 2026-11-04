@@ -93,6 +93,8 @@ export interface LivingCtx {
   tipWorld(out: THREE.Vector3): THREE.Vector3;
   /** Get the fish models ready (so the first catch doesn't stutter). */
   prepare?(): void;
+  /** Is this world spot clear of the boat (open water to cast into)? */
+  clearOfBoat?(x: number, z: number): boolean;
   palms: { x: number; z: number }[];
   /** The game day now, with the hour as a fraction (day 3, noon = 3.5). */
   dayNow(): number;
@@ -570,7 +572,7 @@ export class Living {
         const z = pl.z + dir.z * d;
         const depth = -ctx.floorAt(x, z);
         const boat = ctx.boat();
-        const clearOfBoat = Math.hypot(x - boat.x, z - boat.z) > 3.5;
+        const clearOfBoat = ctx.clearOfBoat ? ctx.clearOfBoat(x, z) : Math.hypot(x - boat.x, z - boat.z) > 3.5;
         if (depth > 0.5 && clearOfBoat) {
           hit = new THREE.Vector3(x, 0, z);
           break;

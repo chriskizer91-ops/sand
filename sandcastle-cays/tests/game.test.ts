@@ -359,3 +359,59 @@ describe('jumping off a boat that has swung round on its anchor', async () => {
     expect(p.feet.distanceTo(start)).toBeGreaterThan(2);
   });
 });
+
+describe('you, on a boat with several levels (v0.7)', () => {
+  // A made-up two-level boat: a saloon floor at 2.4 m, a cabin below it (floor 0.2 m, ceiling 2.3 m)
+  // under the forward part, and a stair between them from x = 1 to x = 2.5.
+  const SALOON = 2.4;
+  const CABIN = 0.2;
+  const stair = (x: number) => SALOON - Math.min(1, Math.max(0, (x - 1) / 1.5)) * (SALOON - CABIN);
+  const step = (h: number) => Math.round(h / 0.25) * 0.25;
+  const deck: Deck = {
+    heightAt(lx, lz, y = 99) {
+      if (Math.abs(lx) > 5 || Math.abs(lz) > 3) return null;
+      const c: number[] = [];
+      if (lx < 1 || lx > 2.5) c.push(SALOON); // the saloon floor (over the cabin too)
+      if (lx >= 1 && lx <= 2.5) c.push(step(stair(lx)));
+      if (lx > 2.5) c.push(CABIN);
+      const ok = c.filter((h) => h <= y + 0.45);
+      return ok.length ? Math.max(...ok) : null;
+    },
+    blocked(lx, _lz, _r, y = 99) {
+      return y < 1.5 && lx > 4.6; // the cabin's forward wall
+    },
+    insideLifelines: (lx, lz) => Math.abs(lx) < 4.9 && Math.abs(lz) < 2.9,
+    halfBeam: () => 3,
+    ceilingAt: (lx, _lz, y) => (y < 1.5 && lx > 2.5 ? 2.3 : null),
+  };
+  const obj = new THREE.Object3D();
+  obj.updateMatrixWorld(true);
+  const world: PlayerWorld = { groundAt: () => -5, waterAt: () => 0, trunks: [], boat: { obj, deck, ladderTop: new THREE.Vector3(-4, SALOON, 0), ladderBottom: new THREE.Vector3(-5.5, -0.5, 0), length: 10 }, bounds: { cx: 0, cz: 0, r: 100 } };
+
+  it('walks down the stairs into the cabin, and back up to the saloon', () => {
+    const p = new Player(world);
+    p.placeAboard(new THREE.Vector3(0, SALOON, 0), -Math.PI / 2); // facing +x
+    for (let t = 0; t < 4; t += 1 / 30) p.update(1 / 30, { x: 0, y: 1 }, false, false);
+    expect(p.pos.x).toBeGreaterThan(2.6);
+    expect(p.pos.x).toBeLessThan(4.7); // the cabin wall stops you
+    expect(p.pos.y).toBeCloseTo(CABIN, 1);
+    p.yaw = Math.PI / 2; // turn round
+    for (let t = 0; t < 5; t += 1 / 30) p.update(1 / 30, { x: 0, y: 1 }, false, false);
+    expect(p.pos.x).toBeLessThan(1);
+    expect(p.pos.y).toBeCloseTo(SALOON, 1);
+  });
+
+  it('in the cabin you never pop up through the ceiling, even jumping', () => {
+    const p = new Player(world);
+    p.placeAboard(new THREE.Vector3(3.5, CABIN, 0), 0);
+    expect(p.pos.y).toBeCloseTo(CABIN, 5); // placed at the cabin's level, not the saloon above
+    let top = 0;
+    for (let t = 0; t < 2; t += 1 / 30) {
+      p.update(1 / 30, { x: 0, y: 0 }, false, t < 0.05);
+      top = Math.max(top, p.pos.y + 1.62);
+    }
+    expect(top).toBeLessThan(2.3);
+    expect(p.pos.y).toBeCloseTo(CABIN, 1);
+  });
+});
+

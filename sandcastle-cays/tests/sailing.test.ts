@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SAILING, sailPower, keelShortfall, deepWaterNear, touchesBottom, autopilot, boomAngle, drive, dropAnchor, newBoat, pointOfSail, sailFill, stepBoat, weighAnchor, windAngle, windAt, wrap, type Course, type SeaBed, type WindState } from '../src/game/sailing';
+import { SAILING, sailPower, keelShortfall, keelContact, deepWaterNear, touchesBottom, autopilot, boomAngle, drive, dropAnchor, newBoat, pointOfSail, sailFill, stepBoat, weighAnchor, windAngle, windAt, wrap, type Course, type SeaBed, type WindState } from '../src/game/sailing';
 
 const DEG = Math.PI / 180;
 const deep: SeaBed = { floorAt: () => -10 };
@@ -19,7 +19,7 @@ describe('the points of sail', () => {
     expect(drive(90 * DEG)).toBeGreaterThan(0.95);
     expect(drive(180 * DEG)).toBeLessThan(drive(90 * DEG));
     expect(drive(180 * DEG)).toBeGreaterThan(0.6);
-    expect(drive(50 * DEG)).toBeGreaterThan(0.6);
+    expect(drive(SAILING.closeHauled)).toBeGreaterThan(0.6);
     expect(pointOfSail(0)).toBe('in irons');
     expect(pointOfSail(90 * DEG)).toBe('beam reach');
     expect(pointOfSail(-170 * DEG)).toBe('running');
@@ -116,7 +116,7 @@ describe('sailing the sloop', () => {
     expect(Math.abs(windAngle(b, steady))).toBeLessThan(SAILING.noGo + 10 * DEG);
   });
 
-  it('running onto a shallow bar puts her aground and scrapes the hull; steering away floats her off', () => {
+  it('running onto a shallow bar puts her aground and scrapes the hull; backing off floats her, then she can steer away', () => {
     // A sand bar 60 m north of the start, everywhere else deep.
     const bar: SeaBed = { floorAt: (_x, z) => (z > 60 && z < 80 ? -0.6 : -6) };
     const b = newBoat(0, 0, 90 * DEG);
@@ -127,12 +127,16 @@ describe('sailing the sloop', () => {
     expect(b.aground).toBe(true);
     expect(b.hull).toBeLessThan(100);
     expect(b.z).toBeLessThan(62);
-    // Turn away (to starboard, toward the south-east) and sail off.
+    // A catamaran is wide: turning would swing a bow onto the bar, so back off first (motors astern), then turn away.
     const hull = b.hull;
     expect(evs.filter((e) => e.grounded > 0).length).toBe(1); // one knock, not a scrape every second
-    const out = sail(b, 40, 1, bar);
+    b.sailSet = 0;
+    b.throttle = -1;
+    const out = sail(b, 15, 0, bar);
     expect(out.some((e) => e.floated)).toBe(true);
     expect(b.aground).toBe(false);
+    b.throttle = 0.5;
+    sail(b, 25, 1, bar);
     expect(b.hull).toBeGreaterThanOrEqual(hull - 15); // at most one more light knock while turning off
     expect(b.z).toBeLessThan(60);
   });
@@ -244,7 +248,7 @@ describe('the outboard', () => {
     sail(b, 1.5);
     const h0 = b.heading;
     sail(b, 3, 1);
-    expect(Math.abs(wrap(b.heading - h0))).toBeGreaterThan(25 * DEG);
+    expect(Math.abs(wrap(b.heading - h0))).toBeGreaterThan(20 * DEG);
   });
 
   it('astern she goes backwards, and the bow swings the opposite way to ahead', () => {
@@ -445,21 +449,21 @@ describe('getting off when aground (v0.4.1)', () => {
     expect(b.z).toBeLessThan(0.05);
   });
 
-  it('turning while aground can\'t swing her keel deeper into the bottom', () => {
+  it('turning while aground can\'t swing her keels further onto the bottom', () => {
     const b = newBoat(0, -4.5, 90 * DEG);
     weighAnchor(b);
-    const start = keelShortfall(bank, b.x, b.z, b.heading);
+    const start = keelContact(bank, b.x, b.z, b.heading);
     let worst = start;
     for (let t = 0; t < 20; t += 1 / 30) {
       stepBoat(b, steady, { steer: 1, attended: true }, bank, 1 / 30);
-      worst = Math.max(worst, keelShortfall(bank, b.x, b.z, b.heading));
+      worst = Math.max(worst, keelContact(bank, b.x, b.z, b.heading));
     }
-    expect(worst).toBeLessThanOrEqual(Math.max(0, start) + 1e-3);
+    expect(worst).toBeLessThanOrEqual(start + 1e-3);
   });
 
   it('at anchor she swings to the wind but not onto the shallows', () => {
     // Shallow to the west (downwind of an east wind): she would lie back onto it.
-    const west: SeaBed = { floorAt: (x) => (x < -3 ? -0.8 : -5) };
+    const west: SeaBed = { floorAt: (x) => (x < -12 ? -0.8 : -5) };
     const b = newBoat(0, 0, 0);
     b.ax = 1;
     b.az = 0;

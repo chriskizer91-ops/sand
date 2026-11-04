@@ -27,6 +27,8 @@ export class BoatMotion {
     private length: number,
     private beam: number,
     private sea: (x: number, z: number, t: number) => number,
+    /** How much of the wind's lean she shows (a catamaran hardly leans). */
+    private heelScale = 1,
   ) {}
 
   update(t: number, dt: number, pose: BoatPose): void {
@@ -44,7 +46,7 @@ export class BoatMotion {
     this.y += ((hb + hs + hp + hst) / 4 - this.y) * k;
     this.pitch += (Math.atan2(hb - hs, half * 2) * 1.2 - this.pitch) * k;
     const waveRoll = Math.atan2(hst - hp, side * 2) * 1.1 + 0.022 * Math.sin(t * 0.63);
-    this.roll += (waveRoll + pose.heel - this.roll) * k;
+    this.roll += (waveRoll + pose.heel * this.heelScale - this.roll) * k;
     this.boat.position.set(pose.x, this.y, pose.z);
     this.boat.rotation.set(0, 0, 0);
     this.boat.rotateY(-pose.heading);

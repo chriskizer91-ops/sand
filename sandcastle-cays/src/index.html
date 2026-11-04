@@ -169,6 +169,8 @@ body.athelm #rodbtn { display: none; }
 .recipe button[disabled] { opacity: .45; }
 .recipe.unknown .name { color: var(--ink-soft); font-weight: 700; }
 @media (max-width: 640px) { #stores { top: calc(66px + var(--safe-t)); left: 170px; min-height: 32px; padding: 3px 10px 3px 6px; gap: 8px; } #stores .st svg { width: 18px; height: 18px; } #stores b { font-size: 12.5px; } #rodbtn { right: calc(100px + env(safe-area-inset-right, 0px)); } }
+#sleepfade { position: fixed; inset: 0; z-index: 50; background: #050a12; opacity: 0; pointer-events: none; transition: opacity .85s ease; }
+#sleepfade.on { opacity: 1; pointer-events: auto; }
 /* ---------- dev tools ---------- */
 #devtools { position: fixed; z-index: 32; left: 10px; top: calc(66px + var(--safe-t)); width: min(350px, calc(100vw - 20px)); max-height: calc(100% - 150px - var(--safe-t) - var(--safe-b)); overflow: auto; background: rgba(22, 34, 40, .9); color: #e6f2f2; border-radius: 18px; box-shadow: 0 12px 34px rgba(0,0,0,.3); padding: 12px 14px; transition: opacity .15s; }
 #devtools.hidden { opacity: 0; pointer-events: none; }
