@@ -15,7 +15,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string,
 }
 
 export interface DevActions {
-  goTo(id: 'home' | 'pink' | 'gap' | 'open' | 'buoy'): void;
+  goTo(id: 'home' | 'pink' | 'gap' | 'open' | 'buoy' | 'bank'): void;
   pushOff(): void;
   repairHull(): void;
   stopBoat(): void;
@@ -36,6 +36,14 @@ export interface DevActions {
   waterGarden(): void;
   moreSeeds(): void;
   scrapeHull(): void;
+  /** v0.8 */
+  dinghyToWater(): void;
+  fetchDinghy(): void;
+  dentDinghy(): void;
+  sharkLooks(): void;
+  giveBait(): void;
+  finishChapter(): void;
+  resetTips(): void;
   click(): void;
 }
 
@@ -93,6 +101,7 @@ export class DevTools {
       ['Reef gap', () => actions.goTo('gap')],
       ['Open sea', () => actions.goTo('open')],
       ['Sea buoy', () => actions.goTo('buoy')],
+      ['Shark Bank', () => actions.goTo('bank')],
     ]);
     section('Boat');
     row([
@@ -113,6 +122,20 @@ export class DevTools {
       ['Ripen everything', () => actions.growGarden()],
       ['Water everything', () => actions.waterGarden()],
       ['5 more of each seed', () => actions.moreSeeds()],
+    ]);
+    section('Dinghy, sharks and notebook');
+    row([
+      ['Dinghy in the water', () => actions.dinghyToWater()],
+      ['Bring the dinghy back', () => actions.fetchDinghy()],
+      ['Dent the dinghy', () => actions.dentDinghy()],
+    ]);
+    row([
+      ['A shark comes to look', () => actions.sharkLooks()],
+      ['5 pieces of bait', () => actions.giveBait()],
+    ]);
+    row([
+      ['Finish this chapter', () => actions.finishChapter()],
+      ['Show the tips again', () => actions.resetTips()],
     ]);
     section('Weather');
     row([

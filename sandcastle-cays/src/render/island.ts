@@ -33,7 +33,14 @@ export interface IslandBounds {
   z1: number;
 }
 
-export function createIslandGround(terrain: IslandTerrain, sandUniforms: SandUniforms, bounds: IslandBounds = terrain.bounds): THREE.Group {
+/**
+ * @param opts.wetStep   coarser mesh (× this) where the ground is all under water: for a small place
+ *                       like Shark Bank, whose flats are seen only through the sea
+ * @param opts.tileSquares  how many 16 m squares go in one piece (fewer, bigger pieces draw faster)
+ */
+export function createIslandGround(terrain: IslandTerrain, sandUniforms: SandUniforms, bounds: IslandBounds = terrain.bounds, opts: { wetStep?: number; tileSquares?: number } = {}): THREE.Group {
+  const wetStep = opts.wetStep ?? 1;
+  const TILE_SQ = opts.tileSquares ?? TILE_SQUARES;
   const group = new THREE.Group();
   const { material } = createSandMaterial(true, sandUniforms);
   const region = terrain.region;
@@ -76,6 +83,7 @@ export function createIslandGround(terrain: IslandTerrain, sandUniforms: SandUni
       }
       // Fine where you walk; coarser under the water (seen through it), coarsest in the deep.
       steps[sx + sz * nsx] = nearRegion(x0, z0, x0 + SQUARE, z0 + SQUARE, 1.5) ? 0.25 : maxH > -0.7 ? 0.8 : maxH > -3.2 ? 2.0 : maxH > -9 ? SQUARE / 6 : 8.0;
+      if (maxH < -0.05) steps[sx + sz * nsx] = Math.min(SQUARE, steps[sx + sz * nsx] * wetStep);
       dry[sx + sz * nsx] = minH > 0.35 ? 1 : 0;
     }
   }
@@ -87,7 +95,7 @@ export function createIslandGround(terrain: IslandTerrain, sandUniforms: SandUni
       const z0 = bounds.z0 + sz * SQUARE;
       const step = steps[sx + sz * nsx];
       const n = Math.round(SQUARE / step);
-      const key = `${Math.floor(sx / TILE_SQUARES)},${Math.floor(sz / TILE_SQUARES)},${dry[sx + sz * nsx]}`;
+      const key = `${Math.floor(sx / TILE_SQ)},${Math.floor(sz / TILE_SQ)},${dry[sx + sz * nsx]}`;
       let tile = tiles.get(key);
       if (!tile) {
         tile = { pos: [], nrm: [], attr: [], tint: [], idx: [] };

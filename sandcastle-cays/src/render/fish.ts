@@ -60,10 +60,10 @@ export const FISH_LENGTH: Record<FishKind, number> = { grunt: 0.25, snapper: 0.3
 // Profiles
 // ---------------------------------------------------------------------------
 
-type Pts = [number, number][];
+export type Pts = [number, number][];
 
 /** Monotone cubic through the points (no overshoot), clamped at the ends. */
-function spline(pts: Pts): (s: number) => number {
+export function spline(pts: Pts): (s: number) => number {
   const n = pts.length;
   const xs = pts.map((p) => p[0]);
   const ys = pts.map((p) => p[1]);
@@ -102,7 +102,7 @@ function spline(pts: Pts): (s: number) => number {
 }
 
 /** A fast lookup table of f on [0, 1]. */
-function lut(f: (s: number) => number, n = 1024): (s: number) => number {
+export function lut(f: (s: number) => number, n = 1024): (s: number) => number {
   const a = new Float64Array(n + 1);
   for (let i = 0; i <= n; i++) a[i] = f(i / n);
   return (s: number): number => {
@@ -550,12 +550,14 @@ const BODY_VS = [
 ];
 
 function buildBody(sh: Shape): THREE.BufferGeometry {
+  // (rows handed to grid() in [0, 1]: it samples normals either side of each row, clamped to [0, 1])
+  const top = 1 + CAP;
   return grid({
     us: steps(20),
-    vs: BODY_VS,
+    vs: BODY_VS.map((v) => v / top),
     wrapU: true,
-    pos: (u, v) => bodyPos(sh, v, -Math.PI / 2 + TAU * u),
-    uv: (u, v) => [Math.min(1, v) * BODY_U, u],
+    pos: (u, v) => bodyPos(sh, v * top, -Math.PI / 2 + TAU * u),
+    uv: (u, v) => [Math.min(1, v * top) * BODY_U, u],
   });
 }
 
@@ -616,12 +618,16 @@ interface FinGeoSpec {
 }
 
 function finGeo(f: FinGeoSpec): THREE.BufferGeometry {
+  // rows handed to grid() in [0, 1] (it samples normals either side of each row, clamped to [0, 1])
+  const lo = f.vs[0];
+  const hi = f.vs[f.vs.length - 1];
+  const at = (v: number): number => lo + v * (hi - lo);
   return grid({
     us: steps(f.nu),
-    vs: f.vs,
-    pos: f.pos,
-    col: (u, v) => f.col(u, clamp(v, 0, 1)),
-    uv: (u, v) => [u * f.rays, clamp(v, 0, 1)],
+    vs: f.vs.map((v) => (v - lo) / (hi - lo)),
+    pos: (u, v) => f.pos(u, at(v)),
+    col: (u, v) => f.col(u, clamp(at(v), 0, 1)),
+    uv: (u, v) => [u * f.rays, clamp(at(v), 0, 1)],
   });
 }
 

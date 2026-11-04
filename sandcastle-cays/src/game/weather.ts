@@ -26,6 +26,7 @@ function smoothstep(a: number, b: number, v: number): number {
 export const SHELTERS = [
   { x: 4, z: 30, r: 150 }, // Home Cay inside its reef
   { x: -210, z: -300, r: 120 }, // Pink Sand Cay
+  { x: -330, z: 210, r: 95 }, // Shark Bank: the swell breaks on the edge of its flats
 ];
 /** The open sea starts this far beyond the shelters and is fully open this far out (metres). */
 export const OPEN_FROM = 60;

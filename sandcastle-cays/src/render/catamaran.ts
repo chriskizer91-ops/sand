@@ -62,6 +62,7 @@ import {
   V,
   type RGB,
 } from './boatKit';
+import { DINGHY_LIFT } from './dinghy';
 
 // ============================================================ public types
 
@@ -92,6 +93,12 @@ export interface CatPoints {
   chart: THREE.Vector3;
   /** Where you stand beside the owner's double bunk to sleep: in the port hull's forward cabin. */
   bunk: THREE.Vector3;
+  /** Where the dinghy's origin hangs when hoisted in the davits (between the sterns, aft of the crossbeam). */
+  davit: THREE.Vector3;
+  /** The hoisted dinghy's yaw (boat-local rotation about +y): -PI/2, its bow to starboard. */
+  davitYaw: number;
+  /** Where you stand on the port swim platform to step down into the launched dinghy (it floats just aft, between the sterns). */
+  dinghyBoard: THREE.Vector3;
 }
 
 /** Where a person can walk aboard, at several levels: y is the height of their feet. */
@@ -141,6 +148,8 @@ export interface CatRig {
   setTrap(set: boolean): void;
   /** The fishing rod in its holder on the port stern rail. */
   setRodStowed(shown: boolean): void;
+  /** The davit falls: 0 = dinghy hoisted (at points.davit) .. 1 = lowered to the water. The dinghy's origin is then at status().dinghyOrigin (straight down from points.davit). */
+  setFalls(length: number): void;
   status(): CatRigStatus;
 }
 
@@ -179,6 +188,9 @@ export interface CatRigStatus {
   awning: { shown: number; big: boolean; clothBox: THREE.Box3 | null };
   trapSet: boolean;
   rodStowed: boolean;
+  falls: number;
+  /** Where the dinghy's origin is for the current falls (boat-local; turned by points.davitYaw). */
+  dinghyOrigin: THREE.Vector3;
 }
 
 /** Boxes (boat-local) around the fixed fittings, for prompts and placing things. */
@@ -193,6 +205,8 @@ export interface CatFittings {
   helm: THREE.Box3;
   potShelf: THREE.Box3;
   locker: THREE.Box3;
+  /** The two davit arms. */
+  davits: THREE.Box3[];
 }
 
 export interface Catamaran {
@@ -269,6 +283,12 @@ const STEPS: { x0: number; x1: number; y: number }[] = [
   { x0: -6.4, x1: -6.0, y: 0.6 },
   { x0: -6.85, x1: -6.4, y: 0.35 },
 ];
+const DAV_X = -6.05; // the dinghy hangs athwartships here, between the sterns
+const DAV_Z = 1.2; // davit arms DAV_Z either side of the hanging dinghy's middle (above its lifting eyes)
+const DAV_ZC = 0.065; // the hanging dinghy sits a little to starboard, so its stowed outboard (to port) is as clear of the port steps as its bow is of the starboard ones
+const DAV_Y0 = 1.15; // the dinghy's origin when hoisted
+const DAV_TIP_Y = 2.47; // the sheave blocks under the arm tips
+const DAVIT_YAW = -Math.PI / 2; // dinghy bow to starboard: its +x along the boat's +z
 const MAST_X = 3.05;
 const MAST_TOP = 23.3;
 const WHEEL_C = V(0.66, 4.62, 1.1); // wheel hub
@@ -1670,6 +1690,24 @@ function buildRigStatic(metal: Part, cloth: Part): void {
   for (const k of [-1, 1]) rod(cloth, V(MAST_X - 0.08, MAST_TOP - 0.1, k * 0.03), V(MAST_X - 0.09, ROOF_Y + 0.6, k * 0.03), 0.005, 4, COL.line);
 }
 
+/** Two stainless davit arms on the aft crossbeam, with sheave blocks at their tips. */
+function buildDavits(metal: Part): THREE.Box3[] {
+  const boxes: THREE.Box3[] = [];
+  for (const k of [-1, 1]) {
+    const z = DAV_ZC + k * DAV_Z;
+    const m0 = metal.nv;
+    const arm = curve([V(X_AFTBEAM - 0.045, 0.95, z), V(X_AFTBEAM - 0.06, 1.9, z), V(-5.3, 2.4, z), V(-5.48, 2.66, z), V(-5.8, 2.72, z), V(-6.0, 2.64, z), V(DAV_X - 0.02, 2.56, z)], 24);
+    tube(metal, arm, 0.036, 10, COL.steel, true);
+    for (const y of [1.1, 1.38]) slab(metal, X_AFTBEAM - 0.02, X_AFTBEAM + 0.004, y - 0.06, y + 0.06, z - 0.07, z + 0.07, COL.steel, 0.01);
+    slab(metal, X_AFTBEAM - 0.085, X_AFTBEAM - 0.02, 2.1 - 0.04, 2.1 + 0.04, z - 0.04, z + 0.04, COL.steel, 0.01); // stay to the backrest
+    // sheave block under the tip
+    slab(metal, DAV_X - 0.04, DAV_X + 0.02, DAV_TIP_Y + 0.05, DAV_TIP_Y + 0.08, z - 0.012, z + 0.012, COL.steel, 0.004);
+    metal.add(roundedBox(0.05, 0.11, 0.07, 0.02), COL.dark, M(DAV_X, DAV_TIP_Y, z));
+    boxes.push(partBox(metal, m0));
+  }
+  return boxes;
+}
+
 function buildFittings(metal: Part, wood: Part): THREE.Box3[] {
   // tank fillers on the side decks aft of the saloon, under the roof gutters' downpipes
   const fillers: THREE.Box3[] = [];
@@ -1812,6 +1850,7 @@ interface RigState {
   awningBig: boolean;
   trap: boolean;
   rod: boolean;
+  falls: number;
 }
 
 /** Mainsail and jib as two cloth grids, reshaped on the CPU (as on the sloop, sized for the cat). */
@@ -2423,7 +2462,7 @@ let textures: { teak: THREE.DataTexture; varnish: THREE.DataTexture; nonskid: TH
 // ---------------------------------------------------------------- assembling the moving parts
 
 function buildMovingRig(mats: { metal: THREE.Material; cloth: THREE.Material; glass: THREE.Material; cabin: THREE.MeshStandardMaterial }, varnishTex: THREE.Texture, glass: DynPart): { objects: THREE.Object3D[]; rig: CatRig; triangles: number } {
-  const st: RigState = { sail: 0, boom: 0, jib: 0, fill: 1, time: 0, rudder: 0, anchored: true, throttle: 0, motorTime: NaN, propAngle: 0, hatch: 1, pump: 0, bilge: 0, awning: 0, awningBig: false, trap: false, rod: true };
+  const st: RigState = { sail: 0, boom: 0, jib: 0, fill: 1, time: 0, rudder: 0, anchored: true, throttle: 0, motorTime: NaN, propAngle: 0, hatch: 1, pump: 0, bilge: 0, awning: 0, awningBig: false, trap: false, rod: true, falls: 0 };
   doorState.open = st.hatch;
 
   // boom: its own group, swinging about the gooseneck
@@ -2483,6 +2522,27 @@ function buildMovingRig(mats: { metal: THREE.Material; cloth: THREE.Material; gl
   const canvasBox = new THREE.Box3();
   const canvasBuild = (p: Part) => canvasCatcher(p, st.awning, canvasBox);
   const segCanvas = lines.gen((p) => canvasCatcher(p, 1, canvasBox));
+  // the davit falls: a two-part tackle from each arm's sheave block down to a block hooked on the dinghy's lifting eye
+  const dinghyY = () => DAV_Y0 * (1 - st.falls);
+  const eyeAt = (k: number) => {
+    const local = k > 0 ? DINGHY_LIFT.bow : DINGHY_LIFT.stern; // dinghy +x (bow) points to boat +z
+    return V(DAV_X - local.z, dinghyY() + local.y, DAV_ZC + local.x); // boat z = the dinghy's x
+  };
+  const fallsBuild = (p: Part) => {
+    for (const k of [-1, 1]) {
+      const e = eyeAt(k);
+      const top = V(DAV_X, DAV_TIP_Y - 0.05, e.z);
+      for (const dx of [-0.018, 0.018]) rod(p, top.clone().add(V(dx, 0, 0)), V(e.x + dx, e.y + 0.16, e.z), 0.006, 4, COL.rope);
+    }
+  };
+  const segFalls = lines.gen(fallsBuild);
+  const segLowerBlocks = [-1, 1].map((k) =>
+    lines.rigid((p) => {
+      const e = V(DAV_X, 0, DAV_ZC + k * DAV_Z);
+      p.add(roundedBox(0.05, 0.1, 0.065, 0.02), COL.dark, M(e.x, 0.1, e.z));
+      p.add(new THREE.TorusGeometry(0.022, 0.006, 5, 10, Math.PI * 1.5), COL.steel, M(e.x, 0.03, e.z, 0, Math.PI / 2, Math.PI));
+    }),
+  );
   const linesGeom = lines.part.geometry();
   lines.bind(linesGeom);
   linesGeom.boundingSphere = new THREE.Sphere(V(2, 10, 0), 16);
@@ -2759,6 +2819,13 @@ function buildMovingRig(mats: { metal: THREE.Material; cloth: THREE.Material; gl
     wood.place(segRod, m);
     lines.place(segReel, m);
   };
+  const applyFalls = () => {
+    lines.regen(segFalls, fallsBuild);
+    [-1, 1].forEach((k, i) => {
+      const e = eyeAt(k);
+      lines.place(segLowerBlocks[i], new THREE.Matrix4().makeTranslation(0, e.y, 0));
+    });
+  };
   applyFurl();
   applyMainsheet();
   applySheets();
@@ -2773,6 +2840,7 @@ function buildMovingRig(mats: { metal: THREE.Material; cloth: THREE.Material; gl
   applyAwning();
   applyTrap();
   applyRod();
+  applyFalls();
 
   const same = (a: number, b: number) => Math.abs(a - b) < 1e-6;
   const rig: CatRig = {
@@ -2876,6 +2944,12 @@ function buildMovingRig(mats: { metal: THREE.Material; cloth: THREE.Material; gl
       st.rod = shown;
       applyRod();
     },
+    setFalls(length) {
+      const a = clamp(length, 0, 1);
+      if (same(a, st.falls)) return;
+      st.falls = a;
+      applyFalls();
+    },
     status() {
       const te = [-1, 1].map((k) => V(-5.93, -0.8, k * HZ).applyMatrix4(rudderMatrix(k, st.rudder))) as [THREE.Vector3, THREE.Vector3];
       const props = [-1, 1].map((k) => PROP_HUB(k)) as [THREE.Vector3, THREE.Vector3];
@@ -2909,6 +2983,8 @@ function buildMovingRig(mats: { metal: THREE.Material; cloth: THREE.Material; gl
         awning: { shown: st.awning, big: st.awningBig, clothBox: st.awning > 0.02 && st.awningBig ? canvasBox.clone() : null },
         trapSet: st.trap,
         rodStowed: st.rod,
+        falls: st.falls,
+        dinghyOrigin: V(DAV_X, dinghyY(), DAV_ZC),
       };
     },
   };
@@ -2947,6 +3023,7 @@ export function createCatamaran(): Catamaran {
   const potShelf = buildForedeck(metal, wood, cloth, net);
   buildRigStatic(metal, cloth);
   const fillers = buildFittings(metal, wood);
+  const davits = buildDavits(metal);
 
   textures ??= { teak: paintTeak(), varnish: paintVarnish(), nonskid: paintNonSkid(), sail: paintSail(), decal: paintDecals(), net: paintNet() };
   const metalMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.3, metalness: 0.85 });
@@ -2997,6 +3074,9 @@ export function createCatamaran(): Catamaran {
     pump: V(-1.95, DECK_Y, PUMP_C.z),
     chart: V(2.3, DECK_Y, 2.2),
     bunk: V(2.95, HFLOOR_Y, -HZ),
+    davit: V(DAV_X, DAV_Y0, DAV_ZC),
+    davitYaw: DAVIT_YAW,
+    dinghyBoard: V(-6.55, STEPS[3].y, -2.1),
   };
   const fittings: CatFittings = {
     workbench: stbdHull.workbench ?? new THREE.Box3(),
@@ -3009,6 +3089,7 @@ export function createCatamaran(): Catamaran {
     helm,
     potShelf,
     locker: cockpit.locker,
+    davits,
   };
   return { group, deck: CAT_DECK, points, rig: moving.rig, length: LOA, beam: 2 * (HZ + 1.0), draft: DRAFT, triangles, fittings };
 }

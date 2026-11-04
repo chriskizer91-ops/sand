@@ -7,12 +7,14 @@
  */
 import * as THREE from 'three';
 import {
+  BAIT,
   RECIPES,
   STORES,
   UPKEEP,
   bilgeDrag,
   catchRain,
   cookFish,
+  cutBait,
   leak,
   make,
   newAboard,
@@ -29,7 +31,7 @@ import {
   whyNot,
   type AboardState,
 } from './game/aboard';
-import { FISH, FISHING, FISH_KINDS, cast, fishHere, newFishing, reelIn, stepFishing, type FishKind, type FishingEvent } from './game/fishing';
+import { FISH, FISHING, FISH_KINDS, cast, fishFood, fishHere, fishKg, fishSize, newFishing, reelIn, stepFishing, type FishKind, type FishingEvent } from './game/fishing';
 import { FINDS, FIND_KINDS, type FindKind } from './content/finds';
 import type { BoatState } from './game/sailing';
 import type { Beach, BeachView } from './game/beach';
@@ -102,6 +104,18 @@ export interface LivingCtx {
   changed(): void;
   closeOtherPanels(): void;
   unlockPointer(): void;
+  /** How risky the shark waters are here (0 = none): bigger fish where it's riskier. */
+  riskAt?(x: number, z: number): number;
+  /** Seated in the dinghy: how fast it's going (null when you're not in it). */
+  seatedSpeed?(): number | null;
+  /** Have you learned to cut bait (from the notebook)? */
+  baitKnown?(): boolean;
+  /** You landed a fish (kind, weight, how risky the water was), or cooked. */
+  onCatch?(kind: FishKind, kg: number, risk: number): void;
+  onCook?(): void;
+  /** You made or mended something at the workbench; you opened the galley. */
+  onMake?(): void;
+  onGalley?(): void;
 }
 
 export type LivingAction =
@@ -123,7 +137,7 @@ function mulberry32(a: number): () => number {
 }
 
 const fishName = (k: string) => FISH[k as FishKind]?.name ?? k;
-const foodOf = (k: string) => FISH[k as FishKind]?.food ?? 0;
+const foodOf = (k: string, size = 1) => fishFood(k, size);
 
 export class Living {
   aboard: AboardState = newAboard();
@@ -151,6 +165,7 @@ export class Living {
     this.galley = new Galley({
       cook: () => this.cook(),
       coconut: () => this.coconut(),
+      cutBait: () => this.cutBait(),
       close: () => this.showGalley(false),
       click: () => ctx.audio.click(),
     });
@@ -388,6 +403,7 @@ export class Living {
 
   showGalley(on: boolean): void {
     if (on) {
+      this.ctx.onGalley?.();
       this.ctx.closeOtherPanels();
       this.bench.show(false);
       this.renderGalley();
@@ -406,7 +422,8 @@ export class Living {
       water: a.water,
       waterMax: waterMax(a),
       fish: a.coolBox.map((f) => ({ name: fishName(f.kind), hoursLeft: (STORES.fishKeeps - (now - f.caught)) * 24 })),
-      fishFood: a.coolBox.reduce((s, f) => s + foodOf(f.kind), 0),
+      fishFood: a.coolBox.reduce((s, f) => s + foodOf(f.kind, f.size ?? 1), 0),
+      bait: { known: this.ctx.baitKnown?.() ?? false, have: a.bait, max: BAIT.max, perFish: BAIT.perFish },
       coconuts: this.ctx.beach.state.locker.coconut ?? 0,
       extras: `Rain fills the tank: most at anchor, under the awning${(a.made.catcher ?? 0) > 0 ? ' (the bigger catcher doubles it)' : ''}.${trap}`,
       hungry: a.food <= 0,
@@ -419,9 +436,24 @@ export class Living {
       this.ctx.toast('Go aboard to cook: the galley is below decks.', 2500);
       return;
     }
+    const had = this.aboard.coolBox.length;
     const added = cookFish(this.aboard, foodOf);
+    if (had) this.ctx.onCook?.();
     this.ctx.audio.chime(false);
     this.ctx.toast(added > 0 ? `Fish supper: +${added.toFixed(1)} days of food in the larder.` : 'The larder is full.', 3000);
+    this.ctx.changed();
+    this.renderGalley();
+  }
+
+  private cutBait(): void {
+    if (!this.ctx.player.aboard) return;
+    const n = cutBait(this.aboard);
+    if (!n) {
+      this.ctx.toast(this.aboard.bait >= BAIT.max ? 'The bait box is full.' : 'No fish in the cool box to cut up.', 2500);
+      return;
+    }
+    this.ctx.audio.thud(0.12);
+    this.ctx.toast(`You cut a fish into ${n} pieces of bait (${this.aboard.bait} in the bait box).`, 3000);
     this.ctx.changed();
     this.renderGalley();
   }
@@ -469,6 +501,7 @@ export class Living {
     const boat = this.ctx.boat();
     if (whyNot(r, this.aboard, boat.hull, this.ctx.beach.state.locker)) return;
     boat.hull = make(r, this.aboard, boat.hull, this.ctx.beach.state.locker);
+    this.ctx.onMake?.();
     // A few mallet taps.
     for (let i = 0; i < 4; i++) setTimeout(() => this.ctx.audio.thud(0.12), i * 180);
     this.ctx.toast(`Done: ${r.name.toLowerCase()}.`, 2500);
@@ -528,6 +561,7 @@ export class Living {
     const pl = this.ctx.player;
     if (this.ctx.atHelm()) return false;
     if (pl.mode === 'deck') return Math.abs(this.ctx.boat().speed) < 1.5;
+    if (pl.mode === 'seat') return Math.abs(this.ctx.seatedSpeed?.() ?? 0) < 1.2;
     return pl.mode === 'land';
   }
 
@@ -542,7 +576,11 @@ export class Living {
       }
       this.ctx.audio.click();
       this.ctx.toast(this.ctx.isTouch ? 'Face the water and tap “Cast”.' : 'Face the water and press E to cast.', 2600);
-    } else this.ctx.toast(this.ctx.player.mode === 'swim' ? 'You can’t fish while swimming.' : 'Not from here: fish from the deck (not at the helm) or from the shore.', 2600);
+    } else
+      this.ctx.toast(
+        this.ctx.player.mode === 'swim' ? 'You can’t fish while swimming.' : this.ctx.player.mode === 'seat' ? 'Slow down to fish from the dinghy.' : 'Not from here: fish from the deck (not at the helm), the shore or the dinghy.',
+        2600,
+      );
   }
 
   putRodAway(quiet = false): void {
@@ -585,8 +623,10 @@ export class Living {
         return;
       }
       const depth = -ctx.floorAt(hit.x, hit.z);
-      const kind = fishHere({ depth, open: ctx.openness(hit.x, hit.z) }, this.rand());
-      cast(s, kind, (this.aboard.made.lure ?? 0) > 0, this.rand);
+      const risk = ctx.riskAt?.(hit.x, hit.z) ?? 0;
+      const kind = fishHere({ depth, open: ctx.openness(hit.x, hit.z), risk }, this.rand());
+      cast(s, kind, (this.aboard.made.lure ?? 0) > 0, this.rand, { size: fishSize(risk, this.rand()), strong: (this.aboard.made.strongReel ?? 0) > 0 });
+      this.castRisk = risk;
       this.castAt.copy(hit);
       this.castFrom.copy(ctx.player.mode === 'deck' ? ctx.player.pos : pl);
       ctx.held.cast?.();
@@ -606,6 +646,7 @@ export class Living {
   }
 
   private strikeQueued = false;
+  private castRisk = 0;
 
   private updateFishing(dt: number, time: number): void {
     const s = this.fishing;
@@ -671,14 +712,20 @@ export class Living {
       const a = this.aboard;
       const first = !(a.fishLog[k] ?? 0);
       a.fishLog[k] = (a.fishLog[k] ?? 0) + 1;
+      const kg = fishKg(k, s.size);
+      const record = kg > (a.biggest[k] ?? 0) && !first;
+      a.biggest[k] = Math.max(a.biggest[k] ?? 0, kg);
+      const big = s.size >= 1.4 ? `A big one: ${kg} kg! ` : `${kg} kg. `;
       ctx.held.showCatch?.(k);
-      ctx.audio.chime(first);
-      if (info.release) ctx.hud.showCard(`A ${info.name}!`, `You let it go. ${info.fact}`, 8000);
+      ctx.audio.chime(first || record);
+      if (info.release) ctx.hud.showCard(`A ${info.name}!`, `${big}You let it go. ${info.fact}`, 8000);
       else {
-        a.coolBox.push({ kind: k, caught: ctx.dayNow() });
-        if (first) ctx.hud.showCard(`New: ${info.name}`, `${info.fact} It’s in the cool box: cook it in the galley.`, 8000);
-        else ctx.toast(`A ${info.name}, into the cool box.`, 2500);
+        a.coolBox.push({ kind: k, caught: ctx.dayNow(), size: s.size });
+        if (first) ctx.hud.showCard(`New: ${info.name}`, `${big}${info.fact} It’s in the cool box: cook it in the galley.`, 8000);
+        else if (record) ctx.hud.showCard(`Your biggest ${info.name} yet`, `${kg} kg, into the cool box.`, 4500);
+        else ctx.toast(`A ${info.name}, ${kg} kg, into the cool box.`, 2500);
       }
+      ctx.onCatch?.(k, kg, this.castRisk);
       ctx.changed();
     }
   }
@@ -688,16 +735,18 @@ export class Living {
   logRows(): { name: string; value: string; text: string }[] {
     const a = this.aboard;
     const made = (Object.keys(a.made) as (keyof AboardState['made'])[]).filter((k) => (a.made[k] ?? 0) > 0);
-    const names: Record<string, string> = { catcher: 'the bigger rain catcher', jugs: 'water jugs', lure: 'a feather lure', trap: 'a fish trap' };
+    const names: Record<string, string> = { catcher: 'the bigger rain catcher', jugs: 'water jugs', lure: 'a feather lure', trap: 'a fish trap', planter: 'more deck pots', goodSails: 'Ida’s heavy sails', strongReel: 'Ida’s strong reel' };
     return [
       { name: 'Sails', value: `${Math.round(a.sails)}%`, text: a.sails < UPKEEP.torn ? 'Torn: patch them at the workbench (sailcloth and rope).' : 'Sailing hard when she’s overpowered, or letting the sails flog in a strong wind, wears them.' },
       { name: 'Bilge', value: a.bilge > 0.02 ? `${Math.round(a.bilge * 100)}% full` : 'dry', text: 'A badly scraped hull leaks. The pump is in the cockpit.' },
-      { name: 'Stores', value: `${a.food.toFixed(1)} days food · ${a.water.toFixed(1)} days water`, text: `The larder holds ${STORES.foodMax} days, the tank ${waterMax(a)}. ${made.length ? `Made at the workbench: ${made.map((k) => names[k]).join(', ')}.` : ''}` },
+      { name: 'Stores', value: `${a.food.toFixed(1)} days food · ${a.water.toFixed(1)} days water`, text: `The larder holds ${STORES.foodMax} days, the tank ${waterMax(a)}. ${made.length ? `Aboard: ${made.map((k) => names[k]).join(', ')}.` : ''}` },
+      { name: 'Dinghy', value: `${Math.round(a.dinghy)}%`, text: a.dinghy < 99.5 ? 'Sharks’ bumps have dented it, so it’s slower. Mend it at the workbench (driftwood and rope).' : 'Sound. It hangs in the davits between the sterns.' },
+      { name: 'Bait box', value: `${a.bait} of ${BAIT.max}`, text: 'Throw a piece to a curious shark and it leaves you be. Cut a fish into bait in the galley.' },
     ];
   }
 
   logFish(): { name: string; count: number; fact: string }[] {
-    return FISH_KINDS.map((k) => ({ name: FISH[k].name, count: this.aboard.fishLog[k] ?? 0, fact: FISH[k].fact }));
+    return FISH_KINDS.map((k) => ({ name: FISH[k].name, count: this.aboard.fishLog[k] ?? 0, fact: FISH[k].fact, best: this.aboard.biggest[k] ? `biggest ${this.aboard.biggest[k]} kg` : '' }));
   }
 
   devFill(): void {

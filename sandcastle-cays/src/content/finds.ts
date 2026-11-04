@@ -31,10 +31,12 @@ export type FindKind =
   | 'pumice'
   | 'sailcloth'
   | 'net'
-  | 'bottle';
+  | 'bottle'
+  | 'shark-tooth'
+  | 'queen-conch';
 
-/** Islands where finds wash up: Home Cay and Pink Sand Cay. */
-export type IslandId = 'home' | 'pink';
+/** Islands where finds wash up: Home Cay, Pink Sand Cay and Shark Bank. */
+export type IslandId = 'home' | 'pink' | 'bank';
 
 export interface FindInfo {
   kind: FindKind;
@@ -307,6 +309,30 @@ export const FINDS: Record<FindKind, FindInfo> = {
     fact:
       'Glass is made mostly of sand, melted in a furnace hotter than lava. A broken bottle, tumbled by the waves for years, turns into sea glass.',
     firstLine: 'An empty green bottle, still corked.',
+  },
+  'shark-tooth': {
+    kind: 'shark-tooth',
+    name: 'shark’s tooth',
+    plural: 'shark’s teeth',
+    group: 'drift',
+    rarity: 2,
+    size: 0.025,
+    islands: ['bank'],
+    fact:
+      'Sharks lose teeth all their lives, thousands of them, and a new tooth moves forward from the row behind to take each one’s place. Teeth that lie long on the sea floor turn grey or black as minerals soak into them.',
+    firstLine: 'A shark’s tooth! Small, sharp-edged and grey with age.',
+  },
+  'queen-conch': {
+    kind: 'queen-conch',
+    name: 'queen conch shell',
+    plural: 'queen conch shells',
+    group: 'shell',
+    rarity: 1.2,
+    size: 0.22,
+    islands: ['bank'],
+    fact:
+      'A queen conch takes three or four years to grow the flared pink lip of its shell. It grazes on seagrass, and so many have been taken that they are now protected in many places: only empty shells like this one are yours to keep.',
+    firstLine: 'A queen conch shell, heavy as a stone, its lip glowing pink inside.',
   },
 };
 

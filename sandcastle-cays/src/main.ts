@@ -50,6 +50,15 @@ import { Gardening, type GardenAction, type GardenViews } from './gardening';
 import { HOME_GARDEN } from './world/homeCay';
 import { DECK_POT_SCALE, GARDEN_SOIL, PlantView, barrelModel, bedModel, potModel, signModel } from './render/garden';
 import { Ui } from './ui/ui';
+import { ICONS } from './ui/icons';
+import { DinghyCtl, type DinghyAction } from './dinghyCtl';
+import { SharkLife } from './sharkLife';
+import { Guide, type NotebookPage } from './ui/guide';
+import { BANK } from './world/sharkBank';
+import { dentDinghy, type Upgrade } from './game/aboard';
+import { motorRunning } from './game/dinghy';
+import { SHARK_INFO, type SharkEvent, type SharkZone, type YouHow } from './game/sharks';
+import { BIG_FISH_KG, CHAPTERS, TIPS, atLeast, chapterNow, checkStory, count as storyCount, doneKeys, goalDone, howTo, newStory, nextGoal, note, restoreStory, takeTip, tipText, type Fact, type StoryState } from './game/story';
 import type { CheckResult } from './checks/sandChecks';
 
 declare const __BUILD_TIME__: string;
@@ -94,6 +103,11 @@ scene.add(islandGround);
 const pinkGround = createIslandGround(world.pink, sandUniforms);
 pinkGround.name = 'pinkIsland';
 scene.add(pinkGround);
+// Shark Bank: a bare sandbar in wide, shallow sand flats (v0.8).
+// Only the bank itself (not the deep floor round it), in a few big, plain pieces: it's mostly seen through the water.
+const bankGround = createIslandGround(world.bank, sandUniforms, { x0: BANK.x - 128, x1: BANK.x + 128, z0: BANK.z - 128, z1: BANK.z + 128 }, { wetStep: 2, tileSquares: 8 });
+bankGround.name = 'bankIsland';
+scene.add(bankGround);
 const coveRocks = createRocks(terrain, region);
 coveRocks.mesh.name = 'coveRocks';
 scene.add(coveRocks.mesh);
@@ -187,6 +201,7 @@ const weatherFx = new WeatherFx({ phone: isTouch });
 scene.add(weatherFx.group);
 const staticSkip: THREE.Object3D[] = [sky.mesh, particles.points, cursor.mesh, distant, covePlants, ...wakes.map((w) => w.mesh), weatherFx.group];
 pinkGround.traverse((o) => o.userData.dry && staticSkip.push(o));
+bankGround.traverse((o) => o.userData.dry && staticSkip.push(o));
 islandGround.traverse((o) => o.userData.dry && staticSkip.push(o));
 life.group.traverse((o) => o.userData.dry && staticSkip.push(o));
 pinkLife.group.traverse((o) => o.userData.dry && staticSkip.push(o));
@@ -280,7 +295,7 @@ window.addEventListener('resize', resize);
 // ---------- game state ----------
 
 const clock: Clock = { day: 1, hour: DAY.start };
-const beach = new Beach([...terrain.tideline(0.6), ...world.pink.tideline(0.6)]);
+const beach = new Beach([...terrain.tideline(0.6), ...world.pink.tideline(0.6), ...world.bank.tideline(0.6)]);
 const beachView = new BeachView(beach, findModel, (x, z) => ground.heightAt(x, z));
 scene.add(beachView.group);
 scene.add(beachView.glints);
@@ -360,6 +375,7 @@ const ui = new Ui(
     click: () => audio.click(),
     logbook: () => toggleLogbook(),
     chart: () => toggleChart(),
+    notebook: () => toggleNotebook(),
   },
   settings,
 );
@@ -377,6 +393,10 @@ const hud = new Hud(
     stores: () => living.showGalley(!living.galley.open),
     rod: () => living.toggleRod(),
     hold: (on) => input.hold('Action', on),
+    button: (id) => {
+      if (id === 'motor') dinghy.toggleMotor();
+      else if (id === 'bait') throwBait();
+    },
   },
   isTouch,
 );
@@ -542,6 +562,12 @@ const PLACES = [
   { id: 'home', name: 'Home Cay', x: terrain.anchorage.x, z: terrain.anchorage.z, labelDx: 0, labelDz: 240 },
   { id: 'pink', name: 'Pink Sand Cay', x: world.pink.anchorage.x, z: world.pink.anchorage.z, labelDx: 40, labelDz: -175 },
   { id: 'buoy', name: 'the sea buoy', label: 'sea buoy', button: 'Round the sea buoy and come home', mark: true, x: BUOY.x, z: BUOY.z, labelDx: 0, labelDz: -95 },
+  { id: 'bank', name: 'Shark Bank', x: world.bank.anchorage.x, z: world.bank.anchorage.z, labelDx: 90, labelDz: 120 },
+];
+/** Round the west of Home Cay to Shark Bank, keeping clear of the reef and the bank's flats. */
+const BANK_ROUTE = [
+  { x: -230, z: -40 },
+  { x: -470, z: 100 },
 ];
 const channel = reefChannel(terrain);
 const chart = new Chart(
@@ -566,6 +592,7 @@ function toggleChart(show?: boolean): void {
   if (open) {
     ui.closePanels();
     hud.showLogbook(false);
+    guide.show(false);
     input.unlock();
     input.clear();
     renderChart();
@@ -725,6 +752,35 @@ const devTools = new DevTools(
       boat.hull = 30;
       ui.toast('Hull scraped to 30%: she’ll leak', 2000);
     },
+    dinghyToWater: () => {
+      if (dinghy.state.where === 'davits') dinghy.doAction({ kind: 'lower', board: false, label: '' });
+      else dinghy.fetch();
+    },
+    fetchDinghy: () => {
+      dinghy.fetch();
+      ui.toast('The dinghy is tied astern', 1500);
+    },
+    dentDinghy: () => {
+      dentDinghy(living.aboard);
+      ui.toast(`Dinghy dented: ${Math.round(living.aboard.dinghy)}%`, 1500);
+    },
+    sharkLooks: () => {
+      if (!sharks.devCurious(player.feet.x, player.feet.z)) ui.toast('You’re not in shark waters: go to the reef gap, the sea buoy or Shark Bank.', 2600);
+    },
+    giveBait: () => {
+      living.aboard.bait = Math.min(12, living.aboard.bait + 5);
+      ui.toast(`${living.aboard.bait} pieces of bait in the bait box`, 1500);
+    },
+    finishChapter: () => {
+      const c = chapterNow(story);
+      if (!c) return;
+      for (const g of c.goals) atLeast(story, g.fact, g.n);
+      checkNotebook();
+    },
+    resetTips: () => {
+      story.seen = [];
+      ui.toast('Tips will show again', 1500);
+    },
     click: () => audio.click(),
   },
   isTouch,
@@ -736,8 +792,10 @@ function toggleDevTools(on?: boolean): void {
   if (devTools.open) input.unlock();
 }
 
-function devGoTo(id: 'home' | 'pink' | 'gap' | 'open' | 'buoy'): void {
+function devGoTo(id: 'home' | 'pink' | 'gap' | 'open' | 'buoy' | 'bank'): void {
   if (course) stopCourse(null);
+  // In the dinghy? You both come along: it's tied astern again.
+  if (player.seated) dinghy.state.tied = true;
   pushOff = null;
   const spots = {
     home: { x: terrain.anchorage.x, z: terrain.anchorage.z, h: 0, anchor: true },
@@ -745,6 +803,7 @@ function devGoTo(id: 'home' | 'pink' | 'gap' | 'open' | 'buoy'): void {
     gap: { x: channel.outside.x, z: channel.outside.z, h: Math.atan2(channel.outside.z - channel.inside.z, channel.outside.x - channel.inside.x), anchor: false },
     open: { x: 700, z: -150, h: Math.PI / 2, anchor: false },
     buoy: { x: BUOY.x - 70, z: BUOY.z + 60, h: -0.75, anchor: false },
+    bank: { x: world.bank.anchorage.x, z: world.bank.anchorage.z, h: 0, anchor: true },
   };
   const s0 = spots[id];
   boat.x = s0.x;
@@ -786,7 +845,16 @@ function devInfo(): [string, string][] {
     ['sea buoy', `${records.rounds} rounds · best ${records.best ? minSec(records.best) : '–'}`],
     ['stores', `food ${living.aboard.food.toFixed(1)} d · water ${living.aboard.water.toFixed(1)} d · ${living.aboard.coolBox.length} fish`],
     ['upkeep', `sails ${Math.round(living.aboard.sails)}% · bilge ${Math.round(living.aboard.bilge * 100)}% · fishing ${living.fishing.phase}`],
+    ['dinghy', `${dinghy.info()} · ${Math.round(living.aboard.dinghy)}% · bait ${living.aboard.bait}`],
+    ['sharks', sharksInfo()],
+    ['notebook', `chapter ${Math.min(story.chapter + 1, CHAPTERS.length)} of ${CHAPTERS.length}${nextGoal(story) ? ` · next: ${nextGoal(story)!.text}` : ' · finished'}`],
   ];
+}
+
+function sharksInfo(): string {
+  const n = sharks.nearest(player.feet.x, player.feet.z);
+  const zn = sharks.zoneAt(player.feet.x, player.feet.z);
+  return `${zn ? `in ${zn.name}` : 'no shark waters here'}${n ? ` · nearest ${Math.round(n.d)} m (${n.shark.kind}, ${n.shark.mood})` : ''} · ${sharks.finsUp} fins up`;
 }
 
 /** Pushing her off the bottom into deeper water (a few seconds, as if poling her off). */
@@ -830,6 +898,15 @@ function stepPushOff(dt: number): boolean {
   return true;
 }
 
+/** Sailing off with the dinghy left somewhere? Say so (it waits for you). */
+function dinghyLeftBehind(): void {
+  const d = dinghy.state;
+  if (d.where !== 'water' || d.tied || player.seated) return;
+  if (Math.hypot(d.x - boat.x, d.z - boat.z) < 40) return;
+  const near = world.nearest(d.x, d.z).island.name;
+  window.setTimeout(() => ui.toast(`The dinghy is still where you left it, by ${near}. It’ll wait for you.`, 4000), 2800);
+}
+
 function wrapAngle(a: number): number {
   return Math.atan2(Math.sin(a), Math.cos(a));
 }
@@ -844,6 +921,7 @@ function toggleAnchor(): void {
     weighAnchor(boat);
     audio.anchorChain(false);
     ui.toast('Anchor up. Raise the sails to get under way.', 2600);
+    dinghyLeftBehind();
   } else {
     const why = dropAnchor(boat, seaBed);
     if (why) ui.toast(why, 3500);
@@ -870,9 +948,20 @@ function startCourse(id: string): void {
   const toIn = inLagoon(dest.x, dest.z);
   if (fromIn && !toIn) wps.push({ ...channel.inside }, { ...channel.outside });
   if (!fromIn && toIn) wps.push({ ...channel.outside }, { ...channel.inside });
-  if (id === 'buoy') {
+  // Leaving Shark Bank: back out round its flats first.
+  const atBank = Math.hypot(boat.x - BANK.x, boat.z - BANK.z) < 170;
+  if (atBank && id !== 'bank') {
+    wps.length = 0;
+    wps.push(...[...BANK_ROUTE].reverse().map((p) => ({ ...p })));
+    if (toIn) wps.push({ ...channel.outside }, { ...channel.inside });
+  }
+  if (id === 'bank') {
+    if (!atBank) wps.push(...BANK_ROUTE.map((p) => ({ ...p })));
+    wps.push({ x: dest.x, z: dest.z });
+    course = { waypoints: wps, tack: 1, name: dest.name };
+  } else if (id === 'buoy') {
     // Out round the buoy and home again: through the gap, out to the buoy, back to the gap, home.
-    if (!fromIn) wps.length = 0;
+    if (!fromIn && !atBank) wps.length = 0;
     wps.push({ x: dest.x, z: dest.z }, { ...channel.outside }, { ...channel.inside }, { x: terrain.anchorage.x, z: terrain.anchorage.z });
     course = { waypoints: wps, tack: 1, name: 'the sea buoy and home', arrive: 'Home Cay' };
   } else {
@@ -882,6 +971,7 @@ function startCourse(id: string): void {
   if (boat.anchored) {
     weighAnchor(boat);
     audio.anchorChain(false);
+    dinghyLeftBehind();
   }
   toggleChart(false);
   hud.showCard(
@@ -903,6 +993,7 @@ function toggleLogbook(show?: boolean): void {
   const open = show ?? !hud.logbookOpen;
   if (open) {
     ui.closePanels();
+    guide.show(false);
     const near = world.nearest(boat.x, boat.z).island.name;
     const sailing = records.rounds
       ? `Round the sea buoy ${records.rounds === 1 ? 'once' : `${records.rounds} times`}.${records.best ? ` Fastest run from Home Cay, round the buoy and back: ${minSec(records.best)}.` : ''}`
@@ -915,6 +1006,7 @@ function toggleLogbook(show?: boolean): void {
       { hull: boat.hull, where: boat.anchored ? `At anchor off ${near}` : `Under way near ${near}`, sailing, rows: living.logRows() },
       living.logFish(),
       { rows: gardening.logRows(), seeds: gardening.seedLine() },
+      sharks.logRows(),
     );
     input.unlock();
     input.clear();
@@ -951,7 +1043,7 @@ function updateLookHint(): void {
   hud.setLookHint(!isTouch && started && view === 'fp' && !input.locked && !input.dragLook && !anyPanelOpen());
 }
 function anyPanelOpen(): boolean {
-  return ui.panelOpen || hud.logbookOpen || chart.open || living.panelOpen || gardening.panelOpen;
+  return ui.panelOpen || hud.logbookOpen || chart.open || living.panelOpen || gardening.panelOpen || guide.open;
 }
 
 // ---------- building (kneeling at the sand) ----------
@@ -1070,6 +1162,9 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'Escape' && gardening.panelOpen) gardening.closePanels();
   else if (view === 'build' && (e.code === 'Escape' || e.code === 'KeyB')) exitBuild();
   else if (e.code === 'KeyL' && view === 'fp') toggleLogbook();
+  else if (e.code === 'KeyN' && view === 'fp' && !e.repeat) toggleNotebook();
+  else if (e.code === 'Escape' && guide.open) toggleNotebook(false);
+  else if (e.code === 'KeyQ' && view === 'fp' && !e.repeat && !anyPanelOpen()) throwBait();
   else if (e.code === 'KeyM' && view === 'fp') toggleChart();
   else if (e.code === 'Escape' && chart.open) toggleChart(false);
   else if (e.code === 'Escape' && hud.logbookOpen) toggleLogbook(false);
@@ -1203,11 +1298,15 @@ interface GameSave {
   garden?: unknown;
   player: { mode: PlayerMode; pos: number[]; yaw: number; pitch: number };
   beach: unknown;
+  /** v0.8: the dinghy, sharks you've seen, Ida's notebook. */
+  dinghy?: unknown;
+  sharks?: unknown;
+  story?: unknown;
 }
 
 function gameState(): GameSave {
   const { x, z, heading, anchored, ax, az, sailSet, hull } = boat;
-  return { version: GAME_VERSION, clock: { ...clock }, boat: { x, z, heading, anchored, ax, az, sailSet, hull }, sailing: { ...records }, living: living.save(), garden: gardening.save(), player: player.state, beach: beach.state };
+  return { version: GAME_VERSION, clock: { ...clock }, boat: { x, z, heading, anchored, ax, az, sailSet, hull }, sailing: { ...records }, living: living.save(), garden: gardening.save(), player: player.state, beach: beach.state, dinghy: dinghy.save(), sharks: sharks.save(), story };
 }
 
 function restoreGame(raw: unknown): void {
@@ -1242,14 +1341,24 @@ function restoreGame(raw: unknown): void {
   wasAnchored = boat.anchored;
   living.restore(g.living);
   gardening.restore(g.garden);
+  sharks.restore(g.sharks);
+  story = restoreStory(g.story);
   const p = g.player;
+  const seated = p?.mode === 'seat';
+  dinghy.restore(g.dinghy, false);
   if (p && Array.isArray(p.pos) && p.pos.length === 3 && p.pos.every(Number.isFinite)) {
     const v = new THREE.Vector3(p.pos[0], p.pos[1], p.pos[2]);
     // Aboard: back in the cockpit (a save from an older boat's deck may not fit this one).
     if (p.mode === 'deck') player.placeAboard(g.version === GAME_VERSION ? v : sloop.points.spawn.clone(), p.yaw ?? START_YAW);
+    else if (seated && dinghy.state.where === 'water') dinghy.restore(g.dinghy, true);
     else player.placeWorld(v.x, v.z, p.yaw ?? START_YAW);
     if (Number.isFinite(p.pitch)) player.pitch = p.pitch as number;
   }
+  // Catch the notebook up with what you'd already done (rewards included), quietly.
+  storyTicks = doneKeys(story);
+  storyCatchUp = story.chapter;
+  checkNotebook(true);
+  storyCatchUp = story.chapter - storyCatchUp;
   daylight.refresh();
   washIfDue();
 }
@@ -1321,6 +1430,10 @@ function newGame(): void {
   beachView.sync();
   living.reset();
   gardening.reset();
+  story = newStory();
+  storyTicks = doneKeys(story);
+  dinghy.restore(null, false);
+  sharks.restore(null);
   boat = newBoat(terrain.anchorage.x, terrain.anchorage.z, terrain.anchorage.heading);
   course = null;
   atHelm = false;
@@ -1328,6 +1441,7 @@ function newGame(): void {
   player.placeAboard(sloop.points.spawn, START_YAW);
   daylight.refresh();
   ui.toast('A fresh start at Home Cay');
+  welcome(false);
 }
 
 function takePhoto(): void {
@@ -1421,12 +1535,26 @@ function startPlaying(): void {
   if (!isTouch) void input.lock();
   updateLookHint();
   canvas.focus();
-  if (!resumed) {
-    window.setTimeout(
-      () => hud.showCard('Home Cay', isTouch ? 'Your boat is anchored off the island. Walk to the ladder at the back to climb down and swim ashore.' : 'Your boat is anchored off the island. Walk (W A S D) to the ladder at the back to climb down and swim ashore.', 7000),
-      800,
-    );
-  }
+  welcome(resumed);
+}
+
+/** The first thing you see: Ida's note (a new game), or news of the notebook (an older save). */
+function welcome(resumedGame: boolean): void {
+  window.setTimeout(() => {
+    if (!resumedGame) {
+      if (!story.opened) {
+        story.opened = true;
+        guide.tip('A note from Ida', CHAPTERS[0].note);
+      }
+      showTip('welcome');
+      showTip('look');
+    } else if (!story.opened) {
+      const done = storyCatchUp > 0 ? ` You’ve already done ${storyCatchUp === 1 ? 'the whole first chapter' : `the first ${storyCatchUp} chapters`}, so Ida’s gifts for ${storyCatchUp === 1 ? 'it are' : 'them are'} yours.` : '';
+      guide.tip('Ida’s notebook', `Tidying the chart table, you’ve found the old owner’s notebook: notes for whoever has the boat next.${done} ${isTouch ? 'Tap the “Next” line' : 'Press N'} to read it.`);
+      story.opened = true;
+    }
+    changedSinceSave = true;
+  }, 900);
 }
 
 /** New finds wash up each morning. */
@@ -1453,18 +1581,28 @@ type Action =
   | { kind: 'garden'; a: GardenAction; label: string }
   | { kind: 'sleep'; label: string }
   | { kind: 'charttable'; label: string }
+  | { kind: 'dinghy'; a: DinghyAction; label: string }
   | null;
 
 const center = new THREE.Vector2(0, 0);
 const tmpV = new THREE.Vector3();
 function currentAction(): Action {
-  if (player.mode === 'climb') return null;
+  if (player.mode === 'climb' || dinghy.busy) return null;
   // With the rod in your hands, the use button fishes.
   if (living.rodHeld) {
     const la = living.action();
     if (la) return { kind: 'living', a: la, label: la.label };
   }
+  // Sitting in the dinghy: climb out (or aboard the big boat at her stern).
+  if (player.seated) {
+    const da = dinghy.seatedAction();
+    return da ? { kind: 'dinghy', a: da, label: da.label } : null;
+  }
   if (player.nearLadder()) return { kind: 'climb', label: 'Climb aboard' };
+  {
+    const da = dinghy.outsideAction(player.feet.x, player.feet.z);
+    if (da) return { kind: 'dinghy', a: da, label: da.label };
+  }
   if (player.atLadderTop()) return { kind: 'climbdown', label: 'Climb down the ladder' };
   raycaster.setFromCamera(center, camera);
   const f = beachView.pick(raycaster.ray, camera.position, PLAYER.reach);
@@ -1486,6 +1624,8 @@ function currentAction(): Action {
       // Below decks: the bunk and the chart table (on boats that have them).
       ...boatSpot('bunk', 1.0, { kind: 'sleep', label: canSleepNow() ? 'Sleep until morning' : 'Your bunk (sleep after sunset)' }),
       ...boatSpot('chart', 1.0, { kind: 'charttable', label: 'Look at the chart' }),
+      // The dinghy: at the port swim step, or the back of the cockpit by the davits.
+      ...dinghy.deckOptions(player.pos).map(([d, r, a]) => [d, r, { kind: 'dinghy', a, label: a.label }] as [number, number, Action]),
     ];
     opts.sort((x, y) => x[0] - y[0]);
     for (const [d, r, a] of opts) if (d < r) return a;
@@ -1510,6 +1650,7 @@ function doAction(a: Action): void {
     if (player.climbDown()) audio.ladder();
   } else if (a.kind === 'locker') {
     const n = beach.emptyBasket();
+    storyNote('stowed');
     audio.locker();
     hud.showCard('Stowed', `${n} ${n === 1 ? 'find' : 'finds'} put away in the locker. The logbook lists everything aboard.`, 3500);
     changedSinceSave = true;
@@ -1519,6 +1660,10 @@ function doAction(a: Action): void {
   else if (a.kind === 'garden') gardening.doAction(a.a);
   else if (a.kind === 'sleep') sleepUntilMorning();
   else if (a.kind === 'charttable') toggleChart(true);
+  else if (a.kind === 'dinghy') {
+    if (a.a.kind === 'board' || a.a.kind === 'lower') living.putRodAway(true);
+    dinghy.doAction(a.a);
+  }
 }
 
 /** A named spot on the boat (boat-local), if the boat has it: [distance, reach, action]. Only on the same level as you. */
@@ -1559,6 +1704,7 @@ function sleepUntilMorning(): void {
     clock.hour = 6.5;
     daylight.refresh();
     washIfDue();
+    storyNote('slept');
     changedSinceSave = true;
     setTimeout(() => {
       fadeEl.classList.remove('on');
@@ -1569,7 +1715,10 @@ function sleepUntilMorning(): void {
 }
 
 function pickUp(id: number): void {
+  const g = beach.state.ground.find((x) => x.id === id);
   const r = beach.pickUp(id);
+  if (r.ok && g && world.islandAt(g.x, g.z).id === 'bank') storyNote('bankFinds');
+  if (r.ok) showTip('firstFind');
   if (!r.ok) {
     if (r.reason === 'full') ui.toast('Your basket is full. Empty it into the locker aboard.', 3200);
     return;
@@ -1595,7 +1744,7 @@ scene.add(fishingLine.group);
 staticSkip.push(...fishingLine.overWater);
 rebuildRefractSkip();
 fishingLine.waterAt = (x, z) => seaHeight(x, z, time);
-const living = new Living({
+const living: Living = new Living({
   boat: () => boat,
   player,
   beach,
@@ -1628,12 +1777,22 @@ const living = new Living({
   closeOtherPanels: () => {
     ui.closePanels();
     hud.showLogbook(false);
+    guide.show(false);
     if (chart.open) toggleChart(false);
   },
   unlockPointer: () => {
     input.unlock();
     input.clear();
   },
+  riskAt: (x, z) => sharks.zoneAt(x, z)?.risk ?? 0,
+  seatedSpeed: (): number | null => (player.seated ? dinghy.state.speed : null),
+  baitKnown: () => baitKnown(),
+  onCatch: (_k, kg, risk) => {
+    if (risk > 0 && kg >= BIG_FISH_KG) storyNote('bigFish');
+  },
+  onCook: () => storyNote('cooked'),
+  onMake: () => storyNote('made'),
+  onGalley: () => showTip('galley'),
 });
 
 // ---------- the garden ----------
@@ -1682,6 +1841,7 @@ const gardening = new Gardening({
   closeOtherPanels: () => {
     ui.closePanels();
     hud.showLogbook(false);
+    guide.show(false);
     living.closePanels();
     if (chart.open) toggleChart(false);
   },
@@ -1691,10 +1851,313 @@ const gardening = new Gardening({
   },
 });
 
+// ---------- the dinghy (v0.8) ----------
+
+const dinghy: DinghyCtl = new DinghyCtl({
+  scene,
+  cat: sloop as unknown as ConstructorParameters<typeof DinghyCtl>[0]['cat'],
+  boat: () => boat,
+  player,
+  seaHeight: (x, z) => seaHeight(x, z, time),
+  floorAt: (x, z) => seaBed.floorAt(x, z),
+  groundAt: (x, z) => ground.heightAt(x, z),
+  wind: () => ({ x: -Math.cos(wind.from) * wind.speed, z: -Math.sin(wind.from) * wind.speed }),
+  condition: (): number => living.aboard.dinghy,
+  audio,
+  toast: (m, ms) => ui.toast(m, ms),
+  tip: (id) => showTip(id),
+  changed: () => (changedSinceSave = true),
+  onRowed: () => storyNote('dinghy'),
+});
+staticSkip.push(dinghy.wakeMesh);
+rebuildRefractSkip();
+
+/** Your wish to row or motor: W/S and A/D (or the stick), while you're sitting in the dinghy. */
+function dinghyDrive(): { ahead: number; steer: number } {
+  if (!player.seated || !started || view !== 'fp' || anyPanelOpen()) return { ahead: 0, steer: 0 };
+  return { ahead: input.move.y, steer: input.move.x };
+}
+
+// ---------- sharks (v0.8) ----------
+
+/** The three shark waters, rising risk and reward. */
+const SHARK_ZONES: SharkZone[] = [
+  {
+    id: 'gap',
+    name: 'the reef gap',
+    x: channel.inside.x + (channel.outside.x - channel.inside.x) * 0.75,
+    z: channel.inside.z + (channel.outside.z - channel.inside.z) * 0.75,
+    r: 55,
+    kind: 'reef',
+    count: 1,
+    risk: 1,
+  },
+  { id: 'buoy', name: 'the deep water round the sea buoy', x: BUOY.x, z: BUOY.z, r: 160, kind: 'reef', count: 2, risk: 2 },
+  { id: 'bank', name: 'Shark Bank', x: BANK.x, z: BANK.z, r: 95, kind: 'nurse', count: 6, risk: 3 },
+];
+let lastBaitThrow = -99;
+let baitNoted = false;
+let lastCircleToast = -99;
+let lastStartle = -99;
+const sharks = new SharkLife(SHARK_ZONES, {
+  scene,
+  seaHeight: (x, z) => seaHeight(x, z, time),
+  floorAt: (x, z) => seaBed.floorAt(x, z),
+  onEvent: (e) => onSharkEvent(e),
+  noBait: () => {
+    ui.toast('No bait in the bait box.', 2200);
+    showTip('noBait');
+  },
+  takeBait: () => {
+    if (living.aboard.bait <= 0) return false;
+    living.aboard.bait--;
+    changedSinceSave = true;
+    return true;
+  },
+  onSeen: (kind, zone) => {
+    if (sharks.seen[kind] === 1) hud.showCard(`A ${SHARK_INFO[kind].name}!`, `${SHARK_INFO[kind].fact} This is ${zone.name}.`, 9000);
+    changedSinceSave = true;
+  },
+});
+staticSkip.push(...sharks.overWater);
+rebuildRefractSkip();
+
+/** Where you are, as far as the sharks are concerned. */
+function youForSharks(): { x: number; z: number; how: YouHow } {
+  const f = player.feet;
+  let how: YouHow = 'safe';
+  if (!started) how = 'safe';
+  else if (player.seated) how = 'dinghy';
+  else if (player.mode === 'swim') how = 'swim';
+  else if (player.mode === 'land' && player.waterDepth > 0.25) how = 'wade';
+  return { x: f.x, z: f.z, how };
+}
+
+function onSharkEvent(e: SharkEvent): void {
+  if (!started) return;
+  const name = SHARK_INFO[e.shark.kind].name;
+  if (e.type === 'circling') {
+    if (time - lastCircleToast > 30) {
+      lastCircleToast = time;
+      ui.toast(`A ${name} is circling you…`, 3000);
+    }
+    showTip('circling');
+  } else if (e.type === 'startled') {
+    if (time - lastStartle > 15) {
+      lastStartle = time;
+      ui.toast('A nurse shark bolts off the sand right by your feet!', 2600);
+    }
+  } else if (e.type === 'baited') {
+    if (time - lastBaitThrow < 60 && !baitNoted) {
+      baitNoted = true;
+      storyNote('baited');
+      ui.toast(`The ${name} goes for the bait.`, 2600);
+    }
+  } else if (e.type === 'bump') {
+    audio.thud(0.35);
+    if (navigator.vibrate) navigator.vibrate([40, 30, 80]);
+    player.look((Math.random() - 0.5) * 0.12, 0.05);
+    if (e.how === 'dinghy') {
+      dentDinghy(living.aboard);
+      hud.showCard('Bump!', `A ${name} nudges the dinghy with its nose and swims off. It’s left a dent (the dinghy is at ${Math.round(living.aboard.dinghy)}%).`, 5000);
+      showTip('dented');
+    } else if (beach.state.basket.length) {
+      const isl = world.nearest(player.feet.x, player.feet.z).island;
+      const n = beach.lose(isl.id);
+      hud.showCard('Bump!', `A ${name} knocks into you and you drop your basket. The sea will wash ${n === 1 ? 'your find' : `your ${n} finds`} up on ${isl.name} with the next tide.`, 6000);
+      showTip('dropped');
+    } else hud.showCard('Bump!', `A ${name} nudges you with its nose and turns away. It was only curious.`, 4500);
+    changedSinceSave = true;
+  }
+}
+
+function throwBait(): void {
+  if (!started || view !== 'fp' || atHelm) return;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  if (sharks.throwBait(camera.position, dir)) {
+    lastBaitThrow = time;
+    baitNoted = false;
+    audio.splash(0.06);
+    if (!sharks.threatened && !sharks.zoneAt(player.feet.x, player.feet.z)) ui.toast('Splash. No sharks about to notice it.', 2000);
+  }
+}
+
+// ---------- Ida's notebook, the next step and tips (v0.8) ----------
+
+let story: StoryState = newStory();
+/** After loading: how many chapters were finished just by catching up (said once, when you start playing). */
+let storyCatchUp = 0;
+let storyTicks = doneKeys(story);
+let storyTimer = 0;
+const guide = new Guide(
+  {
+    open: () => toggleNotebook(true),
+    close: () => toggleNotebook(false),
+    click: () => audio.click(),
+  },
+  isTouch,
+);
+
+function storyNote(f: Fact): void {
+  note(story, f);
+  changedSinceSave = true;
+}
+
+function showTip(id: string): void {
+  if (!started) return;
+  const t = takeTip(story, id);
+  if (!t) return;
+  guide.tip(t.title, tipText(t, isTouch));
+  changedSinceSave = true;
+}
+
+/** Can you cut bait? (Ida's notebook teaches it at the end of chapter 2.) */
+function baitKnown(): boolean {
+  return story.chapter >= 2;
+}
+
+const sum = (o: Partial<Record<string, number>>) => Object.values(o).reduce((a: number, b) => a + (b ?? 0), 0);
+
+/** Read the counts the notebook needs from the rest of the game. */
+function deriveFacts(): void {
+  const found = beach.state.found;
+  atLeast(story, 'finds', sum(found));
+  if (sum(beach.state.locker) > 0) atLeast(story, 'stowed', 1);
+  atLeast(story, 'fish', sum(living.aboard.fishLog));
+  const g = gardening.save();
+  atLeast(story, 'harvested', sum(g.grown));
+  if (Object.keys(g.plots).length > 0 || sum(g.grown) > 0) atLeast(story, 'planted', 1);
+  const made = living.aboard.made;
+  if ((made.catcher ?? 0) + (made.jugs ?? 0) + (made.lure ?? 0) + (made.trap ?? 0) + (made.planter ?? 0) > 0) atLeast(story, 'made', 1);
+  atLeast(story, 'pinkShells', (found['netted-olive'] ?? 0) + (found['flamingo-tongue'] ?? 0));
+  atLeast(story, 'buoy', records.rounds);
+  if (boat.anchored) {
+    const n = world.nearest(boat.x, boat.z);
+    if (n.island.id === 'pink' && n.coast < 220) atLeast(story, 'pinkAnchored', 1);
+  }
+  if (!started) return;
+  const f = player.feet;
+  if (player.mode === 'land') {
+    const isl = world.islandAt(f.x, f.z);
+    if (isl.id === 'home' && terrain.inland(f.x, f.z) > 0) atLeast(story, 'ashore', 1);
+    if (isl.id === 'bank' && world.bank.inland(f.x, f.z) > 0) atLeast(story, 'bankAshore', 1);
+  }
+  if (player.seated && sharks.zoneAt(f.x, f.z)?.id === 'gap') atLeast(story, 'gap', 1);
+  if (view === 'build' && undoCount > 0) atLeast(story, 'castle', 1);
+}
+
+/** A chapter's reward is yours. Returns the line to show. */
+function giveReward(id: string): string {
+  const c = CHAPTERS.find((x) => x.id === id);
+  if (!c) return '';
+  const r = c.reward;
+  if (r.kind === 'seeds') {
+    const g = gardening.save();
+    for (const [k, n] of Object.entries(r.seeds)) (g.seeds as Record<string, number>)[k] = ((g.seeds as Record<string, number>)[k] ?? 0) + n;
+  } else if (r.kind === 'recipe') living.aboard.bait = Math.max(living.aboard.bait, 3);
+  else {
+    living.aboard.made[r.upgrade as Upgrade] = 1;
+    if (r.upgrade === 'goodSails') living.aboard.sails = 100;
+  }
+  changedSinceSave = true;
+  return r.text;
+}
+
+/** Check the notebook for progress (a couple of times a second). `quiet`: just catch up (after loading). */
+function checkNotebook(quiet = false): void {
+  deriveFacts();
+  for (let i = 0; i < CHAPTERS.length; i++) {
+    const news = checkStory(story, storyTicks);
+    if (!quiet) for (const g of news.ticked) {
+      audio.chime(false);
+      ui.toast(`✓ ${g.text}`, 2600);
+    }
+    if (!news.finished) break;
+    const reward = giveReward(news.finished.id);
+    if (!quiet) {
+      audio.chime(true);
+      hud.showCard(`Chapter done: ${news.finished.title}`, `${news.finished.done} (${reward})`, 11000);
+      window.setTimeout(() => showTip('chapter'), 11500);
+    }
+    changedSinceSave = true;
+  }
+  if (guide.open) renderNotebook();
+}
+
+function goalProgress(f: Fact, n: number): string {
+  if (n <= 1) return '';
+  return `${Math.min(n, storyCount(story, f))} of ${n}`;
+}
+
+function renderNotebook(): void {
+  const pages: NotebookPage[] = CHAPTERS.map((c, i) => ({
+    title: c.title,
+    state: i < story.chapter ? 'done' : i === story.chapter ? 'now' : 'later',
+    note: c.note,
+    goals: c.goals.map((g) => ({ text: g.text, how: howTo(g.how, isTouch), done: goalDone(story, g), progress: goalProgress(g.fact, g.n) })),
+    reward: c.reward.text,
+    doneLine: c.done,
+  }));
+  guide.render(
+    'Found in the chart table, with the boat’s papers: a notebook, its cover soft with salt. On the first page, in pencil: “For whoever has her next. — Ida”',
+    pages,
+    story.chapter >= CHAPTERS.length ? 'You’ve done everything in Ida’s notebook. The cays are yours: the rest of the pages are empty, for your own notes.' : null,
+  );
+}
+
+function toggleNotebook(show?: boolean): void {
+  const open = show ?? !guide.open;
+  if (open) {
+    ui.closePanels();
+    hud.showLogbook(false);
+    living.closePanels();
+    gardening.closePanels();
+    if (chart.open) toggleChart(false);
+    renderNotebook();
+    input.unlock();
+    input.clear();
+    story.opened = true;
+  }
+  guide.show(open);
+}
+
+/** Tips that pop up when something is first useful, and the next-step line. */
+function updateGuide(): void {
+  guide.setVisible(started && view === 'fp');
+  if (!started || view !== 'fp') return;
+  const g = nextGoal(story);
+  guide.setNext(g ? g.text : null, g ? howTo(g.how, isTouch) : '', time);
+  const f = player.feet;
+  if (player.atLadderTop()) showTip('ladder');
+  if (player.mode === 'swim') showTip('swimming');
+  if (player.mode === 'land' && player.waterDepth < 0.05) showTip('ashore');
+  if (clock.hour >= 18 && clock.hour < 22) showTip('dusk');
+  if (living.rodHeld) showTip('rod');
+  const zn = sharks.zoneAt(f.x, f.z);
+  const how = youForSharks().how;
+  if (zn && how !== 'safe') showTip('sharkZone');
+  if ((player.seated || how === 'wade') && Math.hypot(f.x - BANK.x, f.z - BANK.z) < 90) showTip('bankFlats');
+}
+
+/** The buttons for now: the outboard (in the dinghy), bait (near the sea, if you have some). */
+function updateButtons(): void {
+  const list: { id: string; label: string; icon: string; key?: string; on?: boolean }[] = [];
+  if (started && view === 'fp' && !anyPanelOpen()) {
+    if (player.seated) list.push({ id: 'motor', label: dinghy.state.motor ? 'Outboard off' : 'Start outboard', icon: ICONS.outboard, key: dinghy.state.motor ? 'F' : 'R', on: dinghy.state.motor });
+    const nearSea = player.seated || player.mode === 'swim' || (player.mode === 'land' && player.waterDepth > 0.1) || (player.aboard && !atHelm);
+    const sharky = sharks.zoneAt(player.feet.x, player.feet.z) || sharks.threatened;
+    if (living.aboard.bait > 0 && nearSea && sharky) list.push({ id: 'bait', label: `Throw bait (${living.aboard.bait})`, icon: ICONS.bait, key: 'Q' });
+  }
+  hud.setButtons(list);
+}
+
 // ---------- frame loop ----------
 
 let last = performance.now();
 let time = 0;
+/** The dinghy's outboard this frame (for the sound). */
+let dinghyOut = { motorLevel: 0, stroke: false };
 let frames = 0;
 let fpsShown = 0;
 let fpsFrames = 0;
@@ -1833,6 +2296,20 @@ function frame(now: number): void {
     rig.setMotor?.(boat.motor ?? 0, time);
     rig.setLights?.(boat.anchored ? 'anchor' : 'underway', daylight.info.night);
   }
+  // The dinghy: in the davits, towed astern, left afloat, or carrying you.
+  dinghyOut = dinghy.update(dt, dt * devSpeed, time, dinghyDrive(), daylight.info.night, daylight.info.daylight);
+  {
+    // The dinghy stays within the waters on your chart too.
+    const d = dinghy.state;
+    const dx = d.x - SEA_CENTRE.x;
+    const dz = d.z - SEA_CENTRE.z;
+    const r = Math.hypot(dx, dz);
+    if (d.where === 'water' && r > SEA_RADIUS) {
+      d.x = SEA_CENTRE.x + (dx / r) * SEA_RADIUS;
+      d.z = SEA_CENTRE.z + (dz / r) * SEA_RADIUS;
+      d.speed *= 0.5;
+    }
+  }
 
   // The clock (paused while a menu or the logbook is open).
   if (started && !anyPanelOpen() && !holdTime) {
@@ -1863,12 +2340,17 @@ function frame(now: number): void {
         // Taking the wheel back from the autopilot.
         if (course && Math.abs(input.move.x) > 0.3) stopCourse('You have the helm.');
       } else if (input.wasPressed('KeyE') || input.wasPressed('Use') || input.wasPressed('Action')) doAction(action);
+      if (player.seated) {
+        // The outboard: R starts it, F stops it (W and S then work the throttle).
+        if (input.wasPressed('KeyR')) dinghy.toggleMotor(true);
+        if (input.wasPressed('KeyF')) dinghy.toggleMotor(false);
+      }
       if (input.wasPressed('KeyB') && canBuildHere()) enterBuild();
-      const jump = !atHelm && input.wasPressed('Space');
+      const jump = !atHelm && !player.seated && input.wasPressed('Space');
       if (jump && player.nearLadder()) {
         if (player.climbAboard()) audio.ladder();
       }
-      const ev = player.update(dt, atHelm ? { x: 0, y: 0 } : input.move, input.running, jump && player.mode !== 'swim');
+      const ev = player.update(dt, atHelm || player.seated ? { x: 0, y: 0 } : input.move, input.running, jump && player.mode !== 'swim');
       for (const s of ev.steps) audio.footstep(s);
       if (ev.splash > 0) audio.splash(ev.splash);
       if (ev.climbed) audio.ladder();
@@ -1895,7 +2377,7 @@ function frame(now: number): void {
     controls.update(dt);
     cam.update(dt);
   } else {
-    player.applyCamera(camera, boatMotion.rollAngle);
+    player.applyCamera(camera, player.seated ? dinghy.roll : boatMotion.rollAngle);
   }
   if (blend) {
     blend.t = Math.min(1, blend.t + dt / 0.55);
@@ -1960,6 +2442,7 @@ function frame(now: number): void {
   swayTime.value = time;
   cursor.update(dt, time);
   beachView.update(player.feet, time, daylight.info.daylight, window.innerHeight * renderer.getPixelRatio());
+  sharks.update(dt, dt * devSpeed, time, youForSharks(), camera.position, daylight.info.daylight);
   if (Math.hypot(camera.position.x - BUOY.x, camera.position.z - BUOY.z) < 900) seaBuoy.update(time, (x, z) => seaHeight(x, z, time), daylight.info.night, window.innerHeight * renderer.getPixelRatio());
 
   // What you're carrying.
@@ -1967,7 +2450,7 @@ function frame(now: number): void {
   held.update(dt, {
     walking: Math.min(1, player.speed / 2),
     // Both hands on the tiller at the helm, so the basket is put down.
-    hide: !started || view !== 'fp' || player.mode === 'swim' || player.mode === 'climb' || anyPanelOpen() || atHelm,
+    hide: !started || view !== 'fp' || player.mode === 'swim' || player.mode === 'climb' || anyPanelOpen() || atHelm || (player.seated && !living.rodHeld),
     sunDir: sunView,
     sunColor: SKY.sunColor,
     sunIntensity: sun.intensity,
@@ -2000,11 +2483,21 @@ function frame(now: number): void {
       if (chart.open) renderChart();
       if (devTools.open) devTools.setInfo(devInfo());
     }
-    audio.setMotor(Math.abs(boat.motor ?? 0), aboard || Math.hypot(player.feet.x - boat.x, player.feet.z - boat.z) < 60);
+    const nearDinghy = player.seated || Math.hypot(player.feet.x - dinghy.state.x, player.feet.z - dinghy.state.z) < 60;
+    if (dinghyOut.motorLevel > 0 && nearDinghy) audio.setMotor(dinghyOut.motorLevel, true);
+    else audio.setMotor(Math.abs(boat.motor ?? 0), aboard || Math.hypot(player.feet.x - boat.x, player.feet.z - boat.z) < 60);
     audio.setSailing(Math.abs(boat.speed), wind.speed, boat.sail * (1 - sailFill(windAngle(boat, wind))) * (boat.anchored ? 0 : 1), boat.heel, aboard);
   }
   hud.setClock(formatClock(clock));
   updateLookHint();
+  // Ida's notebook: progress, the next step, tips, and the buttons for now.
+  storyTimer -= dt;
+  if (storyTimer <= 0 && started) {
+    storyTimer = 0.5;
+    checkNotebook();
+  }
+  updateGuide();
+  updateButtons();
 
   // Sound: louder surf near the beach.
   const shoreDist = Math.abs(world.nearest(player.feet.x, player.feet.z).coast);
@@ -2227,6 +2720,40 @@ void boot();
       player.update(1 / 30, { x: 0, y: 0 }, false, false);
     }
     return { x: boat.x, z: boat.z, speed: boat.speed, anchored: boat.anchored, aground: boat.aground, hull: boat.hull, course: course ? course.name : null, maxSurf, maxSpeed, maxOver, wind: wind.speed, open: wind.open, rain: wind.rain, heading: boat.heading };
+  },
+  /** The camera's and the boat's lean now (radians), for the checks. */
+  get pose() {
+    return { cameraRoll: camera.rotation.z, boatRoll: boatMotion.rollAngle, heel: boat.heel, boatRotX: sloop.group.rotation.x, boatRotZ: sloop.group.rotation.z, playerMode: player.mode };
+  },
+  /** v0.8: the dinghy, the sharks, Ida's notebook and the guide. */
+  dinghy,
+  sharks,
+  guide,
+  world,
+  get story() {
+    return story;
+  },
+  sharkZones: SHARK_ZONES,
+  bank: BANK,
+  toggleNotebook: (on?: boolean) => toggleNotebook(on),
+  checkNotebook: () => checkNotebook(),
+  throwBait: () => throwBait(),
+  nextGoal: () => nextGoal(story),
+  /** Test helper: row (or motor) the dinghy you're sitting in for a while, as if holding the keys. */
+  row: (seconds: number, ahead = 1, steer = 0) => {
+    let stroke = 0;
+    for (let t = 0; t < seconds; t += 1 / 30) {
+      time += 1 / 30;
+      updateWeather(time);
+      stepBoat(boat, wind, { steer: 0, attended: false, slope: 0 }, seaBed, 1 / 30);
+      boatMotion.update(time, 1 / 30, boat);
+      const o = dinghy.update(1 / 30, 1 / 30, time, player.seated ? { ahead, steer } : { ahead: 0, steer: 0 }, daylight.info.night, daylight.info.daylight);
+      if (o.stroke) stroke++;
+      player.update(1 / 30, { x: 0, y: 0 }, false, false);
+      sharks.update(1 / 30, 1 / 30, time, youForSharks(), camera.position, daylight.info.daylight);
+    }
+    const d = dinghy.state;
+    return { x: d.x, z: d.z, heading: d.heading, speed: d.speed, aground: d.aground, motor: d.motor, strokes: stroke, seated: player.seated, feet: player.feet.toArray() };
   },
   /** Test helper: call up a squall (or clear it with null). */
   forceSquall: (x: number | null, z = 0, radius = 180, strength = 1) => {

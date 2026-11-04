@@ -24,6 +24,7 @@ export interface UiActions {
   chart(): void;
   newGame(): void;
   devTools(): void;
+  notebook(): void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, string> = {}, html = ''): HTMLElementTagNameMap[K] {
@@ -83,6 +84,7 @@ export class Ui {
     this.undoBtn.dataset.build = '1';
     this.roundButton(top, ICONS.home, 'Show the whole beach', () => actions.home()).dataset.build = '1';
     this.roundButton(top, ICONS.chart, 'Chart', () => actions.chart()).dataset.fp = '1';
+    this.roundButton(top, ICONS.notebook, 'Ida’s notebook', () => actions.notebook()).dataset.fp = '1';
     this.roundButton(top, ICONS.book, 'Logbook', () => actions.logbook()).dataset.fp = '1';
     this.roundButton(top, ICONS.camera, 'Take a photo', () => actions.photo());
     this.roundButton(top, ICONS.menu, 'Menu', () => this.togglePanel(this.menu));
@@ -255,6 +257,11 @@ export class Ui {
     this.help = el('div', { class: 'panel hidden', role: 'dialog', 'aria-label': 'How to play' });
     this.help.innerHTML = `
       <h2>How to play</h2>
+      <h3>What to do</h3>
+      <ul>
+        <li><b>Ida’s notebook</b> (N, or the notebook button): the boat’s old owner left you notes, chapter by chapter. Each chapter is a few goals; finish them all and Ida’s gift for that chapter is yours (seeds, a recipe, a boat upgrade). The “Next” line at the top left always shows your next step: tap it to open the notebook.</li>
+        <li>Little tips pop up the first time something is useful. Dev tools → “Show the tips again” brings them back.</li>
+      </ul>
       <h3>Getting about</h3>
       <ul>
         <li><b>Phone</b>: put your left thumb down anywhere on the left and slide it to walk (push it all the way to run). Drag with your right thumb to look. Tap a find to pick it up. The round button does what the label says; the arrow jumps.</li>
@@ -287,9 +294,23 @@ export class Ui {
         <li><b>Coconuts</b>: shake a palm on the beach and one or two fall. Pick them up like any find.</li>
         <li><b>Upkeep</b>: a badly scraped hull leaks, so pump the bilge (the pump is in the cockpit). Sailing hard when she’s overpowered wears the sails. Mend both at the <b>workbench</b> in the starboard hull, with finds from the locker. New finds give you new ideas there: a bigger rain catcher, water jugs, a lure, a fish trap.</li>
       </ul>
+      <h3>The dinghy</h3>
+      <ul>
+        <li>It hangs in the davits between the two sterns. Stand on the left (port) swim step and press E (or tap) to lower it and climb in. From the back of the cockpit you can lower it, or hoist it back up, without getting in.</li>
+        <li><b>Rowing</b>: W and S (phone: the stick) row ahead and astern, A and D turn. <b>The outboard</b>: R starts it (phone: “Start outboard”), then W and S work the throttle; F stops it. It’s about three times as fast as rowing.</li>
+        <li>It floats in a hand’s depth of water, so it crosses shallows the catamaran can’t, and you can run it up on a beach. In the shallows the outboard tilts up: row the last bit.</li>
+        <li>E to climb out: onto the sand, into the water, or back aboard at the stern (then it follows the catamaran on its rope). Left anywhere else, it waits there for you.</li>
+      </ul>
+      <h3>Sharks</h3>
+      <ul>
+        <li>Three shark waters, each riskier and richer than the last: <b>the reef gap</b> (one Caribbean reef shark), <b>the deep water round the sea buoy</b> (two), and <b>Shark Bank</b>, a sandbar to the north-west where nurse sharks rest on the flats.</li>
+        <li>Sharks never hurt you. A curious one circles, and may bump you: in the water you drop your basket (the sea washes it up on the next tide); in the dinghy it leaves a dent (mend it at the workbench). Aboard the catamaran you’re out of reach.</li>
+        <li><b>Bait</b> (Q, or the Bait button): throw a piece and the sharks go after it instead. Ida’s notebook teaches you to cut bait from a fish in the galley.</li>
+        <li>The riskier the water, the better the rewards: the rarest finds wash up on Shark Bank (queen conch shells, sharks’ teeth), and the fish run bigger in all three.</li>
+      </ul>
       <h3>The garden</h3>
       <ul>
-        <li><b>Pots</b> on the shelf in front of the saloon windows, and <b>beds</b> in the Home Cay garden (just up the grass from the sandcastle cove). Walk up to one and press E (or tap) to plant from your seed tin.</li>
+        <li><b>Pots</b> on the planter shelf at the front of the saloon, and <b>beds</b> in the Home Cay garden (just up the grass from the sandcastle cove). Walk up to one and press E (or tap) to plant from your seed tin.</li>
         <li>Water every day: pots from the boat’s tank, beds from the rain barrel. Rain waters them too. A plant only grows on days it has water, and withers after three dry days.</li>
         <li>Harvest when ripe: food for the larder and seeds back. Callaloo grows back after you cut it. Make more pots at the workbench.</li>
       </ul>

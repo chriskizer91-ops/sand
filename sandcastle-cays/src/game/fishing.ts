@@ -22,29 +22,35 @@ export interface FishInfo {
   fact: string;
   /** Let go once caught (a sport fish). */
   release?: boolean;
+  /** A typical one's weight (kg); `food` is for a fish this size. */
+  kg: number;
 }
 
 export const FISH: Record<FishKind, FishInfo> = {
   grunt: {
     name: 'blue-striped grunt',
+    kg: 0.4,
     food: 0.3,
     strength: 0.35,
     fact: 'Grunts are named for the noise they make: they grind their teeth together, and the swim bladder makes the sound louder.',
   },
   snapper: {
     name: 'yellowtail snapper',
+    kg: 0.8,
     food: 0.5,
     strength: 0.5,
     fact: 'Unlike most snappers, yellowtails swim in loose schools well above the reef, and they do most of their feeding at night.',
   },
   jack: {
     name: 'bar jack',
+    kg: 1.5,
     food: 0.5,
     strength: 0.7,
     fact: 'Bar jacks often follow stingrays as they dig in the sand, snapping up the little animals the rays stir out.',
   },
   bonefish: {
     name: 'bonefish',
+    kg: 2.5,
     food: 0,
     strength: 0.85,
     release: true,
@@ -52,6 +58,7 @@ export const FISH: Record<FishKind, FishInfo> = {
   },
   mahi: {
     name: 'mahi-mahi',
+    kg: 6,
     food: 1.5,
     strength: 1,
     fact: 'Mahi-mahi are one of the fastest-growing fish in the sea, and the vivid blue and gold on a freshly caught one fades within minutes.',
@@ -75,14 +82,40 @@ export const FISHING = {
   tensionEase: 0.9,
   /** How far the float lands from you (metres). */
   castDistance: 9,
+  /** The strong reel (from the notebook): the line takes this much less strain. */
+  strongReel: 0.6,
+  /** In shark waters fish run bigger: each step of risk adds this much to the typical weight. */
+  sizePerRisk: 0.3,
 };
 
+/**
+ * How big this one is, as a multiple of a typical fish: 0.75..1.25 in quiet
+ * water, up to about twice as big in the riskiest shark waters.
+ */
+export function fishSize(risk: number, r: number): number {
+  return (0.75 + 0.5 * r) * (1 + FISHING.sizePerRisk * Math.max(0, risk));
+}
+
+/** Its weight in kilograms, to one decimal. */
+export function fishKg(kind: FishKind, size: number): number {
+  return Math.round(FISH[kind].kg * size * 10) / 10;
+}
+
+/** Days of food it makes once cooked: a bigger fish feeds you longer. */
+export function fishFood(kind: string, size = 1): number {
+  const f = FISH[kind as FishKind];
+  return f ? f.food * size : 0;
+}
+
 /** What's likely to bite where the float lands. */
-export function fishHere(place: { depth: number; open: number }, r: number): FishKind {
+export function fishHere(place: { depth: number; open: number; risk?: number }, r: number): FishKind {
   let table: [FishKind, number][];
-  if (place.open >= 0.5 && place.depth > 8) table = [['mahi', 0.45], ['jack', 0.35], ['snapper', 0.2]];
-  else if (place.depth < 1.6) table = [['bonefish', 0.25], ['grunt', 0.45], ['jack', 0.15], ['snapper', 0.15]];
-  else table = [['grunt', 0.45], ['snapper', 0.3], ['jack', 0.25]];
+  const risk = place.risk ?? 0;
+  if ((place.open >= 0.5 || risk >= 2) && place.depth > 8) table = [['mahi', 0.45 + 0.1 * risk], ['jack', 0.35], ['snapper', 0.2 - 0.05 * risk]];
+  else if (place.depth < 1.6) table = [['bonefish', 0.25 + 0.1 * risk], ['grunt', 0.45 - 0.1 * risk], ['jack', 0.15], ['snapper', 0.15]];
+  else table = [['grunt', 0.45 - 0.12 * risk], ['snapper', 0.3], ['jack', 0.25 + 0.12 * risk]];
+  const sum = table.reduce((a, [, w]) => a + Math.max(0, w), 0);
+  table = table.map(([k, w]) => [k, Math.max(0, w) / sum]);
   let acc = 0;
   for (const [k, w] of table) {
     acc += w;
@@ -106,17 +139,22 @@ export interface FishingState {
   /** Is the fish running right now, and for how much longer (or until its next run). */
   running: boolean;
   runT: number;
+  /** How big the fish on the line is (see fishSize), and whether you have the strong reel. */
+  size: number;
+  strong: boolean;
 }
 
 export function newFishing(): FishingState {
-  return { phase: 'idle', t: 0, wait: 0, kind: 'grunt', progress: 0, tension: 0, running: false, runT: 0 };
+  return { phase: 'idle', t: 0, wait: 0, kind: 'grunt', progress: 0, tension: 0, running: false, runT: 0, size: 1, strong: false };
 }
 
 /** Cast out: the float is on the water and you wait for a bite. */
-export function cast(s: FishingState, kind: FishKind, lure: boolean, rand: () => number): void {
+export function cast(s: FishingState, kind: FishKind, lure: boolean, rand: () => number, opts: { size?: number; strong?: boolean } = {}): void {
   s.phase = 'waiting';
   s.t = 0;
   s.kind = kind;
+  s.size = opts.size ?? 1;
+  s.strong = opts.strong ?? false;
   s.wait = (FISHING.waitMin + FISHING.waitSpread * rand()) * (lure ? FISHING.lure : 1);
   s.progress = 0;
   s.tension = 0;
@@ -128,6 +166,11 @@ export function cast(s: FishingState, kind: FishKind, lure: boolean, rand: () =>
 export function reelIn(s: FishingState): void {
   s.phase = 'idle';
   s.t = 0;
+}
+
+/** How hard the fish on the line fights: its kind, and a bigger one a bit harder. */
+export function strengthOf(s: FishingState): number {
+  return Math.min(1.2, FISH[s.kind].strength * (0.85 + 0.15 * s.size));
 }
 
 export type FishingEvent = 'bite' | 'missed' | 'hooked' | 'run' | 'caught' | 'snapped' | null;
@@ -155,7 +198,7 @@ export function stepFishing(s: FishingState, dt: number, input: { strike: boolea
         s.progress = 0.05;
         s.tension = 0.1;
         s.running = true;
-        s.runT = 0.5 + rand() * (0.6 + FISH[s.kind].strength);
+        s.runT = 0.5 + rand() * (0.6 + strengthOf(s));
         return 'hooked';
       }
       if (s.t > FISHING.strikeWindow) {
@@ -167,7 +210,8 @@ export function stepFishing(s: FishingState, dt: number, input: { strike: boolea
       }
       return null;
     case 'reeling': {
-      const st = FISH[s.kind].strength;
+      const st = strengthOf(s);
+      const strain = s.strong ? FISHING.strongReel : 1;
       // The fish runs for a moment, then rests, then runs again.
       s.runT -= dt;
       let ev: FishingEvent = null;
@@ -179,7 +223,7 @@ export function stepFishing(s: FishingState, dt: number, input: { strike: boolea
       if (input.reel) {
         s.progress += FISHING.reelRate * (1 - 0.55 * st * (s.running ? 1 : 0.3)) * dt;
         // Small fish barely strain the line; a big one running can snap it.
-        s.tension += (s.running ? 0.15 + FISHING.tensionRun * st * st : FISHING.tensionPull * st) * dt;
+        s.tension += (s.running ? 0.15 + FISHING.tensionRun * st * st : FISHING.tensionPull * st) * strain * dt;
       } else {
         s.tension = Math.max(0, s.tension - FISHING.tensionEase * dt);
         // Not reeling, a running fish takes line back.

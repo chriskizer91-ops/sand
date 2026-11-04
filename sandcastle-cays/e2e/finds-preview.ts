@@ -126,6 +126,9 @@ const layout: [FindKind, number, number, number][] = [
   ['sailcloth', -0.6, -1.0, 0.35],
   ['net', 0.05, -1.02, -0.2],
   ['bottle', 0.62, -0.98, 0.9],
+  // Shark Bank finds, off to the left
+  ['shark-tooth', -1.2, 0.22, 0.5],
+  ['queen-conch', -1.3, -0.22, 0.6],
 ];
 const PINK_Y = 0.001;
 const pinkSand = new THREE.Mesh(
@@ -180,6 +183,10 @@ const views: Record<string, { pos: [number, number, number]; look: [number, numb
   glass: { pos: [-0.12, 0.3, 0.7], look: [-0.12, 0, 0.36], fov: 50 },
   drift: { pos: [0.05, 0.95, 0.9], look: [0.0, 0, -0.25], fov: 55 },
   repair: { pos: [0.02, 0.75, -0.2], look: [0.02, 0, -1.0], fov: 55 },
+  bank: { pos: [-1.0, 0.5, 0.55], look: [-1.26, 0, -0.02], fov: 50 },
+  tooth: { pos: [-1.18, 0.06, 0.27], look: [-1.2, 0.002, 0.22], fov: 30 },
+  conch: { pos: [-1.62, 0.22, -0.1], look: [-1.3, 0.03, -0.22], fov: 40 },
+  'conch-top': { pos: [-1.3, 0.55, -0.2], look: [-1.3, 0, -0.22], fov: 40 },
   basket: { pos: [1.25, 0.62, 0.88], look: [1.05, 0.06, 0.45], fov: 50 },
   held: { pos: [0.1, 1.6, 2.3], look: [0.1, 0.0, 0.0], fov: 65, held: true },
 };

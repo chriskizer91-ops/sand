@@ -12,7 +12,7 @@ const htmlPath = resolve(process.argv[2] ?? join(root, 'dist/index.html'));
 const url = 'file://' + htmlPath;
 const out = join(root, 'e2e/output');
 mkdirSync(out, { recursive: true });
-const exe = ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium/chrome-linux/chrome'].find(existsSync);
+const exe = ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium/chrome-linux/chrome'].find(existsSync); // else Playwright's own
 
 const report = { steps: [], errors: [], checks: [], budgets: [], pass: true };
 const step = (name, ok, detail = '') => {
@@ -749,6 +749,171 @@ async function standBy(page, f) {
     b.x = 2; b.z = -31; b.heading = 0; b.speed = 0; b.sailSet = 0; b.sail = 0; b.anchored = true; b.ax = 8; b.az = -31; b.aground = false; b.hull = 100;
     g.sail(1);
     g.aboard(Math.PI, -0.05);
+  });
+
+  // ---------- v0.8: Ida's notebook, the dinghy and the sharks ----------
+  {
+    const g0 = await G(page, () => {
+      const g = window.__game;
+      g.checkNotebook();
+      const n = document.querySelector('#nextstep');
+      return { shown: !!n && !n.classList.contains('hide'), next: n?.querySelector('.goal')?.textContent ?? '', chapter: g.story.chapter, facts: g.story.facts };
+    });
+    step('Laptop: the "Next" line shows your next step from Ida’s notebook', g0.shown && g0.next.length > 5, `next: "${g0.next}" (chapter ${g0.chapter + 1})`);
+    step('Laptop: what you’ve already done ticks off the notebook’s goals', (g0.facts.ashore ?? 0) >= 1 && (g0.facts.finds ?? 0) >= 1, `counted: ${Object.entries(g0.facts).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+    await page.keyboard.press('KeyN');
+    await waitFrames(page, 3);
+    const nb = await G(page, () => {
+      const el = document.querySelector('#notebook');
+      return { open: !!el && !el.classList.contains('hidden'), text: el?.textContent ?? '' };
+    });
+    step('Laptop: N opens Ida’s notebook: her note, the goals with ticks, and the reward', nb.open && /Chapter 1: Settling in/.test(nb.text) && /Ida (will leave|left) you/.test(nb.text), nb.open ? `${nb.text.length} characters` : 'did not open');
+    await shot(page, '13a-idas-notebook.png');
+    await page.keyboard.press('KeyN');
+    await waitFrames(page, 2);
+
+    // The dinghy: lower it from the port swim step and climb in.
+    await G(page, () => {
+      const g = window.__game;
+      g.player.placeAboard(g.sloopPoints.dinghyBoard.clone(), Math.PI / 2);
+    });
+    await waitFrames(page, 2);
+    const lowerLabel = await G(page, () => window.__game.action()?.label ?? '');
+    await G(page, () => window.__game.doAction());
+    const d0 = await G(page, () => window.__game.row(5, 0, 0));
+    step('Laptop: at the port swim step, E lowers the dinghy from the davits and you climb in', lowerLabel === 'Lower the dinghy and climb in' && d0.seated, `prompt "${lowerLabel}", seated ${d0.seated}`);
+    const d1 = await G(page, () => window.__game.row(12, 1, 0));
+    const rowedM = Math.hypot(d1.x - d0.x, d1.z - d0.z);
+    step('Laptop: W rows the dinghy, a stroke at a time', rowedM > 10 && d1.strokes >= 6, `${rowedM.toFixed(1)} m in 12 s (${d1.strokes} strokes)`);
+    await waitFrames(page, 4);
+    await shot(page, '13b-rowing-the-dinghy.png');
+    const d2 = await G(page, () => {
+      const g = window.__game;
+      g.dinghy.toggleMotor(true);
+      return g.row(8, 1, 0);
+    });
+    step('Laptop: R starts the old outboard, about three times as fast as rowing', d2.motor && d2.speed > 2.6, `${(d2.speed * 1.944).toFixed(1)} knots under power`);
+    // Back to the stern and aboard.
+    const aboardAgain = await G(page, () => {
+      const g = window.__game;
+      g.dinghy.toggleMotor(false);
+      const b = g.sloopPoints.dinghyBoard.clone();
+      g.sloop.group.localToWorld(b);
+      g.dinghy.state.x = b.x - 2;
+      g.dinghy.state.z = b.z;
+      g.row(0.2, 0, 0);
+      const label = g.action()?.label ?? '';
+      g.doAction();
+      g.row(1, 0, 0);
+      return { label, mode: g.player.mode, tied: g.dinghy.state.tied };
+    });
+    step('Laptop: back at the stern, E climbs you aboard and the dinghy follows on its rope', aboardAgain.label === 'Climb aboard' && aboardAgain.mode === 'deck' && aboardAgain.tied, `prompt "${aboardAgain.label}", you're on the ${aboardAgain.mode}, tied ${aboardAgain.tied}`);
+
+    // Shark Bank: anchor off it, row in over the flats, step ashore.
+    await G(page, () => document.querySelectorAll('#devtools button').forEach((b) => b.textContent === 'Shark Bank' && b.click()));
+    await waitFrames(page, 3);
+    const bankRun = await G(page, () => {
+      const g = window.__game;
+      g.row(2, 0, 0);
+      g.player.placeAboard(g.sloopPoints.dinghyBoard.clone(), Math.PI / 2);
+      g.row(0.2, 0, 0);
+      const label = g.action()?.label ?? '';
+      g.doAction();
+      const d = g.dinghy.state;
+      const want = Math.atan2(g.bank.z - d.z, g.bank.x - d.x);
+      for (let k = 0; k < 200; k++) {
+        const diff = Math.atan2(Math.sin(want - d.heading), Math.cos(want - d.heading));
+        if (Math.abs(diff) < 0.05) break;
+        g.row(0.2, 0, Math.sign(diff));
+      }
+      const r = g.row(110, 1, 0);
+      const depthAtCat = -g.ground(g.boat.x, g.boat.z);
+      return { label, r, depthAtCat, catToBank: Math.hypot(g.boat.x - g.bank.x, g.boat.z - g.bank.z) };
+    });
+    step('Laptop: at Shark Bank the catamaran anchors off the flats, and the dinghy rows in over them until it runs up on the sand', bankRun.label === 'Climb into the dinghy' && bankRun.r.aground && bankRun.depthAtCat > 2,
+      `anchored ${Math.round(bankRun.catToBank)} m from the bar in ${bankRun.depthAtCat.toFixed(1)} m of water; dinghy ${bankRun.r.aground ? 'on the sand' : 'still afloat'}`);
+    await G(page, () => {
+      window.__game.player.pitch = -0.2;
+    });
+    await waitFrames(page, 4);
+    await shot(page, '13c-shark-bank-from-the-dinghy.png');
+    const ashore = await G(page, () => {
+      const g = window.__game;
+      const label = g.action()?.label ?? '';
+      g.doAction();
+      g.teleport(g.bank.x, g.bank.z, 0, -0.3);
+      g.row(1, 0, 0);
+      g.checkNotebook();
+      const finds = g.beach.state.ground.filter((f) => Math.hypot(f.x - g.bank.x, f.z - g.bank.z) < 40).map((f) => f.kind);
+      return { label, mode: g.player.mode, bankAshore: g.story.facts.bankAshore ?? 0, finds };
+    });
+    step('Laptop: you step out onto Shark Bank’s sandbar, and the notebook notices', /Step out/.test(ashore.label) && ashore.mode === 'land' && ashore.bankAshore >= 1, `prompt "${ashore.label}", now on ${ashore.mode}`);
+    step('Laptop: the sea leaves finds on the bar, the rarest in the cays', ashore.finds.length > 0, ashore.finds.join(', '));
+    const nurse = await G(page, () => {
+      const g = window.__game;
+      const s = g.sharks.sharks.filter((x) => x.kind === 'nurse').sort((a, b) => Math.hypot(a.x - g.bank.x, a.z - g.bank.z) - Math.hypot(b.x - g.bank.x, b.z - g.bank.z))[0];
+      g.teleport(s.x + 5, s.z + 1, Math.atan2(5, 1), -0.45);
+      return { mood: s.mood, depth: -g.ground(s.x, s.z) };
+    });
+    await waitFrames(page, 6);
+    const seen = await G(page, () => window.__game.sharks.seen);
+    await shot(page, '13d-nurse-shark-on-the-flats.png');
+    const drawsAtBank = await G(page, () => window.__game.render);
+    step('Laptop: nurse sharks rest on the flats of Shark Bank', seen.nurse >= 1, `nearest was ${nurse.mood} in ${nurse.depth.toFixed(1)} m of water; seen ${seen.nurse}; ${drawsAtBank.calls} draw calls, ${Math.round(drawsAtBank.triangles / 1000)}k triangles here`);
+
+    // The reef gap: a reef shark bumps a swimmer, who drops the basket; bait draws it off.
+    const bump = await G(page, () => {
+      const g = window.__game;
+      const z = g.sharkZones[0];
+      g.teleport(z.x, z.z, 0, -0.1);
+      g.beach.state.basket = ['cowrie', 'glass-green'];
+      const s = g.sharks.sharks.find((x) => x.zone === 'gap');
+      s.x = z.x + 9;
+      s.z = z.z;
+      s.heading = Math.PI;
+      s.mood = 'bump';
+      s.t = 0;
+      s.until = 10;
+      g.row(6, 0, 0);
+      return { basket: g.beach.state.basket.length, adrift: g.beach.state.adrift.length, mood: s.mood, mode: g.player.mode };
+    });
+    step('Laptop: a reef shark bumps you in the water: you drop your basket, and the sea keeps it for the next tide', bump.basket === 0 && bump.adrift === 2, `basket ${bump.basket}, adrift ${bump.adrift}, the shark is now ${bump.mood}`);
+    const bait = await G(page, () => {
+      const g = window.__game;
+      const s = g.sharks.sharks.find((x) => x.zone === 'gap');
+      s.mood = 'curious';
+      s.t = 0;
+      s.until = 60;
+      s.cool = 0;
+      s.x = g.player.feet.x + 8;
+      s.z = g.player.feet.z;
+      g.living.aboard.bait = 3;
+      g.player.yaw = Math.PI / 2;
+      g.throwBait();
+      g.row(10, 0, 0);
+      return { mood: s.mood, bait: g.living.aboard.bait, baited: g.story.facts.baited ?? 0 };
+    });
+    step('Laptop: Q throws bait, and the shark goes after it instead of you', bait.mood === 'bait' && bait.bait === 2 && bait.baited >= 1, `the shark is ${bait.mood}; ${bait.bait} pieces left`);
+    await waitFrames(page, 4);
+    await shot(page, '13e-reef-shark-and-bait.png');
+    await G(page, () => document.querySelectorAll('#devtools button').forEach((b) => b.textContent === 'Next morning' && b.click()));
+    await waitFrames(page, 2);
+    const washed = await G(page, () => window.__game.beach.state.adrift.length);
+    step('Laptop: the next morning the dropped finds wash up on the beach', washed === 0, `${washed} still adrift`);
+    const saved = await G(page, () => {
+      const s = window.__game.gameState();
+      return { story: !!s.story, chapter: s.story?.chapter, dinghy: s.dinghy?.where, sharks: !!s.sharks };
+    });
+    step('Laptop: the notebook, the dinghy and the sharks you’ve seen are saved', saved.story && saved.dinghy === 'water' && saved.sharks, `chapter ${saved.chapter + 1}, dinghy in the ${saved.dinghy}`);
+  }
+  // Back home again.
+  await G(page, () => {
+    const g = window.__game;
+    const b = g.boat;
+    b.x = 2; b.z = -31; b.heading = 0; b.speed = 0; b.sailSet = 0; b.sail = 0; b.anchored = true; b.ax = 8; b.az = -31; b.aground = false; b.hull = 100;
+    g.sail(1);
+    g.aboard(Math.PI, -0.05);
+    g.dinghy.fetch();
   });
 
   // Evening and night.

@@ -169,6 +169,42 @@ body.athelm #rodbtn { display: none; }
 .recipe button[disabled] { opacity: .45; }
 .recipe.unknown .name { color: var(--ink-soft); font-weight: 700; }
 @media (max-width: 640px) { #stores { top: calc(66px + var(--safe-t)); left: 170px; min-height: 32px; padding: 3px 10px 3px 6px; gap: 8px; } #stores .st svg { width: 18px; height: 18px; } #stores b { font-size: 12.5px; } #rodbtn { right: calc(100px + env(safe-area-inset-right, 0px)); } }
+/* ---------- v0.8: the dinghy, sharks, Ida's notebook ---------- */
+#ctxbtns { position: absolute; right: calc(16px + env(safe-area-inset-right, 0px)); bottom: calc(206px + var(--safe-b)); display: flex; flex-direction: column; align-items: flex-end; gap: 8px; pointer-events: none; }
+#ctxbtns button { pointer-events: auto; display: flex; align-items: center; gap: 6px; padding: 7px 14px 7px 9px; border-radius: 24px; background: var(--paper); box-shadow: var(--shadow); font-weight: 800; font-size: 14px; color: var(--sea-deep); }
+#ctxbtns button.on { background: var(--sea); color: #fff; }
+#ctxbtns button svg { width: 24px; height: 24px; }
+#ctxbtns kbd { display: inline-block; padding: 0 5px; margin-left: 3px; border-radius: 5px; background: rgba(0,0,0,.08); font: 800 12px/1.5 inherit; }
+#guidecol { position: absolute; left: 10px; top: calc(66px + var(--safe-t)); width: min(330px, calc(100vw - 20px)); display: flex; flex-direction: column; align-items: flex-start; gap: 8px; pointer-events: none; }
+#nextstep { max-width: 100%; text-align: left; display: flex; flex-direction: column; gap: 1px; padding: 7px 12px 8px; border-radius: 16px; background: var(--paper); box-shadow: var(--shadow); color: var(--ink); pointer-events: auto; }
+#nextstep.hide { display: none; }
+#nextstep .lbl { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; color: var(--coral); }
+#nextstep .lbl svg { width: 16px; height: 16px; }
+#nextstep .goal { font-size: 14.5px; font-weight: 800; line-height: 1.25; }
+#nextstep .how { display: none; font-size: 13px; line-height: 1.4; color: var(--ink-soft); margin-top: 2px; }
+#nextstep.open .how { display: block; }
+#nextstep.flash { animation: nextflash 1.6s ease-out; }
+@keyframes nextflash { 0% { box-shadow: 0 0 0 0 rgba(240,122,85,.7), var(--shadow); } 100% { box-shadow: 0 0 0 14px rgba(240,122,85,0), var(--shadow); } }
+#tipcard { box-sizing: border-box; width: 100%; background: var(--paper-solid); border-left: 5px solid var(--sea); box-shadow: 0 10px 30px rgba(30,60,80,.25); border-radius: 16px; padding: 11px 14px 10px; opacity: 0; transform: translateX(-12px); transition: opacity .3s, transform .3s; pointer-events: none; }
+#tipcard.show { opacity: 1; transform: translateX(0); pointer-events: auto; }
+#tipcard b { display: block; color: var(--sea-deep); font-size: 15px; margin-bottom: 3px; }
+#tipcard span { display: block; font-size: 13.5px; line-height: 1.45; }
+#tipcard .ok { margin-top: 8px; padding: 5px 14px; border-radius: 14px; background: rgba(47,181,176,.14); color: var(--sea-deep); font-weight: 800; font-size: 13px; }
+#notebook { width: min(420px, calc(100vw - 20px)); background: #fbf6e8; }
+#notebook .idanote { font-family: Georgia, 'Times New Roman', serif; font-style: italic; font-size: 14.5px; line-height: 1.5; color: #4b4232; }
+#notebook .chapter { border-top: 1px dashed rgba(0,0,0,.15); padding-top: 4px; }
+#notebook .chapter.done h3 { color: #1f9a62; }
+#notebook .chapter.later h3 { color: #aaa; }
+#notebook .tick { color: #1f9a62; }
+#notebook ul.goals { list-style: none; padding: 0; margin: 6px 0; }
+#notebook ul.goals li { display: flex; gap: 8px; padding: 5px 0; font-size: 14px; line-height: 1.35; }
+#notebook ul.goals li .box { flex: none; width: 18px; height: 18px; border-radius: 5px; border: 2px solid var(--sea); display: grid; place-items: center; font-size: 12px; font-weight: 900; color: #fff; margin-top: 1px; }
+#notebook ul.goals li.done .box { background: var(--sea); }
+#notebook ul.goals li.done b { color: var(--ink-soft); text-decoration: line-through; text-decoration-color: rgba(0,0,0,.3); }
+#notebook ul.goals .how { font-size: 13px; color: var(--ink-soft); }
+#notebook .reward { font-size: 13.5px; color: #8a5a1c; font-weight: 700; }
+@media (max-width: 640px) { #guidecol { top: calc(110px + var(--safe-t)); } #ctxbtns { bottom: calc(210px + var(--safe-b)); } }
+body[data-mode="build"] #guidecol { display: none; }
 #sleepfade { position: fixed; inset: 0; z-index: 50; background: #050a12; opacity: 0; pointer-events: none; transition: opacity .85s ease; }
 #sleepfade.on { opacity: 1; pointer-events: auto; }
 /* ---------- dev tools ---------- */

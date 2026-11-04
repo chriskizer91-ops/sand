@@ -31,6 +31,17 @@ export interface HudActions {
   rod(): void;
   /** The round action button is held down (true) or let go (false). */
   hold?(on: boolean): void;
+  /** One of the context buttons (the outboard, bait…) was tapped. */
+  button?(id: string): void;
+}
+
+export interface HudButton {
+  id: string;
+  label: string;
+  icon: string;
+  /** The laptop key for it, shown on the button. */
+  key?: string;
+  on?: boolean;
 }
 
 export class Hud {
@@ -61,6 +72,8 @@ export class Hud {
   private lastPrompt = '';
   private lastClock = '';
   private lastBasket = -1;
+  private ctxBtns: HTMLDivElement;
+  private lastBtns = '';
 
   constructor(
     private actions: HudActions,
@@ -116,7 +129,17 @@ export class Hud {
     });
     this.lookHint = el('div', { id: 'lookhint', class: 'hide' }, 'Click to look around · <b>Esc</b> to let go of the pointer');
     this.card = el('div', { id: 'findcard', role: 'status' });
-    this.root.append(this.dot, this.prompt, this.clockEl, this.basketEl, this.storesEl, this.stickBase, this.actionBtn, this.jumpBtn, this.rodBtn, this.fishPanel, this.lookHint, this.card);
+    // Buttons for what you can do just now (the outboard in the dinghy, throwing bait).
+    this.ctxBtns = el('div', { id: 'ctxbtns' });
+    this.ctxBtns.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      const b = (e.target as HTMLElement).closest('button');
+      if (b?.dataset.id) {
+        actions.click();
+        actions.button?.(b.dataset.id);
+      }
+    });
+    this.root.append(this.dot, this.prompt, this.clockEl, this.basketEl, this.storesEl, this.stickBase, this.actionBtn, this.jumpBtn, this.rodBtn, this.fishPanel, this.lookHint, this.card, this.ctxBtns);
     document.body.appendChild(this.standBtn);
     if (!touch) {
       this.jumpBtn.style.display = 'none';
@@ -132,6 +155,16 @@ export class Hud {
     this.logList = el('div', { class: 'loglist' });
     this.logbook.append(h, this.logSummary, this.logList);
     document.body.appendChild(this.logbook);
+  }
+
+  /** The context buttons now (an empty list hides them). */
+  setButtons(list: HudButton[]): void {
+    const key = list.map((b) => `${b.id}:${b.label}:${b.on ? 1 : 0}`).join('|');
+    if (key === this.lastBtns) return;
+    this.lastBtns = key;
+    this.ctxBtns.innerHTML = list
+      .map((b) => `<button data-id="${b.id}" class="${b.on ? 'on' : ''}" aria-label="${b.label}">${b.icon}<span>${b.label}${!this.touch && b.key ? ` <kbd>${b.key}</kbd>` : ''}</span></button>`)
+      .join('');
   }
 
   /** 'fp' when walking about, 'build' when kneeling at the sand, 'none' on the start screen. */
@@ -253,8 +286,9 @@ export class Hud {
     basket: FindKind[],
     clock: string,
     boat?: { hull: number; where: string; sailing?: string; rows?: { name: string; value: string; text: string }[] },
-    fish?: { name: string; count: number; fact: string }[],
+    fish?: { name: string; count: number; fact: string; best?: string }[],
     garden?: { rows: { name: string; count: number; fact: string }[]; seeds: string },
+    sharks?: { name: string; count: number; fact: string; where: string }[],
   ): void {
     const kinds = FIND_KINDS;
     const nFound = kinds.filter((k) => found[k]).length;
@@ -285,8 +319,18 @@ export class Hud {
       for (const f of fish) {
         const row = el('div', { class: `logrow${f.count ? '' : ' unknown'}` });
         row.innerHTML = f.count
-          ? `<div class="name">${cap(f.name)}<span>caught ${f.count === 1 ? 'once' : `${f.count} times`}</span></div><div class="fact">${f.fact}</div>`
+          ? `<div class="name">${cap(f.name)}<span>caught ${f.count === 1 ? 'once' : `${f.count} times`}${f.best ? ` · ${f.best}` : ''}</span></div><div class="fact">${f.fact}</div>`
           : `<div class="name">Not caught yet<span>fish</span></div>`;
+        this.logList.appendChild(row);
+      }
+    }
+    if (sharks) {
+      this.logList.appendChild(el('h3', {}, 'Sharks'));
+      for (const f of sharks) {
+        const row = el('div', { class: `logrow${f.count ? '' : ' unknown'}` });
+        row.innerHTML = f.count
+          ? `<div class="name">${cap(f.name)}<span>seen ${f.count === 1 ? 'once' : `${f.count} times`}</span></div><div class="fact">${f.fact} ${f.where}</div>`
+          : `<div class="name">Not seen yet<span>shark</span></div><div class="fact">${f.where}</div>`;
         this.logList.appendChild(row);
       }
     }

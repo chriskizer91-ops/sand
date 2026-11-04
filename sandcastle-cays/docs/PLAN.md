@@ -55,11 +55,13 @@ First a **vertical slice**: a small piece of the game made to finished quality, 
    - a cabin in each hull (sleep in your bunk until morning) and a workshop;
    - a flybridge helm with a big wheel and an all-round view;
    - a trampoline at the bow and swim steps at the sterns.
-7. **v0.8, The dinghy and the reef:**
-   - rowing the dinghy;
-   - the shark, now and then, off the reef;
-   - dropped finds that wash up later;
-   - dinghy repairs.
+7. **v0.8, The dinghy and the sharks** (the owner's choices, 2026-11-04):
+   - a dinghy in davits between the sterns: row it, or run the old outboard (which now lives on it); it crosses shallows the catamaran can't;
+   - three shark waters of rising risk and reward: the reef gap (one Caribbean reef shark), the deep water round the sea buoy (two), and Shark Bank, a new sandbar where a crowd of nurse sharks rests on the flats;
+   - sharks never hurt you: a bump makes you drop your basket (it washes up later) or dents the dinghy (mend it at the workbench); bait lures them away;
+   - the riskier the water, the rarer the finds (queen conch shells, sharks' teeth) and the bigger the fish;
+   - a reason to play: the old owner, Ida, left you the boat and a notebook, chapter by chapter, with goals and a small reward for each chapter;
+   - pop-up tips and an always-there "next step", so a new player knows what to do.
 8. **v0.9, Polish:** a full pass on look, sound, feel, text and phone speed. This is the finished slice.
 
 ## After the slice (ideas agreed along the way)

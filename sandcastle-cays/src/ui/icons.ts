@@ -51,6 +51,14 @@ export const ICONS = {
   up: svg('<path d="M12 19V6M6.5 11.5L12 6l5.5 5.5"/>'),
   /** A hand reaching to take something. */
   grab: svg('<path d="M7 12V7.5a1.3 1.3 0 0 1 2.6 0V11M9.6 11V5.5a1.3 1.3 0 0 1 2.6 0V11M12.2 11V6.5a1.3 1.3 0 0 1 2.6 0V12M14.8 12V9a1.3 1.3 0 0 1 2.6 0v5c0 3.5-2.5 6-6 6H11c-2.3 0-3.6-1-4.8-2.6L4 14.5a1.4 1.4 0 0 1 2.2-1.7l.8 1"/>'),
+  /** A notebook with a ribbon and a pencil. */
+  notebook: svg('<path d="M6 3.5h10.5a1.5 1.5 0 0 1 1.5 1.5v15a1.5 1.5 0 0 1-1.5 1.5H6z" fill="currentColor" fill-opacity=".15"/><path d="M6 3.5v18M4 7h3M4 11h3M4 15h3M9.5 8h5.5M9.5 11.5h5.5M9.5 15h3.5"/><path d="M14.5 3.5v5l1.3-1 1.2 1v-5" fill="currentColor" fill-opacity=".35"/>'),
+  /** A chunk of fish for bait. */
+  bait: svg('<path d="M4 13c2-4 6-6 10-5l5-3-1.5 5.5L19 16l-5-2.5c-4 1.5-8 .5-10-.5z" fill="currentColor" fill-opacity=".2"/><circle cx="7.6" cy="11.6" r="1" fill="currentColor"/><path d="M11 10.5c.6 1 .6 2.2 0 3.2"/>'),
+  /** A little outboard motor. */
+  outboard: svg('<rect x="7" y="3" width="9" height="7" rx="2.5" fill="currentColor" fill-opacity=".2"/><path d="M11.5 10v8M9 18h6M15 20.5a2 2 0 0 0-3.5-2.5 2 2 0 0 0-3.5 2.5"/><path d="M7 6.5H3.5"/>'),
+  /** Oars, crossed. */
+  oars: svg('<path d="M5 19L17 7M19 19L7 7"/><path d="M17 7l2.5-2.5a1.2 1.2 0 0 0-1-2l-3 1.5zM7 7L4.5 4.5a1.2 1.2 0 0 1 1-2l3 1.5z" fill="currentColor" fill-opacity=".3"/>'),
   bucket: svg('<path d="M5 8h14l-1.6 12H6.6z" fill="currentColor" fill-opacity=".18"/><path d="M5 8c0-3 3-5 7-5s7 2 7 5"/>'),
 };
 

@@ -4,7 +4,7 @@
  */
 import type { Terrain } from '../engine/terrain';
 
-export type IslandId = 'home' | 'pink';
+export type IslandId = 'home' | 'pink' | 'bank';
 export type Ground = 'sand' | 'pinksand' | 'grass' | 'rock' | 'seagrass' | 'reef';
 
 export interface Rect {

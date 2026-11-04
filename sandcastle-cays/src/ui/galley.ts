@@ -25,11 +25,14 @@ export interface GalleyView {
   extras: string;
   hungry: boolean;
   thirsty: boolean;
+  /** The bait box (once the notebook has taught you to cut bait). */
+  bait?: { known: boolean; have: number; max: number; perFish: number };
 }
 
 export interface GalleyActions {
   cook(): void;
   coconut(): void;
+  cutBait?(): void;
   close(): void;
   click(): void;
 }
@@ -80,7 +83,19 @@ export class Galley {
         this.actions.cook();
       });
       b.appendChild(cook);
-    } else b.appendChild(el('p', { class: 'small' }, 'Empty. Fish from the deck or the shore: tap the rod button (G on a laptop).'));
+    } else b.appendChild(el('p', { class: 'small' }, 'Empty. Fish from the deck, the shore or the dinghy: tap the rod button (G on a laptop).'));
+
+    if (v.bait?.known) {
+      b.appendChild(el('h3', {}, 'Bait box'));
+      b.appendChild(el('p', {}, `${v.bait.have} of ${v.bait.max} pieces of bait. <span class="small">Throw one to a curious shark and it goes after that instead of you.</span>`));
+      const cut = el('button', { class: 'wide' }, v.fish.length ? `Cut a fish into bait (${v.bait.perFish} pieces)` : 'No fish to cut up');
+      cut.disabled = !v.fish.length || v.bait.have >= v.bait.max;
+      cut.addEventListener('click', () => {
+        this.actions.click();
+        this.actions.cutBait?.();
+      });
+      b.appendChild(cut);
+    }
 
     b.appendChild(el('h3', {}, 'Coconuts'));
     const c = el('button', { class: 'wide' }, v.coconuts ? `Open a coconut (${v.coconuts} in the locker)` : 'No coconuts in the locker');

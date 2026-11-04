@@ -7,6 +7,7 @@ import type { Terrain } from '../engine/terrain';
 import { HomeCayTerrain } from './homeCay';
 import type { IslandTerrain, Rect } from './islands';
 import { PinkCayTerrain } from './pinkCay';
+import { SharkBankTerrain } from './sharkBank';
 
 function inside(r: Rect, x: number, z: number): boolean {
   return x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1;
@@ -16,16 +17,18 @@ export class WorldTerrain implements Terrain {
   readonly waterLevel = 0;
   readonly home = new HomeCayTerrain();
   readonly pink: PinkCayTerrain;
+  readonly bank: SharkBankTerrain;
   readonly islands: IslandTerrain[];
 
   constructor() {
     this.pink = new PinkCayTerrain((x, z) => this.home.heightAt(x, z));
-    this.islands = [this.home, this.pink];
+    this.bank = new SharkBankTerrain((x, z) => this.home.heightAt(x, z));
+    this.islands = [this.home, this.pink, this.bank];
   }
 
   /** The island whose area this is (or Home Cay, which owns the open sea). */
   islandAt(x: number, z: number): IslandTerrain {
-    return inside(this.pink.bounds, x, z) ? this.pink : this.home;
+    return inside(this.pink.bounds, x, z) ? this.pink : inside(this.bank.bounds, x, z) ? this.bank : this.home;
   }
 
   heightAt(x: number, z: number): number {
@@ -44,10 +47,12 @@ export class WorldTerrain implements Terrain {
   nearest(x: number, z: number): { island: IslandTerrain; coast: number } {
     let best = this.home as IslandTerrain;
     let d = -this.home.inland(x, z);
-    const dp = -this.pink.inland(x, z);
-    if (dp < d) {
-      best = this.pink;
-      d = dp;
+    for (const isl of [this.pink, this.bank]) {
+      const di = -isl.inland(x, z);
+      if (di < d) {
+        best = isl;
+        d = di;
+      }
     }
     return { island: best, coast: d };
   }

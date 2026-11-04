@@ -48,7 +48,8 @@ export interface PlayerWorld {
   bounds: { cx: number; cz: number; r: number };
 }
 
-export type PlayerMode = 'deck' | 'land' | 'swim' | 'climb';
+/** 'seat': sitting in the dinghy (it carries you; you can look about). */
+export type PlayerMode = 'deck' | 'land' | 'swim' | 'climb' | 'seat';
 export type StepSurface = 'deck' | 'sand' | 'water' | 'shallows';
 
 export interface PlayerEvents {
@@ -84,6 +85,8 @@ export class Player {
   speed = 0;
   /** How deep the water is at your feet (0 on land or aboard). */
   waterDepth = 0;
+  /** Seated in a small boat: its model, and the seat on it (boat-local, the seat's top). */
+  private seat: { obj: THREE.Object3D; local: THREE.Vector3; eye: number } | null = null;
 
   constructor(private world: PlayerWorld) {}
 
@@ -109,6 +112,23 @@ export class Player {
     this.mode = 'land';
     this.settleWater();
     this.refresh();
+  }
+
+  /** Sit down in a small boat (the dinghy): it carries you from now on. */
+  sitIn(obj: THREE.Object3D, local: THREE.Vector3, yaw: number, eye = 0.78): void {
+    this.mode = 'seat';
+    this.seat = { obj, local: local.clone(), eye };
+    this.yaw = yaw;
+    this.vy = 0;
+    this.climb = null;
+    this.airborne = false;
+    this.launch = null;
+    this.speed = 0;
+    this.refresh();
+  }
+
+  get seated(): boolean {
+    return this.mode === 'seat';
   }
 
   get aboard(): boolean {
@@ -154,6 +174,12 @@ export class Player {
   update(dt: number, move: { x: number; y: number }, run: boolean, jump: boolean): PlayerEvents {
     const ev: PlayerEvents = { steps: [], splash: 0, climbed: null, tooFar: false };
     const w = this.world;
+    if (this.mode === 'seat') {
+      // The dinghy moves you; the game steers it.
+      this.waterDepth = 0;
+      this.refresh();
+      return ev;
+    }
     // Desired movement in world space.
     const fx = -Math.sin(this.yaw);
     const fz = -Math.cos(this.yaw);
@@ -467,6 +493,16 @@ export class Player {
   /** Recompute the world feet and eye positions. */
   refresh(climbing = false): void {
     const b = this.world.boat;
+    if (this.mode === 'seat' && this.seat) {
+      const st = this.seat;
+      st.obj.updateMatrixWorld();
+      st.obj.localToWorld(this.feet.copy(st.local));
+      this.pos.copy(this.feet);
+      tmp.copy(st.local);
+      tmp.y += st.eye;
+      st.obj.localToWorld(this.eye.copy(tmp));
+      return;
+    }
     if (this.mode === 'deck' || climbing) {
       this.feet.copy(this.pos);
       b.obj.localToWorld(this.feet);
@@ -485,7 +521,7 @@ export class Player {
     cam.position.copy(this.eye);
     cam.rotation.order = 'YXZ';
     // The view leans with the boat, but less and less as she heels hard (you keep your head up).
-    cam.rotation.set(this.pitch, this.yaw, this.mode === 'deck' ? (boatRoll * 0.6) / (1 + Math.abs(boatRoll) * 1.2) : 0);
+    cam.rotation.set(this.pitch, this.yaw, this.mode === 'deck' || this.mode === 'seat' ? (boatRoll * 0.6) / (1 + Math.abs(boatRoll) * 1.2) : 0);
   }
 
   /** For saving. */

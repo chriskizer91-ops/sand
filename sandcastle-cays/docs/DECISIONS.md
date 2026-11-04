@@ -261,3 +261,62 @@ Each stroke opens an undo record. The first time a chunk is changed during that 
 - **Aground:** she can drag herself off only when less of her ends up on the bottom, so she can't plough further onto a flat bar. Being wide, a bow-first grounding usually needs backing off (motors astern) before turning, as on a real catamaran. "Push off" always works.
 - **Sleeping:** at the bunk, at anchor, from 6 pm to 5 am. The screen fades and you wake at 6:30. Stores, the garden and the morning wash-up carry on as if the hours had passed.
 
+## 33. A dinghy with oars and the old outboard (v0.8)
+- **Why:** the owner chose "oars and the little outboard". The catamaran's outboards are now inboard-style engines, so the sloop's old outboard moved onto the dinghy.
+- **Where it lives:** in stainless davits on the aft crossbeam, between the sterns. At the **port swim step** one press lowers it and puts you in it. At the **back of the cockpit** you can lower it, or hoist it back up, without getting in.
+- **Rowing:** about 1.25 m/s (2½ knots), a surge with each stroke. Rowing can spin it on the spot.
+- **The outboard:** about 3.4 m/s (6½ knots), roughly three times as fast as rowing, and still slower than the catamaran under sail.
+  - Its propeller needs 0.55 m of water. In the shallows it tilts up by itself and you row the last bit.
+  - It won't start where it's too shallow.
+- **Shallows:** it floats in 0.22 m of water. It can run up on a beach or a sandbar and stops there. You can always row off backwards.
+- **You face forward** at both seats, so the controls make sense in first person: W is always "go where you're looking when you look over the bow". (Real rowers face backwards; that would make the controls backwards too.) When the outboard starts, you move to the stern seat by the tiller.
+- **Getting out:** E climbs out onto the sand, into the water (in deep water), or back aboard the catamaran (near her stern). Back aboard, it is tied astern and follows her on a 7 m painter wherever she sails. Left anywhere else, it waits there. You're told if you sail off without it. If you come back aboard with it floating close astern, you tie it on.
+- **Dents:** a shark's bump costs 25%. At 0% it's 40% slower. "Mend the dinghy" at the workbench (1 driftwood and 1 rope) puts back 50%.
+
+## 34. Three shark waters, rising risk and reward (v0.8)
+- **Why:** the owner asked for "a single shark zone, double shark zone, a bunch of shark zones" and chose rising risk and reward.
+- **The three waters:**
+  - **The reef gap** (risk 1): one Caribbean reef shark, within 55 m of the channel's mouth.
+  - **The deep water round the sea buoy** (risk 2): two reef sharks, within 160 m of the buoy.
+  - **Shark Bank** (risk 3): six nurse sharks on the flats round a new sandbar 470 m north-west of Home Cay.
+    - The bar is about 48 × 13 m and knee-high above the sea.
+    - 60 m of knee-to-waist-deep sand flats lie all round it, too shallow for the catamaran. You anchor off the west side in about 5½ m and take the dinghy in.
+    - The swell breaks on the edge of the flats, so the water inside is calm (it counts as sheltered).
+    - The chart has it, with "sail there for me" (the route goes round the west of Home Cay, clear of the reef and the flats).
+- **How sharks behave** (all real, softened):
+  - Reef sharks patrol in mid-water.
+  - Nurse sharks spend most of the day resting on the sand and swim slowly between resting spots.
+  - When you're **in the water, wading, or in the dinghy** and a shark notices you, it may come and circle. It rises near the surface, so you see its fin cut the water.
+  - After circling it may come in for a bump (40% / 55% / 70% by risk) and then flicks away and leaves you alone for a minute or two.
+  - Walk right up to a resting nurse shark and it bolts, sometimes bumping your legs.
+  - **Aboard the catamaran you're out of reach:** they just swim by.
+- **What a bump does:** sharks never hurt you.
+  - **In the water:** you drop your basket. Its contents wash up on the nearest island with the next morning's tide.
+  - **In the dinghy:** a dent.
+  - **With an empty basket in the water:** just a nudge.
+- **Bait:** Q, or the Bait button, throws a piece about 6 m the way you're looking. Every shark within 60 m goes for it and noses about there for 45 s, ignoring you.
+  - You cut bait from a fish in the galley (3 pieces a fish, up to 12).
+  - The notebook teaches this at the end of chapter 2, and gives you 3 pieces to start.
+- **Rewards by risk:**
+  - **Finds:** only Shark Bank gets queen conch shells and sharks' teeth. There, rarity counts for far less (the square root of the usual weight), and sea glass is scarce. It is fewer finds a day, but the best.
+  - **Fish:** each step of risk makes fish 30% heavier on average. Bigger fish feed you longer and fight a little harder. The sea buoy's deep water counts as open sea for mahi-mahi.
+  - **Weights:** fish now have weights in kilograms, and the logbook keeps your biggest of each.
+
+## 35. Ida's notebook: goals with a gentle story (v0.8)
+- **Why:** the owner felt that with so much to do, the game now needs motivation, plus prompts that explain how to play and what the first next step is. They chose "goals with a gentle story".
+- **The story:** the boat and Home Cay were left to you by their old owner, Ida, who sailed these cays for thirty years. Ida's notebook is written to whoever comes next. Four chapters:
+  1. **Settling in:** go ashore, pick up three finds, stow them in the locker, build on the cove's sand, sleep a night aboard. *Reward:* Ida's seed tin (3 callaloo, 3 tomato, 2 sweet potato).
+  2. **Living aboard:** catch a fish, cook it, plant something, harvest it, make or mend something at the workbench. *Reward:* the bait recipe (and 3 pieces of bait).
+  3. **Further afield:** anchor at Pink Sand Cay, find a shell only it has, lower and row the dinghy, round the sea buoy. *Reward:* Ida's heavy spare sails (they wear half as fast).
+  4. **The shark waters:** take the dinghy through the reef gap, throw bait to a shark, step ashore on Shark Bank, find two things on its sand, catch a big fish (3 kg or more) in shark waters. *Reward:* Ida's strong reel (the line takes 40% less strain).
+- **Goals count everything you've ever done**, in any order. A fish caught on day one is already ticked when chapter 2 opens.
+- **Older saves:** they catch up quietly. Chapters already done are finished, with their rewards, and a tip says you've found the notebook.
+- **On screen:**
+  - **The "Next" line** (top left) always shows the next goal. For 30 s after it changes, it also shows how to do it, with the right keys or buttons for your device. Tap it, or press N, to open the notebook.
+  - **The notebook page** has Ida's note, the goals with ticks and "how" lines, and the reward. Later chapters' pages are "stuck together" until you get there.
+  - A tick pops up as a short message. A finished chapter shows Ida's last line and what she left you.
+- **Tips:** a small card under the "Next" line, each shown once, ever, the first time it's useful. It fades by itself after long enough to read it twice, or "Got it".
+  - The tips cover: the welcome and controls, the ladder, swimming, ashore, the first find, evening, fishing, the galley, the dinghy, too shallow for the outboard, on the sand, shark waters, a shark circling, no bait, a dented dinghy, a dropped basket, and Shark Bank's flats.
+  - Dev tools can show them all again.
+- **The new-game welcome:** Ida's note replaces the old "Home Cay" card.
+

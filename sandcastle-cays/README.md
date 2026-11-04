@@ -2,7 +2,7 @@
 
 A calm game about living aboard a small sailboat in the Caribbean: comb the beaches for what the sea washes up, build sandcastles, sail between islands, and (coming) keep your boat in repair and grow food. Everything (sand, water, sky, boat, finds, sounds) is made in code. See [`docs/PLAN.md`](docs/PLAN.md) for the agreed plan.
 
-**Current version: 0.7, "A bigger boat"**: your boat is now a 45 ft catamaran you can walk around inside (saloon with galley and chart table, cabins in both hulls, a flybridge helm with a big wheel), and you can sleep in your bunk until morning. 0.6, "The garden", brought pots and a garden on Home Cay; 0.5, "Living aboard", brought food and water stores, fishing, the galley, rain water, coconuts, and mending the boat at a workbench with what the sea washes up. 0.4.1 brought "Push off" and the dev tools; 0.4, "Blue water", brought the open sea beyond the reefs (stronger wind, a long swell, whitecaps, spray, surfing down waves), squalls you can sail into, the sea buoy with your best time out round it and home, faster sailing and a stronger outboard. 0.3.1 brought the outboard and navigation lights; 0.3 ("First passage") brought sailing with real wind, the chart and "sail there for me", anchoring, the reef and its gap, and a second island, Pink Sand Cay. Before that, 0.2 brought:
+**Current version: 0.8, "The dinghy and the sharks"**: a dinghy in davits that you row or run with the old outboard, across shallows the catamaran can't; three shark waters of rising risk and reward (the reef gap, the deep water round the sea buoy, and Shark Bank, a new sandbar where nurse sharks rest); bait to lure sharks off; the old owner Ida's notebook, with goals chapter by chapter and a reward for each; and pop-up tips with an always-there "next step". 0.7, "A bigger boat", made your boat a 45 ft catamaran you can walk around inside, with a bunk to sleep in until morning. 0.6, "The garden", brought pots and a garden on Home Cay; 0.5, "Living aboard", brought food and water stores, fishing, the galley, rain water, coconuts, and mending the boat at a workbench with what the sea washes up. 0.4.1 brought "Push off" and the dev tools; 0.4, "Blue water", brought the open sea beyond the reefs (stronger wind, a long swell, whitecaps, spray, surfing down waves), squalls you can sail into, the sea buoy with your best time out round it and home, faster sailing and a stronger outboard. 0.3.1 brought the outboard and navigation lights; 0.3 ("First passage") brought sailing with real wind, the chart and "sail there for me", anchoring, the reef and its gap, and a second island, Pink Sand Cay. Before that, 0.2 brought:
 - your boat at anchor off Home Cay, seen through your own eyes;
 - the new sea and sky from the raft game, with day and night;
 - swimming ashore and walking the island;
@@ -12,7 +12,7 @@ A calm game about living aboard a small sailboat in the Caribbean: comb the beac
 ## Playing it
 **Easiest:** open the game's private link, https://claude.ai/artifact/3F64yxNHrsCbRvwY9mdk3f, which always has the latest version. (For Claude sessions: it's the claude.ai artifact with slug `1229d053-31f1-46e8-be80-cc430658ecc6`; republish `builds/` files to it with each new version.)
 
-Or download the file: `builds/sandcastle-cays-v0.7.html`.
+Or download the file: `builds/sandcastle-cays-v0.8.html`.
 - **Laptop:** download the file and double-click it (opens in Chrome or Edge).
 - **Pixel phone:** download the file, then open it from Files > Downloads with Chrome.
 
@@ -23,6 +23,7 @@ Or download the file: `builds/sandcastle-cays-v0.7.html`.
 | Pick up / use | tap the find, or the round button | look at it and press E (or click) |
 | Jump / climb | the arrow button | Space |
 | Kneel to build (on the cove's sand) | the round button | B |
+| Ida's notebook (goals, chapter by chapter; the "Next" line shows your next step) | notebook button, or tap the "Next" line | N |
 | Logbook | book button | L or the book button |
 | Take the helm (on the flybridge, up the steps from the cockpit) | the round button | E |
 | Sleep until morning (your bunk, at anchor, after sunset) | the round button | E |
@@ -34,12 +35,16 @@ Or download the file: `builds/sandcastle-cays-v0.7.html`.
 | Stores (days of food and water) | tap the bowl and drop at the top | click them |
 | Garden: plant, water, harvest (pots on the cabin top, beds on Home Cay) | the round button | E |
 | Chart (tap a place to sail there, or "Round the sea buoy and come home") | map button | M |
+| Dinghy: lower it and climb in (port swim step), hoist it (back of the cockpit), climb out | the round button | E |
+| Dinghy: row ahead and astern, turn | the stick | W S, A D |
+| Dinghy: the outboard (then the throttle) | "Start outboard" / "Outboard off" | R starts, F stops (then W S) |
+| Throw bait to a shark | "Throw bait" button | Q |
 | While building | one finger tool, two fingers swing, pinch zoom | click to use the tool, two-finger swipe to swing, pinch or wheel to zoom |
 | Stand up again | "Stand up" button | Esc or B |
 
 The **Menu** has save/load to a file, the drying speed ("sun"), sound, graphics, help, **Run the checks on this device** (with the frame rate) and **Dev tools**.
 
-**Dev tools** (press T on the laptop, or Menu → Dev tools) show the frame rate, the boat and the weather. They also have buttons to move the boat, push off, call up a squall, change the wind, the time of day and the game's speed.
+**Dev tools** (press T on the laptop, or Menu → Dev tools) show the frame rate, the boat, the weather, the dinghy, the nearest shark and the notebook. They also have buttons to move the boat (Shark Bank too), push off, call up a squall, change the wind, the time of day and the game's speed, put the dinghy in the water, make a shark come and look, give bait, finish a chapter and show the tips again.
 
 ## For developers (and future Claude sessions)
 ```
@@ -51,23 +56,29 @@ npm run browser-check   # headless Chromium as laptop + Pixel: plays aboard, swi
 npm run release         # build + copy to builds/sandcastle-cays-v<version>.html
 ```
 - `node e2e/look.mjs <name>` builds a sample castle and screenshots it.
+- `node e2e/dinghy-look.mjs` and `node e2e/shark-look.mjs` screenshot the dinghy (and the davits) and the sharks, fin wake and bait.
 - `node e2e/cat-look.mjs`, `node e2e/sloop-look.mjs`, `node e2e/finds-look.mjs`, `node e2e/weather-look.mjs`, `node e2e/fish-look.mjs` and `node e2e/garden-look.mjs` screenshot the boat, the finds, the weather, the fish and fishing gear, and the garden on their own.
 - Add `#debug` to the URL for a performance readout (frame rate, draw calls, triangles), or `#noworker` to force the sand engine onto the page (backup mode).
 
 ### Layout
 - `src/engine/`: the sand engine (no browser-page code; runs in a Web Worker). Unchanged in v0.2 apart from the save header carrying the game state.
-- `src/world/`: `homeCay.ts` and `pinkCay.ts` (each island's shape, reef, tideline and anchorage), `islands.ts` (what islands share), `world.ts` (both on one sea floor) and `ground.ts` (what's underfoot, including your castles).
+- `src/world/`: `homeCay.ts`, `pinkCay.ts` and `sharkBank.ts` (each island's shape, reef or flats, tideline and anchorage), `islands.ts` (what islands share), `world.ts` (both on one sea floor) and `ground.ts` (what's underfoot, including your castles).
 - `src/game/sailing.ts`: how the boat sails (points of sail, tacking, heel, leeway, overpowering, surfing, running aground, anchoring, the motor, the autopilot).
 - `src/game/weather.ts`: the trade wind, the open sea beyond the reefs, and the squalls.
 - `src/game/aboard.ts` and `src/game/fishing.ts`: living aboard (stores, rain, coconuts, the hull leaking, sail wear, workbench recipes) and fishing; `src/living.ts` connects them to the game.
 - `src/game/garden.ts`: the garden (crops, seeds, watering, growing, harvests); `src/gardening.ts` puts it in the game.
+- `src/game/dinghy.ts`: the dinghy (rowing, the outboard, shallows, towing); `src/dinghyCtl.ts` puts it in the game (davits, climbing in and out).
+- `src/game/sharks.ts`: the three shark waters and how sharks behave (patrolling, resting, circling, bumping, bait); `src/sharkLife.ts` puts them in the game.
+- `src/game/story.ts`: Ida's notebook (chapters, goals, rewards) and the one-time tips; `src/ui/guide.ts` shows the "Next" line, the tips and the notebook page.
 - `src/player/player.ts`: you, in first person (deck, land, swimming, the ladder).
 - `src/game/beach.ts`: beachcombing rules (wash-ups, basket, locker, logbook) and the finds on the sand.
 - `src/content/finds.ts`: the catalogue of finds with true facts.
 - `src/render/`:
   - `ocean.ts`, `sky.ts`, `daylight.ts`, `pipeline.ts`, `paint.ts`: the water, the sky, the light and how each frame is drawn (from the raft game);
   - `island.ts` and `islandLife.ts`: the island's ground, plants and rocks;
-  - `catamaran.ts` (with `boatKit.ts`), `boatMotion.ts` and `wake.ts`: your 45 ft catamaran (inside and out, several levels to walk, sails, wheel, rudders and engines that move), how it rides the waves, and its wakes. `sloop.ts` is the old boat, kept for reference;
+  - `catamaran.ts` (with `boatKit.ts`), `boatMotion.ts` and `wake.ts`: your 45 ft catamaran (inside and out, several levels to walk, sails, wheel, rudders and engines that move, the davits), how it rides the waves, and its wakes. `sloop.ts` is the old boat, kept for reference;
+  - `dinghy.ts`: the dinghy (oars that row, the outboard, dents and patches);
+  - `shark.ts`: the reef and nurse sharks (they swim with a wave down the body), the fin wake, bait;
   - `weatherFx.ts` (with `squallFx.ts`, `rainFx.ts`, `sprayFx.ts`, `weatherCommon.ts`): squall clouds and rain curtains, rain around you, spray over the bow;
   - `buoy.ts`: the sea buoy;
   - `finds.ts`: the find and basket models;

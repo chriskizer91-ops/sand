@@ -50,14 +50,26 @@ export const UPKEEP = {
   torn: 40,
 };
 
-export type Upgrade = 'catcher' | 'jugs' | 'lure' | 'trap' | 'planter';
+/** Made at the workbench, or (the last two) given by the notebook's old owner. */
+export type Upgrade = 'catcher' | 'jugs' | 'lure' | 'trap' | 'planter' | 'goodSails' | 'strongReel';
+const UPGRADES: Upgrade[] = ['catcher', 'jugs', 'lure', 'trap', 'planter', 'goodSails', 'strongReel'];
+
+export const DINGHY_UPKEEP = {
+  /** A shark's bump dents the dinghy this much (%). */
+  bump: 25,
+  /** Mending it at the workbench puts this much back (%). */
+  mend: 50,
+};
+
+/** Pieces of bait cut from one fish, and the most you can carry. */
+export const BAIT = { perFish: 3, max: 12 };
 
 export interface AboardState {
   /** Days of food in the larder and of water in the tank. */
   food: number;
   water: number;
-  /** Fresh fish waiting to be cooked: kind, and the game day it was caught. */
-  coolBox: { kind: string; caught: number }[];
+  /** Fresh fish waiting to be cooked: kind, the game day it was caught, and how big (1 = typical). */
+  coolBox: { kind: string; caught: number; size?: number }[];
   /** Sail condition, 0..100. */
   sails: number;
   /** Water in the bilge, 0 (dry) .. 1 (full). */
@@ -68,10 +80,16 @@ export interface AboardState {
   fishLog: Record<string, number>;
   /** The last morning the fish trap was checked (game day). */
   trapDay: number;
+  /** The dinghy's condition, 0..100 (sharks' bumps dent it). */
+  dinghy: number;
+  /** Pieces of bait in the bait box. */
+  bait: number;
+  /** The heaviest of each kind of fish you've caught (kg). */
+  biggest: Record<string, number>;
 }
 
 export function newAboard(): AboardState {
-  return { food: STORES.startFood, water: STORES.startWater, coolBox: [], sails: 100, bilge: 0, made: {}, fishLog: {}, trapDay: 0 };
+  return { food: STORES.startFood, water: STORES.startWater, coolBox: [], sails: 100, bilge: 0, made: {}, fishLog: {}, trapDay: 0, dinghy: 100, bait: 0, biggest: {} };
 }
 
 const num = (v: unknown, d: number, lo: number, hi: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : d);
@@ -82,7 +100,7 @@ export function restoreAboard(raw: unknown): AboardState {
   if (!raw || typeof raw !== 'object') return a;
   const r = raw as Partial<AboardState>;
   a.made = {};
-  for (const k of ['catcher', 'jugs', 'lure', 'trap', 'planter'] as Upgrade[]) {
+  for (const k of UPGRADES) {
     const n = (r.made as Record<string, unknown> | undefined)?.[k];
     if (typeof n === 'number' && n > 0) a.made[k] = Math.min(k === 'jugs' || k === 'planter' ? 2 : 1, Math.floor(n));
   }
@@ -91,7 +109,14 @@ export function restoreAboard(raw: unknown): AboardState {
   a.sails = num(r.sails, 100, 0, 100);
   a.bilge = num(r.bilge, 0, 0, 1);
   a.trapDay = num(r.trapDay, 0, 0, 1e6);
-  if (Array.isArray(r.coolBox)) a.coolBox = r.coolBox.filter((f) => f && typeof f.kind === 'string' && Number.isFinite(f.caught)).slice(0, 30);
+  a.dinghy = num(r.dinghy, 100, 0, 100);
+  a.bait = Math.floor(num(r.bait, 0, 0, BAIT.max));
+  if (Array.isArray(r.coolBox))
+    a.coolBox = r.coolBox
+      .filter((f) => f && typeof f.kind === 'string' && Number.isFinite(f.caught))
+      .slice(0, 30)
+      .map((f) => ({ kind: f.kind, caught: f.caught, ...(typeof f.size === 'number' && Number.isFinite(f.size) ? { size: Math.max(0.5, Math.min(3, f.size)) } : {}) }));
+  if (r.biggest && typeof r.biggest === 'object') for (const [k, v] of Object.entries(r.biggest)) if (typeof v === 'number' && v > 0 && Number.isFinite(v)) a.biggest[k] = v;
   if (r.fishLog && typeof r.fishLog === 'object') for (const [k, v] of Object.entries(r.fishLog)) if (typeof v === 'number' && v > 0) a.fishLog[k] = Math.floor(v);
   return a;
 }
@@ -157,14 +182,30 @@ export function spoilFish(a: AboardState, today: number): number {
   return n - a.coolBox.length;
 }
 
-/** Cook everything in the cool box: food (days) for each fish. Returns the days added. */
-export function cookFish(a: AboardState, foodOf: (kind: string) => number): number {
+/** Cook everything in the cool box: food (days) for each fish (a bigger fish gives more). Returns the days added. */
+export function cookFish(a: AboardState, foodOf: (kind: string, size: number) => number): number {
   let add = 0;
-  for (const f of a.coolBox) add += foodOf(f.kind);
+  for (const f of a.coolBox) add += foodOf(f.kind, f.size ?? 1);
   a.coolBox = [];
   const before = a.food;
   a.food = Math.min(STORES.foodMax, a.food + add);
   return a.food - before;
+}
+
+/** Cut the smallest fish in the cool box into bait. Returns the pieces cut (0 if no fish, or the bait box is full). */
+export function cutBait(a: AboardState): number {
+  if (!a.coolBox.length || a.bait >= BAIT.max) return 0;
+  let i = 0;
+  for (let j = 1; j < a.coolBox.length; j++) if ((a.coolBox[j].size ?? 1) < (a.coolBox[i].size ?? 1)) i = j;
+  a.coolBox.splice(i, 1);
+  const n = Math.min(BAIT.perFish, BAIT.max - a.bait);
+  a.bait += n;
+  return n;
+}
+
+/** A shark bumped the dinghy. */
+export function dentDinghy(a: AboardState): void {
+  a.dinghy = Math.max(0, a.dinghy - DINGHY_UPKEEP.bump);
 }
 
 // ---------- the boat's upkeep ----------
@@ -191,6 +232,8 @@ export function wearSails(a: AboardState, over: number, flogging: boolean, dt: n
   let w = 0;
   if (over > 0.08) w += UPKEEP.wearOver * Math.min(1.5, over / 0.2);
   if (flogging) w += UPKEEP.wearFlog;
+  // The old owner's spare sails are heavier cloth, and wear half as fast.
+  if ((a.made.goodSails ?? 0) > 0) w *= 0.5;
   a.sails = Math.max(0, a.sails - w * dt);
 }
 
@@ -222,6 +265,7 @@ export const RECIPES: Recipe[] = [
   { id: 'lure', name: 'Feather lure', text: 'Fish bite sooner.', needs: { feather: 1, float: 1 }, upgrade: 'lure', max: 1 },
   { id: 'trap', name: 'Fish trap', text: 'At anchor overnight it catches a fish or two by morning.', needs: { net: 1, driftwood: 3 }, upgrade: 'trap', max: 1 },
   { id: 'planter', name: 'Another deck pot', text: 'A pot for the cabin-top trays, to grow more (up to four pots).', needs: { plank: 1, driftwood: 2 }, upgrade: 'planter', max: 2 },
+  { id: 'dinghy', name: 'Mend the dinghy', text: `Dinghy +${DINGHY_UPKEEP.mend}%. Beat the dents out and seal the seams with driftwood and twine.`, needs: { driftwood: 1, rope: 1 } },
 ];
 
 /** A recipe shows once you've found every kind of thing it needs at least once. */
@@ -234,6 +278,7 @@ export function whyNot(r: Recipe, a: AboardState, hull: number, locker: Partial<
   if (r.upgrade && (a.made[r.upgrade] ?? 0) >= (r.max ?? 1)) return 'Already made';
   if (r.id === 'caulk' || r.id === 'patch') if (hull >= 99.5) return 'The hull is sound';
   if (r.id === 'sails' && a.sails >= 99.5) return 'The sails are fine';
+  if (r.id === 'dinghy' && a.dinghy >= 99.5) return 'The dinghy is sound';
   for (const [k, n] of Object.entries(r.needs)) if ((locker[k] ?? 0) < n) return 'Not enough in the locker';
   return null;
 }
@@ -246,5 +291,6 @@ export function make(r: Recipe, a: AboardState, hull: number, locker: Partial<Re
   if (r.id === 'caulk') return Math.min(100, hull + 15);
   if (r.id === 'patch') return Math.min(100, hull + 35);
   if (r.id === 'sails') a.sails = Math.min(100, a.sails + 40);
+  if (r.id === 'dinghy') a.dinghy = Math.min(100, a.dinghy + DINGHY_UPKEEP.mend);
   return hull;
 }

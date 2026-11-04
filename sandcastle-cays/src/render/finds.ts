@@ -1898,6 +1898,226 @@ function bottle(): Part[] {
 }
 
 // ---------------------------------------------------------------------------
+// Shark Bank
+// ---------------------------------------------------------------------------
+
+/** Periodic Catmull-Rom through a closed list of 2D points, by index (t in [0, n)). */
+function closedCurve(pts: [number, number][]): (t: number) => [number, number] {
+  const n = pts.length;
+  return (t: number) => {
+    const i = Math.floor(t);
+    const f = t - i;
+    const p = (k: number) => pts[(((i + k) % n) + n) % n];
+    const [p0, p1, p2, p3] = [p(-1), p(0), p(1), p(2)];
+    const cr = (a: number, b: number, c: number, d: number) =>
+      0.5 * (2 * b + (-a + c) * f + (2 * a - 5 * b + 4 * c - d) * f * f + (-a + 3 * b - 3 * c + d) * f * f * f);
+    return [cr(p0[0], p1[0], p2[0], p3[0]), cr(p0[1], p1[1], p2[1], p3[1])];
+  };
+}
+
+/**
+ * A fossil shark's tooth lying flat: a triangular blade with finely serrated
+ * edges over a broad two-lobed root, gone grey and black from years on the
+ * sea floor; the root darker than the glossy blade.
+ */
+function sharkTooth(): Part[] {
+  // the outline, anticlockwise from the tip (x across, z along the tooth; the tip at +z)
+  const outline: [number, number][] = [
+    [0, 0.0172],
+    [-0.0042, 0.0092],
+    [-0.0084, 0.0026],
+    [-0.0117, 0.0004],
+    [-0.0116, -0.0038],
+    [-0.0072, -0.0064],
+    [-0.0012, -0.0046],
+    [0.0012, -0.0046],
+    [0.0072, -0.0064],
+    [0.0116, -0.0038],
+    [0.0117, 0.0004],
+    [0.0084, 0.0026],
+    [0.0042, 0.0092],
+  ];
+  const curve = closedCurve(outline);
+  const n = outline.length;
+  const C: [number, number] = [0, 0.0015];
+  // the blade's edges run from the tip to its shoulders (outline points 0-2 and 11-13)
+  const onBlade = (t: number): number => {
+    const a = (((t % n) + n) % n) / n;
+    return smooth(0.2, 0.15, a) + smooth(0.8, 0.85, a);
+  };
+  const edgeAt = (u: number): [number, number] => {
+    const t = u * n;
+    const [x, z] = curve(t);
+    // serrations: tiny teeth all along the blade's cutting edges
+    const saw = 1 - 0.075 * onBlade(t) * Math.pow(0.5 + 0.5 * Math.cos(u * TAU * 18), 2);
+    return [C[0] + (x - C[0]) * saw, C[1] + (z - C[1]) * saw];
+  };
+  const isRoot = (z: number): number => smooth(0.0035, 0.0005, z);
+  const geo = grid({
+    us: steps(36),
+    vs: [0, 0.16, 0.32, 0.45, 0.5, 0.55, 0.68, 0.84, 1],
+    wrapU: true,
+    flip: true,
+    pos: (u, v) => {
+      const ph = Math.PI * v;
+      const k = Math.pow(Math.sin(ph), 0.7);
+      const [ex, ez] = edgeAt(u);
+      const x = C[0] + (ex - C[0]) * k;
+      const z = C[1] + (ez - C[1]) * k;
+      // a lens in section: thick in the middle, sharp at the edges; the root thicker still
+      const thick = 0.0016 + 0.0011 * isRoot(z);
+      const y = Math.cos(ph) * thick * Math.pow(Math.max(0, 1 - k * k), 0.55) * (Math.cos(ph) > 0 ? 1 : 0.8);
+      // the blade curves gently up toward its tip
+      return [x, y + 0.0012 * Math.pow(Math.max(0, z / 0.017), 2), z];
+    },
+    col: (u, v, p) => {
+      const z = p[2];
+      const root = isRoot(z);
+      // a glossy grey-black blade, paler toward its tip and along its edges; a dark band where it meets the root
+      let c = mixC(lin(0x3a3c3e), lin(0x66686a), smooth(0.004, 0.016, z) * 0.6);
+      const k = Math.sin(Math.PI * v);
+      c = mixC(c, lin(0x8e8e8a), smooth(0.85, 1, k) * (1 - root) * 0.5);
+      c = mixC(c, lin(0x1c1b1a), smooth(0.0045, 0.0025, Math.abs(z - 0.0025)) * 0.6);
+      c = mixC(c, mixC(lin(0x2a2420), lin(0x3e3428), noise(p[0] * 900, p[2] * 900, 401)), root);
+      return mulC(c, 0.9 + 0.15 * noise(p[0] * 1500 + 3, p[2] * 1500, 403));
+    },
+  });
+  return place([{ geo, mat: toothMat() }], { y: 0.35 });
+}
+
+/** Old enamel: a soft sheen, not a mirror. */
+const toothMat = (): THREE.MeshStandardMaterial =>
+  material('tooth', () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0 }));
+
+/**
+ * Queen conch: a heavy shell with a spire of knobby spines and a big flared
+ * lip, lying on its back so the lip's glossy pink shows. Built as one
+ * cross-section swept down the shell: round the chalky body, out along the
+ * lip's outer face, back along its pink inner face, and down into the opening.
+ */
+function queenConch(): Part[] {
+  const L = 0.222;
+  const SHOULDER = 0.32;
+  const deg = Math.PI / 180;
+  // v = 0 at the tip of the spire .. 1 at the end of the siphonal canal
+  const radius = (v: number): number => {
+    if (v < SHOULDER) return 0.06 * Math.pow(v / SHOULDER, 0.85);
+    if (v < 0.92) return 0.062 * (1 - 0.74 * Math.pow((v - SHOULDER) / (0.92 - SHOULDER), 1.35));
+    return mix(0.0165, 0.008, (v - 0.92) / 0.08);
+  };
+  // seven big blunt spines round the shoulder (biggest on the back), smaller ones climbing the spire
+  const knob = (phi: number, v: number): number => {
+    // (lying on its back, the spines that show are the ones on its sides)
+    const sides = 0.5 + 0.5 * Math.abs(Math.cos(phi));
+    const shoulder = Math.exp(-(((v - SHOULDER) / 0.045) ** 2)) * Math.pow(Math.max(0, Math.cos(7 * phi)), 2) * 0.5 * sides;
+    const spire = smooth(0.03, 0.1, v) * smooth(SHOULDER - 0.03, SHOULDER - 0.08, v) * Math.pow(Math.max(0, Math.cos(7 * phi)), 2.5) * 0.24;
+    return shoulder + spire;
+  };
+  // the flared lip: no lip on the spire, widest just behind the shoulder, gone at the canal;
+  // its back end rises in a wing beside the spire
+  const flare = (v: number): number => 0.068 * smooth(0.1, 0.3, v) * (1 - smooth(0.55, 0.93, v));
+  const lift = (v: number): number => (6 + 26 * smooth(0.42, 0.14, v)) * deg;
+  const gape = (v: number): number => smooth(0.26, 0.4, v) * smooth(0.99, 0.88, v);
+  const T = 0.0055;
+  // the loop round the cross-section, as parts of u
+  const A1 = 0.56; // body: from the inner (left) side of the opening round the back to the lip's root
+  const B1 = 0.68; // out along the lip's outer face
+  const C1 = 0.74; // round its rim
+  const D1 = 0.88; // back along its inner face
+  // round the body in 11 steps of 360/14 degrees, so every spine gets a sample on its peak and one in the dip between
+  const STEP = 360 / 14;
+  const PHI0 = 5 * STEP * deg;
+  const PHI1 = 16 * STEP * deg;
+  const body = (phi: number, v: number): [number, number] => {
+    const r = radius(v) * (1 + knob(phi, v));
+    return [r * Math.cos(phi), r * Math.sin(phi)];
+  };
+  const section = (u: number, v: number): { zy: [number, number]; part: number; k: number } => {
+    const uu = clamp(u, 0, 1);
+    const F = flare(v);
+    const al = lift(v);
+    const root = body(PHI1, v);
+    const dir: [number, number] = [Math.cos(al), Math.sin(al)];
+    const nrm: [number, number] = [-dir[1], dir[0]];
+    const curl = (q: number): number => 0.18 * F * q * q; // the edge curls up a little
+    if (uu <= A1) {
+      const k = uu / A1;
+      return { zy: body(mix(PHI0, PHI1, k), v), part: 0, k };
+    }
+    if (uu <= B1) {
+      const q = (uu - A1) / (B1 - A1);
+      return { zy: [root[0] + dir[0] * F * q + nrm[0] * curl(q), root[1] + dir[1] * F * q + nrm[1] * curl(q)], part: 1, k: q };
+    }
+    if (uu <= C1) {
+      const q = (uu - B1) / (C1 - B1);
+      const a = Math.PI * q;
+      const edge: [number, number] = [root[0] + dir[0] * F + nrm[0] * curl(1), root[1] + dir[1] * F + nrm[1] * curl(1)];
+      const t = Math.min(T * 0.5, F * 0.5);
+      return { zy: [edge[0] + dir[0] * t * Math.sin(a) + nrm[0] * t * (1 - Math.cos(a)), edge[1] + dir[1] * t * Math.sin(a) + nrm[1] * t * (1 - Math.cos(a))], part: 2, k: q };
+    }
+    if (uu <= D1) {
+      const q = 1 - (uu - C1) / (D1 - C1);
+      const t = Math.min(T, F);
+      return { zy: [root[0] + dir[0] * F * q + nrm[0] * (curl(q) + t), root[1] + dir[1] * F * q + nrm[1] * (curl(q) + t)], part: 3, k: q };
+    }
+    // down into the opening and back up the inner side to where the body began
+    const q = (uu - D1) / (1 - D1);
+    const t = Math.min(T, F);
+    const from: [number, number] = [root[0] + nrm[0] * t, root[1] + nrm[1] * t];
+    const to = body(PHI0, v);
+    const deep: [number, number] = [0, radius(v) * (1 - 0.65 * gape(v))];
+    const a = q < 0.5 ? q * 2 : (q - 0.5) * 2;
+    const p0 = q < 0.5 ? from : deep;
+    const p1 = q < 0.5 ? deep : to;
+    return { zy: [mix(p0[0], p1[0], smooth(0, 1, a)), mix(p0[1], p1[1], smooth(0, 1, a))], part: 4, k: q };
+  };
+  const pos = (u: number, v: number): V3 => {
+    const { zy } = section(u, v);
+    // the lip's wing also sweeps back toward the spire
+    const back = (u > A1 && u < 1 ? 1 : 0) * 0.03 * smooth(0.4, 0.15, v) * Math.min(1, flare(v) / 0.04);
+    return [-L / 2 + L * v - back, zy[1], zy[0]];
+  };
+  const cream = lin(0xe8dabc);
+  const tan = lin(0xc8a676);
+  const brown = lin(0x8a6644);
+  const pink = lin(0xec9480);
+  const peach = lin(0xf8c8a2);
+  const deepPink = lin(0xb85a52);
+  const col = (u: number, v: number, p: V3): C3 => {
+    const { part, k } = section(u, v);
+    if (part === 0 || part === 1) {
+      // chalky cream with tan bands, faint brown streaks, and the spines worn pale
+      const phi = mix(PHI0, PHI1, part === 0 ? k : 1);
+      let c = mixC(cream, tan, smooth(0.42, 0.7, fbm(v * 7, u * 3, 411, 2)) * 0.75);
+      c = mixC(c, brown, smooth(0.62, 0.82, noise(v * 22 + u * 5, u * 11, 413)) * 0.35);
+      // pale, worn spines with tan in the hollows between them
+      if (part === 0) {
+        const kn = knob(phi, v);
+        c = mixC(c, mulC(tan, 0.85), smooth(0.25, 0.45, v) * smooth(0.45, 0.32, Math.abs(v - SHOULDER) + 0.3) * (1 - smooth(0.02, 0.12, kn)) * 0.5);
+        c = mixC(c, lin(0xf6efe0), smooth(0.08, 0.3, kn) * 0.8);
+      }
+      return mulC(c, 0.92 + 0.1 * noise(p[0] * 300, p[1] * 300 + p[2] * 200, 415));
+    }
+    if (part === 2) return mixC(peach, cream, 0.4);
+    if (part === 3) return mixC(mixC(pink, lin(0xf2aa90), v), peach, smooth(0.65, 1, k));
+    return mixC(pink, deepPink, Math.sin(Math.PI * k));
+  };
+  const us = [...Array.from({ length: 12 }, (_, i) => (i / 11) * A1), 0.6, 0.64, B1, 0.71, C1, 0.79, 0.84, D1, 0.92, 0.96, 1];
+  const vs = [0, 0.05, 0.12, 0.2, 0.27, 0.32, 0.37, 0.45, 0.55, 0.66, 0.78, 0.89, 0.96, 1];
+  // chalky outside (matte) and glossy pink inside: two grids that meet at the lip's rim and at the opening
+  const outside = grid({ us: us.filter((u) => u <= C1 - 0.03 + 1e-9), vs, pos, col, flip: true });
+  const inside = grid({ us: us.filter((u) => u >= C1 - 0.03 - 1e-9), vs, pos, col, flip: true });
+  return place(
+    [
+      { geo: outside, mat: matteVC() },
+      { geo: inside, mat: glossyVC() },
+    ],
+    // lying on its back on the sand, the opening and the lip's pink face up
+    { x: 0.12, y: 0.35 },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -1925,6 +2145,8 @@ const BUILDERS: Record<FindKind, () => Part[]> = {
   sailcloth,
   net,
   bottle,
+  'shark-tooth': sharkTooth,
+  'queen-conch': queenConch,
 };
 
 const partCache = new Map<FindKind, Part[]>();

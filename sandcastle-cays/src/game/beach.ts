@@ -32,6 +32,8 @@ export interface BeachState {
   /** The last day the sea left new finds. */
   lastWash: number;
   nextId: number;
+  /** Things you dropped in the sea (a shark bumped you): they wash up on the next tide, on this island. */
+  adrift: { kind: FindKind; island: IslandId }[];
 }
 
 /** Most finds lying about at once; the tide takes the oldest back. */
@@ -50,7 +52,7 @@ export class Beach {
   }
 
   static fresh(): BeachState {
-    return { ground: [], basket: [], locker: {}, found: {}, lastWash: 0, nextId: 1 };
+    return { ground: [], basket: [], locker: {}, found: {}, lastWash: 0, nextId: 1, adrift: [] };
   }
 
   /** Load a saved state, ignoring anything this version doesn't know. */
@@ -68,6 +70,8 @@ export class Beach {
       if (m && typeof m === 'object') for (const [k, v] of Object.entries(m)) if (known(k) && Number.isFinite(v)) s[key][k] = Math.max(0, Math.floor(v as number));
     }
     s.lastWash = Number.isFinite(r.lastWash) ? (r.lastWash as number) : 0;
+    if (Array.isArray(r.adrift))
+      for (const a of r.adrift) if (a && known(a.kind) && (a.island === 'home' || a.island === 'pink' || a.island === 'bank')) s.adrift.push({ kind: a.kind, island: a.island });
     s.nextId = Math.max(Number.isFinite(r.nextId) ? (r.nextId as number) : 1, ...s.ground.map((g) => g.id + 1), 1);
     return s;
   }
@@ -81,6 +85,21 @@ export class Beach {
     return id;
   }
 
+  /** You dropped your basket in the sea: it all washes up on the next tide, on the nearest island. */
+  lose(island: IslandId): number {
+    const st = this.state;
+    const n = st.basket.length;
+    for (const k of st.basket) st.adrift.push({ kind: k, island });
+    st.basket = [];
+    return n;
+  }
+
+  /** How heavily a find is weighted on this island: Shark Bank's sand evens the odds, so rare things turn up far more often. */
+  static weight(kind: FindKind, island: IslandId): number {
+    const r = FINDS[kind].rarity;
+    return island === 'bank' ? Math.sqrt(r) * 1.6 - (FINDS[kind].group === 'sea glass' ? 1.5 : 0) : r;
+  }
+
   /** The sea leaves new things along each island's tideline. Returns how many arrived. */
   washUp(day: number, count?: number): number {
     const st = this.state;
@@ -90,20 +109,23 @@ export class Beach {
     let added = 0;
     for (const island of islands) {
       const line = this.tideline.filter((p) => p.island === island);
-      // Home Cay's long beaches get the most; a small cay gets fewer.
-      const n = count ?? (island === 'home' ? 11 + Math.floor(rand() * 5) : 6 + Math.floor(rand() * 3));
-      const kinds = FIND_KINDS.filter((k) => !FINDS[k].islands || FINDS[k].islands!.includes(island));
-      const total = kinds.reduce((a, k) => a + FINDS[k].rarity, 0);
+      // Home Cay's long beaches get the most; a small cay gets fewer, and the little bar on Shark Bank fewer still (but the best).
+      const n = count ?? (island === 'home' ? 11 + Math.floor(rand() * 5) : island === 'bank' ? 4 + Math.floor(rand() * 3) : 6 + Math.floor(rand() * 3));
+      const kinds = FIND_KINDS.filter((k) => (!FINDS[k].islands || FINDS[k].islands!.includes(island)) && Beach.weight(k, island) > 0);
+      const total = kinds.reduce((a, k) => a + Beach.weight(k, island), 0);
       const pick = (): FindKind => {
         let r = rand() * total;
         for (const k of kinds) {
-          r -= FINDS[k].rarity;
+          r -= Beach.weight(k, island);
           if (r <= 0) return k;
         }
         return kinds[0];
       };
+      // What you dropped comes ashore first.
+      const lost = st.adrift.filter((a) => a.island === island).map((a) => a.kind);
+      st.adrift = st.adrift.filter((a) => a.island !== island);
       let here = 0;
-      for (let i = 0; i < n * 4 && here < n; i++) {
+      for (let i = 0; i < (n + lost.length) * 4 && here < n + lost.length; i++) {
         const p = line[Math.floor(rand() * line.length)];
         // Scatter a little up and down the beach from the wrack line.
         const along = (rand() - 0.5) * 1.4;
@@ -112,7 +134,7 @@ export class Beach {
         const z = p.z + p.nx * along - p.nz * across;
         // Not on top of another find.
         if (st.ground.some((g) => Math.abs(g.x - x) < 0.5 && Math.abs(g.z - z) < 0.5)) continue;
-        st.ground.push({ id: st.nextId++, kind: pick(), x, z, rot: rand() * Math.PI * 2, day });
+        st.ground.push({ id: st.nextId++, kind: here < lost.length ? lost[here] : pick(), x, z, rot: rand() * Math.PI * 2, day });
         here++;
       }
       added += here;
