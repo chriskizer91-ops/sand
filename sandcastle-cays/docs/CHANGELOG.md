@@ -1,5 +1,53 @@
 # What changed, version by version (plain language)
 
+## v0.8, The dinghy and the sharks
+A dinghy to explore the shallows, three shark waters of rising risk and reward, and a reason to play: the old owner's notebook, with goals chapter by chapter and pop-up tips that always say what to do next.
+
+**What's new**
+- **Ida's notebook.** The boat and Home Cay were left to you by their old owner, Ida, who sailed these cays for thirty years. Her notebook (N, the notebook button, or tap the "Next" line) has four chapters of goals, and each finished chapter gives you a small gift:
+  1. **Settling in:** go ashore, pick up three finds, stow them, build on the cove's sand, sleep a night aboard. Gift: Ida's seed tin.
+  2. **Living aboard:** catch a fish, cook it, plant something, harvest it, make or mend something. Gift: the bait recipe.
+  3. **Further afield:** anchor at Pink Sand Cay, find a shell only it has, row the dinghy, round the sea buoy. Gift: Ida's heavy spare sails (they wear half as fast).
+  4. **The shark waters:** take the dinghy through the reef gap, throw bait to a shark, step ashore on Shark Bank, find two things there, catch a big fish in shark waters. Gift: Ida's strong reel.
+  - Goals count everything you've ever done, in any order. An older save catches up by itself, gifts included.
+- **"Next" and tips.** The line at the top left always shows your next step, with how to do it for a while when it changes. Small tips pop up the first time something is useful (the ladder, swimming, the basket, the dinghy, sharks…), each once. A new game starts with Ida's note.
+- **The dinghy.** A white clinker-built tender with a teal stripe, hanging in davits between the sterns.
+  - At the left (port) swim step, press E to lower it and climb in. Row with W and S (the stick on the phone), turn with A and D.
+  - R starts the old outboard, which now lives on the dinghy. It's about three times as fast as rowing; F stops it.
+  - It floats in a hand's depth of water, so it crosses shallows the catamaran can't and can run up on a beach. In the shallows the outboard tilts up: row the last bit.
+  - E to climb out onto the sand or into the water. Back at the stern, E climbs you aboard and the dinghy follows on its rope. Left anywhere else, it waits for you. You can also fish from it.
+- **Three shark waters, rising risk and reward.**
+  - **The reef gap:** one Caribbean reef shark.
+  - **The deep water round the sea buoy:** two.
+  - **Shark Bank:** a new sandbar north-west of Home Cay, in wide knee-deep sand flats where a crowd of nurse sharks rests. It's on the chart; the catamaran anchors off and you take the dinghy in.
+  - **Sharks never hurt you.** A curious one circles, its fin cutting the water, and may come in for a bump. In the water you drop your basket (the sea washes it up on the nearest beach next morning); in the dinghy it leaves a dent (mend it at the workbench: driftwood and rope). Aboard the catamaran you're out of reach.
+  - **Bait** (Q, or the Bait button) draws them off. Cut bait from a fish in the galley, once Ida's notebook has taught you how.
+  - **Rewards:** two new finds wash up only on Shark Bank, the queen conch shell and the shark's tooth, and its sand gets the rarest of the rest. Fish run bigger in shark waters. Every fish now has a weight, and the logbook keeps your biggest of each and the sharks you've seen.
+
+**Checks before sending**
+- **369 automatic checks** passed, including new ones:
+  - the sharks: who lives where, keeping to their waters and off the shallows, circling, bumps (and never aboard the big boat), bait, startled nurse sharks;
+  - the dinghy: rowing, the outboard, running up on the sand and backing off, the outboard in the shallows, dents, towing;
+  - the notebook: goals in any order, chapters and rewards, saving, the tips;
+  - Shark Bank's shape, its finds, a dropped basket washing up, bigger fish, the strong reel, bait and dinghy repairs;
+  - the dinghy, davits, sharks and new finds' drawing budgets.
+- **82 of 83 browser checks** passed, as a laptop and as a Pixel-sized phone, including the new ones:
+  - the "Next" line and Ida's notebook;
+  - lowering the dinghy and climbing in, rowing 14 m in 12 s, the outboard at 6.6 knots, climbing back aboard with the dinghy following;
+  - anchoring 99 m off Shark Bank in 6 m of water, rowing in until the dinghy runs up on the sand, stepping out onto the bar;
+  - nurse sharks on the flats;
+  - a reef shark's bump making you drop your basket, bait drawing it off, the finds washing up next morning;
+  - saving the notebook and the dinghy.
+- **One failed:** the sand engine's speed check, 21.3 ms against its 20 ms safety line (the real budget is 33 ms; the first run measured 29.5 ms). The sand engine hasn't changed. Timed side by side on the same machine, v0.7 measured 20.8, 25.1 and 20.9 ms and v0.8 measured 22.0, 17.9 and 24.0 ms: the same spread, so it's the test machine.
+- **Fixed after the first run:** bait now flies from where you are (the test found it could fly from the camera's last spot), and Shark Bank's sand now favours its own finds and rare shells (the first run found mostly planks and bottles there).
+- **Drawing budgets** on the laptop: 190 draws and 777,000 triangles looking from the boat (v0.7: 182 and 736,000; the dinghy hangs at the stern now), 85 draws and 337,000 at Shark Bank.
+
+**Not tested, or known**
+- How it feels: are the sharks too shy or too pushy? Are the tips too many, or too few? Is the notebook's order right? Tell me.
+- Speed on your Pixel, especially at Shark Bank with the nurse sharks.
+- From the end of the cove's beach you can row the dinghy into the cove's rocks and step out onto them.
+- The very first moment after loading, the view leans a little while the boat settles (behind the start screen, normally).
+
 ## v0.7, A bigger boat
 Your boat is now a 45 ft (13.7 m) catamaran: a floating home you can walk around inside.
 
