@@ -23,7 +23,26 @@ Your boat is now a 45 ft (13.7 m) catamaran: a floating home you can walk around
 - An older save loads with you standing in the new cockpit.
 
 **Checks before sending**
-CHECKS_PLACEHOLDER
+- **308 automatic checks** passed, including new ones:
+  - the catamaran's decks, stairs, cabins, flybridge, ceilings, rails and footprint;
+  - walking the real catamaran: cockpit to galley, every spot on board, the hull cabins, the helm, the swim ladder both ways, a swimmer between the hulls eased out;
+  - walking up and down stairs between levels;
+  - the catamaran's sailing: grounding, backing off a sandbar and push-off with two hulls;
+  - its drawing budget (19 draw calls, about 80,000 triangles).
+- **All 68 browser checks** passed, as a laptop and as a Pixel-sized phone, including new and changed ones:
+  - jumping over the side from the side deck;
+  - taking the helm on the flybridge;
+  - 7.7 knots on a reach in the lagoon;
+  - the motors at 3.5 knots ahead (half throttle) and 2.5 astern;
+  - "Sail to Pink Sand Cay" (anchored 3 m from the spot, no scrapes);
+  - surfing to 12.1 knots;
+  - "Round the sea buoy and come home" in 10 min 43 s;
+  - E at the chart table opens the chart;
+  - sleeping in the bunk at night wakes you at 6:30 the next morning;
+  - planting in a pot on the new planter shelf.
+
+  The sand engine's speed check passed (19.7 ms).
+- **Drawing budgets** measured on the laptop: about 736,000 triangles and 182 draws looking from the boat (up from 668,000 and 168: the catamaran is bigger and has an inside), 347,000–371,000 ashore.
 
 **Not tested, or known**
 - How the bigger boat feels to walk around and sail: is anything hard to find? Tell me.
