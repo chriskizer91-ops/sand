@@ -50,12 +50,17 @@ First a **vertical slice**: a small piece of the game made to finished quality, 
    - repairs at a workbench with materials from the beaches (driftwood, planks, rope, sailcloth, net, bottles), with recipes that appear as you find new materials;
    - sail wear, and a leaking hull you pump out.
 5. **v0.6, The garden:** deck pots and the Home Cay garden.
-6. **v0.7, The dinghy and the reef:**
+6. **v0.7, A bigger boat** (the owner's choice, 2026-11-04): a 45 ft catamaran you can walk around inside:
+   - a saloon with the galley and chart table;
+   - a cabin in each hull (sleep in your bunk until morning) and a workshop;
+   - a flybridge helm with a big wheel and an all-round view;
+   - a trampoline at the bow and swim steps at the sterns.
+7. **v0.8, The dinghy and the reef:**
    - rowing the dinghy;
    - the shark, now and then, off the reef;
    - dropped finds that wash up later;
    - dinghy repairs.
-7. **v0.8, Polish:** a full pass on look, sound, feel, text and phone speed. This is the finished slice.
+8. **v0.9, Polish:** a full pass on look, sound, feel, text and phone speed. This is the finished slice.
 
 ## After the slice (ideas agreed along the way)
 - **Tides:** the tide wins wherever it reaches. Castles near the waves are gone by high tide; castles above the high-tide line last.

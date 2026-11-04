@@ -241,3 +241,23 @@ Each stroke opens an undo record. The first time a chunk is changed during that 
 - **Neglect:** a plant droops after most of a day without water, and withers after three dry days. That's the only thing in the game that can be lost, and only a plant.
 - **Food from it:** four beds and four pots of callaloo, watered daily, give more than a day of food a day, so a well-kept garden makes the stores easy. It takes daily watering and some rain-barrel planning.
 
+## 32. A 45 ft catamaran (v0.7)
+- **Why:** the owner wanted a boat you can go into, with more deck to walk around (so much now happens aboard) and a helm with a wheel and a good view. Asked about size, they chose a catamaran: 45 ft (13.7 m) long and about 7.5 m wide, a classic size for one person to live aboard and sail. (A 45-metre boat would be a superyacht with a crew.)
+- **The boat:**
+  - a saloon on the bridgedeck (galley, dinette, chart table);
+  - steps down into each hull: the owner's cabin with a bunk and a bathroom to port, a workshop and a second cabin to starboard;
+  - a cockpit aft (locker, bilge pump), and a flybridge on the saloon roof with the wheel;
+  - a trampoline between the bows, and sugar-scoop swim steps at the sterns.
+  - Same look as the sloop: white hulls, a teal stripe, teak, blue sail covers.
+- **Walking:** the deck now has levels (hull cabins, saloon, flybridge). Each question about the deck is asked at the height of your feet, so stairs work and you can't rise through a ceiling. Swimmers are kept out of the footprint of both hulls and the gap between them.
+- **Sailing** (numbers in `src/game/sailing.ts`):
+  - about 9 knots on a reach in the usual wind;
+  - she can't point as close to the wind (no-go zone 44°, close-hauled from 56°; the autopilot beats at 60°);
+  - she turns more slowly (she's bigger);
+  - 1.3 m keels under each hull;
+  - she shows only 18% of a monohull's lean, but the "overpowered" rules are the same;
+  - two engines, about 5.5 knots;
+  - two wakes, and spray from whichever bow hits the wave.
+- **Aground:** she can drag herself off only when less of her ends up on the bottom, so she can't plough further onto a flat bar. Being wide, a bow-first grounding usually needs backing off (motors astern) before turning, as on a real catamaran. "Push off" always works.
+- **Sleeping:** at the bunk, at anchor, from 6 pm to 5 am. The screen fades and you wake at 6:30. Stores, the garden and the morning wash-up carry on as if the hours had passed.
+

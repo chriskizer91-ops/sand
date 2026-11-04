@@ -118,6 +118,7 @@ scene.add(ocean.mesh);
 const seaHeight = (x: number, z: number, t: number) => ocean.heightAt(x, z, t);
 
 // Your boat.
+const BOAT_IS_CAT = false;
 const sloop = createSloop();
 scene.add(sloop.group);
 sloop.group.traverse((o) => {
@@ -126,7 +127,9 @@ sloop.group.traverse((o) => {
     o.receiveShadow = true;
   }
 });
-const boatMotion = new BoatMotion(sloop.group, sloop.length, sloop.beam, seaHeight);
+/** Where the boat's hulls are, to either side of her centreline (one hull: [0]; the catamaran: two). */
+const boatHulls: number[] = BOAT_IS_CAT ? SAILING.hulls : [0];
+const boatMotion = new BoatMotion(sloop.group, sloop.length, sloop.beam, seaHeight, BOAT_IS_CAT ? SAILING.heelShown : 1);
 /** Your boat under way (or at anchor), and the wind. */
 let boat: BoatState = newBoat(terrain.anchorage.x, terrain.anchorage.z, terrain.anchorage.heading);
 /** The wind where your boat is (and the rain, and how open the sea is). */
@@ -162,14 +165,15 @@ function updateWeather(t: number): void {
 function seaSlope(t: number): number {
   const c = Math.cos(boat.heading);
   const s = Math.sin(boat.heading);
-  const L = 3.6;
+  const L = sloop.length * 0.4;
   return (seaHeight(boat.x - c * L, boat.z - s * L, t) - seaHeight(boat.x + c * L, boat.z + s * L, t)) / (2 * L);
 }
 /** The sea floor for the keel: the ground and any rocks or coral heads. */
 const seaBed = { floorAt: (x: number, z: number) => Math.max(world.heightAt(x, z), rockTop(ground.rocks, x, z)) };
 
-const wake = new Wake();
-scene.add(wake.mesh);
+// A wake behind each hull.
+const wakes = boatHulls.map(() => new Wake());
+for (const w of wakes) scene.add(w.mesh);
 const particles = new SandParticles();
 scene.add(particles.points);
 const cursor = new BrushCursor();
@@ -181,7 +185,7 @@ const refractSkip: THREE.Object3D[] = [];
 // Squall clouds, rain and spray.
 const weatherFx = new WeatherFx({ phone: isTouch });
 scene.add(weatherFx.group);
-const staticSkip: THREE.Object3D[] = [sky.mesh, particles.points, cursor.mesh, distant, covePlants, wake.mesh, weatherFx.group];
+const staticSkip: THREE.Object3D[] = [sky.mesh, particles.points, cursor.mesh, distant, covePlants, ...wakes.map((w) => w.mesh), weatherFx.group];
 pinkGround.traverse((o) => o.userData.dry && staticSkip.push(o));
 islandGround.traverse((o) => o.userData.dry && staticSkip.push(o));
 life.group.traverse((o) => o.userData.dry && staticSkip.push(o));
@@ -423,22 +427,34 @@ function buoyRun(): void {
 
 /** Spray over the bow: the sea rising fast against her bow as she drives into a wave. */
 const bowV = new THREE.Vector3();
-let lastBowRel = 0;
+let lastBowRel: number[] = [];
 let sprayCool = 0;
 const sprayStats = { bursts: 0, maxRise: 0 };
 let onSpray: ((x: number, y: number, z: number, dx: number, dz: number, k: number) => void) | null = null;
 function bowSpray(dt: number): void {
   if (boat.anchored || boat.speed < 1.5) {
-    lastBowRel = 0;
+    lastBowRel = [];
     return;
   }
   const c = Math.cos(boat.heading);
   const sn = Math.sin(boat.heading);
-  bowV.set(4.1, 0.15, 0);
-  sloop.group.localToWorld(bowV);
-  const rel = seaHeight(bowV.x, bowV.z, time) - bowV.y;
-  const rise = dt > 0 ? (rel - lastBowRel) / dt : 0;
-  lastBowRel = rel;
+  // Each bow: whichever slams into a wave hardest throws the spray.
+  let rise = -Infinity;
+  let rel = 0;
+  const at = new THREE.Vector3();
+  boatHulls.forEach((off, i) => {
+    bowV.set(sloop.length * 0.47, 0.15, off);
+    sloop.group.localToWorld(bowV);
+    const r = seaHeight(bowV.x, bowV.z, time) - bowV.y;
+    const ri = dt > 0 && lastBowRel[i] !== undefined ? (r - lastBowRel[i]) / dt : 0;
+    lastBowRel[i] = r;
+    if (ri > rise) {
+      rise = ri;
+      rel = r;
+      at.copy(bowV);
+    }
+  });
+  bowV.copy(at);
   sprayCool -= dt;
   if (boat.anchored || boat.speed < 1.8 || dt <= 0) return;
   sprayStats.maxRise = Math.max(sprayStats.maxRise, rise);
@@ -1789,10 +1805,14 @@ function frame(now: number): void {
   boatMotion.update(time, dt, boat);
   bowSpray(dt);
   {
-    // The wake starts at the stern, where the water leaves the hull.
-    const sx = boat.x - Math.cos(boat.heading) * 4.1;
-    const sz = boat.z - Math.sin(boat.heading) * 4.1;
-    wake.update(dt, sx, sz, boat.heading, boat.anchored ? 0 : Math.abs(boat.speed), (x, z) => seaHeight(x, z, time), daylight.info.night, daylight.info.daylight);
+    // Each wake starts at a stern, where the water leaves the hull. (Starboard of the bow is (-sin h, cos h).)
+    const c = Math.cos(boat.heading);
+    const sn = Math.sin(boat.heading);
+    const back = sloop.length * 0.48;
+    wakes.forEach((w, i) => {
+      const off = boatHulls[i];
+      w.update(dt, boat.x - c * back - sn * off, boat.z - sn * back + c * off, boat.heading, boat.anchored ? 0 : Math.abs(boat.speed), (x, z) => seaHeight(x, z, time), daylight.info.night, daylight.info.daylight);
+    });
   }
   if (rig) {
     const twa = windAngle(boat, wind);
