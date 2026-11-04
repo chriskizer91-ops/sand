@@ -298,7 +298,7 @@ Each stroke opens an undo record. The first time a chunk is changed during that 
   - You cut bait from a fish in the galley (3 pieces a fish, up to 12).
   - The notebook teaches this at the end of chapter 2, and gives you 3 pieces to start.
 - **Rewards by risk:**
-  - **Finds:** only Shark Bank gets queen conch shells and sharks' teeth. There, rarity counts for far less (the square root of the usual weight), and sea glass is scarce. It is fewer finds a day, but the best.
+  - **Finds:** only Shark Bank gets queen conch shells and sharks' teeth, about one find in five there (11% each). On its sand, rarity counts for far less (the square root of the usual weight), and flotsam and sea glass count half again, so rare shells turn up much more often. It is fewer finds a day (4–6), but the best.
   - **Fish:** each step of risk makes fish 30% heavier on average. Bigger fish feed you longer and fight a little harder. The sea buoy's deep water counts as open sea for mahi-mahi.
   - **Weights:** fish now have weights in kilograms, and the logbook keeps your biggest of each.
 

@@ -1973,9 +1973,9 @@ function onSharkEvent(e: SharkEvent): void {
 
 function throwBait(): void {
   if (!started || view !== 'fp' || atHelm) return;
-  const dir = new THREE.Vector3();
-  camera.getWorldDirection(dir);
-  if (sharks.throwBait(camera.position, dir)) {
+  // From your own eyes, the way you're facing.
+  const dir = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+  if (sharks.throwBait(player.eye, dir)) {
     lastBaitThrow = time;
     baitNoted = false;
     audio.splash(0.06);

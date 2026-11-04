@@ -94,10 +94,16 @@ export class Beach {
     return n;
   }
 
-  /** How heavily a find is weighted on this island: Shark Bank's sand evens the odds, so rare things turn up far more often. */
+  /**
+   * How heavily a find is weighted on this island. Shark Bank's sand evens the
+   * odds, so rare shells turn up far more often; about one find in five there
+   * is a queen conch or a shark's tooth; and there's less flotsam.
+   */
   static weight(kind: FindKind, island: IslandId): number {
-    const r = FINDS[kind].rarity;
-    return island === 'bank' ? Math.sqrt(r) * 1.6 - (FINDS[kind].group === 'sea glass' ? 1.5 : 0) : r;
+    const f = FINDS[kind];
+    if (island !== 'bank') return f.rarity;
+    if (f.islands?.includes('bank')) return 4;
+    return Math.sqrt(f.rarity) * (f.group === 'shell' ? 1 : 0.5);
   }
 
   /** The sea leaves new things along each island's tideline. Returns how many arrived. */
