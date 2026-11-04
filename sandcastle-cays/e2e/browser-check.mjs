@@ -590,6 +590,30 @@ async function standBy(page, f) {
   step('Laptop: under a palm, E shakes down a coconut or two', /palm/.test(palmPrompt ?? '') && nuts1 > nuts0, `prompt "${palmPrompt}", coconuts on the sand ${nuts0} → ${nuts1} (palm at ${Math.round(palm.x)}, ${Math.round(palm.z)})`);
   await G(page, () => window.__game.squallsOn(true));
 
+  // ---- The catamaran (v0.7) ----
+  // The chart table in the saloon.
+  await G(page, () => { const g = window.__game; g.aboard(); g.player.placeAboard(g.sloopPoints.chart.clone(), 0); });
+  await waitFrames(page, 3);
+  const chartPrompt = await G(page, () => window.__game.action()?.label);
+  await page.keyboard.press('KeyE');
+  await waitFrames(page, 3);
+  const chartOpen2 = await page.isVisible('#chart:not(.hidden)');
+  await shot(page, '12o-chart-table.png');
+  await page.keyboard.press('KeyM');
+  await waitFrames(page, 2);
+  step('Laptop: at the chart table in the saloon, E opens the chart', /chart/.test(chartPrompt ?? '') && chartOpen2, `prompt "${chartPrompt}"`);
+  // Sleep in the bunk: at anchor, after sunset, until morning.
+  await G(page, () => { const g = window.__game; const b = g.boat; b.x = 2; b.z = -31; b.anchored = true; b.speed = 0; g.setHour(21); g.aboard(); g.player.placeAboard(g.sloopPoints.bunk.clone(), 0); });
+  await waitFrames(page, 3);
+  const bunkPrompt = await G(page, () => window.__game.action()?.label);
+  await shot(page, '12p-bunk.png');
+  const day0 = await G(page, () => window.__game.clock.day);
+  await page.keyboard.press('KeyE');
+  await page.waitForFunction(() => !window.__game.sleeping && window.__game.clock.hour < 7, null, { timeout: 60000 }).catch(() => {});
+  const woke = await G(page, () => ({ day: window.__game.clock.day, hour: window.__game.clock.hour }));
+  await G(page, () => window.__game.setHour(10.5));
+  step('Laptop: at anchor after sunset, E at your bunk sleeps until morning', /Sleep/.test(bunkPrompt ?? '') && woke.day === day0 + 1 && woke.hour < 7, `prompt "${bunkPrompt}", day ${day0} → ${woke.day}, ${woke.hour.toFixed(1)} h`);
+
   // ---- The garden (v0.6) ----
   // A pot on the cabin top: plant callaloo, water it (from the tank), ripen it (dev tools), harvest it.
   await G(page, () => {
